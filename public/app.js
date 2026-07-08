@@ -19,6 +19,7 @@
     conversationQuery: '',
     conversationResults: [],
     conversationSearching: false,
+    profileSocialView: null,
     recommendations: [],
     publicProfile: null,
     pendingRequestCount: 0,
@@ -26,6 +27,7 @@
     requests: [],
     actionSheet: null,
     storyMenuOpen: false,
+    overlayClosing: false,
     stickerPanel: false,
     stickers: [],
     stickerMap: new Map(),
@@ -391,8 +393,8 @@
           <strong>${esc(state.me.displayName)}</strong>
           <span>@${esc(state.me.username)}</span>
           <div class="social-stats">
-            <span><strong>${state.me.followerCount ?? 0}</strong> followers</span>
-            <span><strong>${state.me.followingCount ?? 0}</strong> following</span>
+            <button type="button" class="social-stat-btn" data-action="open-social" data-social="followers"><strong>${state.me.followerCount ?? 0}</strong> followers</button>
+            <button type="button" class="social-stat-btn" data-action="open-social" data-social="following"><strong>${state.me.followingCount ?? 0}</strong> following</button>
           </div>
           <div class="toolbar profile-hero-actions">
             <button class="mini-btn" data-action="show-profile-link" data-link="${esc(profileUrl)}">${icon('link')} Link</button>
@@ -427,11 +429,32 @@
           <button class="primary" type="submit">Save profile</button>
         </form>
       </section>
-      ${renderSocialLists(state.me)}
+      ${renderProfileSocialPanel()}
       ${renderRecommendations()}
       ${renderTwoFactorPanel()}
       <section class="panel-card danger-zone">
         <button class="danger logout-btn" data-action="logout">Log out</button>
+      </section>
+    `;
+  }
+
+  function renderProfileSocialPanel() {
+    if (!state.profileSocialView) return '';
+    const view = state.profileSocialView === 'following' ? 'following' : 'followers';
+    const users = view === 'followers' ? (state.me.followers || []) : (state.me.following || []);
+    const empty = view === 'followers' ? 'No followers yet.' : 'Not following anyone yet.';
+    return `
+      <section class="panel-card social-lists">
+        <div class="social-panel-head">
+          <div class="segmented social-switch">
+            <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers">Followers</button>
+            <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-social" data-social="following">Following</button>
+          </div>
+          <button class="icon-btn" data-action="close-social" aria-label="Close">${icon('x')}</button>
+        </div>
+        <div class="mini-user-list">
+          ${users.slice(0, 24).map((item) => `<span>${avatarHtml(item)}<small>@${esc(item.username)}</small></span>`).join('') || `<p class="hint">${empty}</p>`}
+        </div>
       </section>
     `;
   }
@@ -808,8 +831,8 @@
       `;
     }
     return `
-      <div class="overlay" data-action="close-overlays">
-        <section class="action-sheet" data-stop-close>
+      <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
+        <section class="action-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           ${body || '<p class="hint">No actions available.</p>'}
           <button data-action="close-overlays">Cancel</button>
         </section>
@@ -820,8 +843,8 @@
   function renderStoryMenu() {
     if (!state.storyMenuOpen) return '';
     return `
-      <div class="overlay" data-action="close-overlays">
-        <section class="action-sheet" data-stop-close>
+      <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
+        <section class="action-sheet story-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           <button data-action="post-story">${icon('story')} Post story</button>
           <button data-action="change-profile-picture">${icon('profile')} Change profile picture</button>
         </section>
@@ -1620,6 +1643,29 @@
     }
   }
 
+  let overlayCloseTimer = null;
+
+  function openActionSheet(sheet) {
+    clearTimeout(overlayCloseTimer);
+    state.overlayClosing = false;
+    state.storyMenuOpen = false;
+    state.actionSheet = sheet;
+    renderApp();
+  }
+
+  function closeOverlays() {
+    if (!state.actionSheet && !state.storyMenuOpen) return;
+    clearTimeout(overlayCloseTimer);
+    state.overlayClosing = true;
+    renderApp();
+    overlayCloseTimer = setTimeout(() => {
+      state.actionSheet = null;
+      state.storyMenuOpen = false;
+      state.overlayClosing = false;
+      renderApp();
+    }, 190);
+  }
+
   function scrollMessagesToBottom() {
     const messages = document.getElementById('messages');
     if (messages) messages.scrollTop = messages.scrollHeight;
@@ -1667,6 +1713,7 @@
         state.lastTab = 'chats';
         state.activePeer = null;
         state.chatProfileOpen = false;
+        state.profileSocialView = null;
         await loadContactsAndChats();
         renderApp();
         connectWs();
@@ -1697,7 +1744,7 @@
     const target = event.target.closest('[data-action]');
     if (!target) return;
     const action = target.dataset.action;
-    if (action === 'close-overlays' && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
       if (action === 'auth-mode') {
@@ -1717,6 +1764,7 @@
         state.activePeer = null;
         state.tab = 'chats';
         state.lastTab = 'chats';
+        state.profileSocialView = null;
         renderAuth();
       }
       if (action === 'tab') {
@@ -1724,6 +1772,7 @@
         state.tab = target.dataset.tab;
         state.activePeer = null;
         state.chatProfileOpen = false;
+        if (state.tab !== 'profile') state.profileSocialView = null;
         renderApp();
       }
       if (action === 'open-chat') {
@@ -1819,20 +1868,28 @@
         renderApp();
       }
       if (action === 'close-overlays') {
-        state.actionSheet = null;
-        state.storyMenuOpen = false;
-        renderApp();
+        closeOverlays();
       }
       if (action === 'copy-profile-link') {
         await navigator.clipboard.writeText(target.dataset.link);
         target.textContent = 'Copied';
       }
       if (action === 'show-profile-link') {
-        state.actionSheet = { type: 'profile-link', link: target.dataset.link };
+        openActionSheet({ type: 'profile-link', link: target.dataset.link });
+      }
+      if (action === 'open-social') {
+        state.profileSocialView = target.dataset.social === 'following' ? 'following' : 'followers';
+        renderApp();
+      }
+      if (action === 'close-social') {
+        state.profileSocialView = null;
         renderApp();
       }
       if (action === 'avatar-menu') {
+        clearTimeout(overlayCloseTimer);
+        state.actionSheet = null;
         state.storyMenuOpen = true;
+        state.overlayClosing = false;
         renderApp();
       }
       if (action === 'post-story') {
@@ -1852,8 +1909,7 @@
         if (confirm('Delete this story forever?')) await deleteStory(target.dataset.storyId);
       }
       if (action === 'mute-menu') {
-        state.actionSheet = { type: 'mute', peerId: target.dataset.userId };
-        renderApp();
+        openActionSheet({ type: 'mute', peerId: target.dataset.userId });
       }
       if (action === 'set-mute') {
         await setMuteFor(target.dataset.userId, target.dataset.minutes);
@@ -2005,8 +2061,7 @@
       clearTimeout(state.longPressTimer);
       state.longPressTimer = setTimeout(() => {
         state.longPressTriggered = true;
-        state.actionSheet = { type: 'chat-user', peerId: chatItem.dataset.peerId };
-        renderApp();
+        openActionSheet({ type: 'chat-user', peerId: chatItem.dataset.peerId });
       }, 560);
       return;
     }
@@ -2016,8 +2071,7 @@
     clearTimeout(state.longPressTimer);
     state.longPressTimer = setTimeout(() => {
       state.longPressTriggered = true;
-      state.actionSheet = { type: 'message', messageId: message.dataset.messageId };
-      renderApp();
+      openActionSheet({ type: 'message', messageId: message.dataset.messageId });
     }, 560);
     state.drag = {
       id: message.dataset.messageId,

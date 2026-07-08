@@ -281,6 +281,7 @@ a {
 
 .app-shell {
   height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   background: #020305;
@@ -291,7 +292,7 @@ a {
   border-right: 1px solid var(--line);
   background: #05070b;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
@@ -386,6 +387,7 @@ a {
 }
 
 .side-content {
+  min-height: 0;
   overflow: auto;
   padding: 14px 14px 18px;
 }
@@ -437,6 +439,7 @@ a {
 }
 
 .bottom-tabs {
+  align-self: end;
   height: 72px;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -528,6 +531,7 @@ a {
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100vh;
+  height: 100dvh;
   background: #06080d;
   animation: slideFromRight 0.2s ease;
 }
@@ -769,6 +773,16 @@ a {
   font-size: 12px;
 }
 
+.social-stat-btn {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+}
+
 .social-stats strong {
   display: inline;
   font-size: 12px;
@@ -808,6 +822,18 @@ a {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
+}
+
+.social-panel-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.social-switch {
+  grid-template-columns: 1fr 1fr;
 }
 
 .story-card img,
@@ -951,6 +977,12 @@ a {
   display: grid;
   align-items: end;
   background: rgba(0, 0, 0, 0.36);
+  animation: overlayIn 0.18s ease;
+}
+
+.overlay.closing {
+  pointer-events: none;
+  animation: overlayOut 0.18s ease forwards;
 }
 
 .notifications-page {
@@ -1005,6 +1037,18 @@ a {
   border: 1px solid var(--line);
   border-radius: 8px 8px 0 0;
   box-shadow: var(--shadow);
+  animation: sheetUp 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.action-sheet.closing {
+  animation: sheetDown 0.18s ease forwards;
+}
+
+.story-sheet {
+  width: min(360px, calc(100% - 24px));
+  margin-bottom: max(10px, env(safe-area-inset-bottom));
+  border-radius: 14px;
+  padding-bottom: 10px;
 }
 
 .action-sheet button {
@@ -1042,6 +1086,46 @@ a {
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+@keyframes overlayIn {
+  from {
+    background: rgba(0, 0, 0, 0);
+  }
+  to {
+    background: rgba(0, 0, 0, 0.36);
+  }
+}
+
+@keyframes overlayOut {
+  from {
+    background: rgba(0, 0, 0, 0.36);
+  }
+  to {
+    background: rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes sheetUp {
+  from {
+    opacity: 0.6;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes sheetDown {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0.6;
+    transform: translateY(100%);
   }
 }
 
