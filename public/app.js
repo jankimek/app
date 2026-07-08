@@ -10,6 +10,7 @@
     tab: 'chats',
     lastTab: 'chats',
     tabTransition: false,
+    profileSocialTransition: false,
     contacts: [],
     chats: [],
     activePeer: null,
@@ -161,6 +162,10 @@
     `;
   }
 
+  function isMobileLayout() {
+    return window.matchMedia('(max-width: 860px)').matches;
+  }
+
   function describeMessage(message) {
     if (!message) return '';
     if (message.deletedAt) return 'Deleted message';
@@ -298,6 +303,7 @@
       ${renderStoryMenu()}
     `;
     state.tabTransition = false;
+    state.profileSocialTransition = false;
     setTimeout(() => {
       if (state.highlightMessageId) scrollHighlightedMessage();
       else scrollMessagesToBottom();
@@ -308,7 +314,7 @@
   function renderSidebar() {
     return `
       <aside class="sidebar">
-        <div class="side-content tab-content ${state.tabTransition ? 'animate-tab' : ''}" data-tab="${esc(state.tab)}">
+        <div class="side-content tab-content ${state.tabTransition || state.profileSocialTransition ? 'animate-tab' : ''}" data-tab="${esc(state.tab)}">
           ${state.tab === 'chats' ? renderChatsPanel() : state.tab === 'search' ? renderSearchPanel() : state.tab === 'notifications' ? renderNotificationsPage() : renderProfilePanel()}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
@@ -1789,8 +1795,12 @@
         state.lastTab = state.tab;
         state.tabTransition = nextTab !== state.tab;
         state.tab = nextTab;
-        state.activePeer = null;
-        state.chatProfileOpen = false;
+        if (isMobileLayout()) {
+          state.activePeer = null;
+          state.chatProfileOpen = false;
+        } else if (state.activePeer) {
+          state.chatProfileOpen = false;
+        }
         if (state.tab !== 'profile') state.profileSocialView = null;
         renderApp();
       }
@@ -1899,10 +1909,13 @@
         openActionSheet({ type: 'profile-link', link: target.dataset.link });
       }
       if (action === 'open-social') {
-        state.profileSocialView = target.dataset.social === 'following' ? 'following' : 'followers';
+        const nextSocial = target.dataset.social === 'following' ? 'following' : 'followers';
+        state.profileSocialTransition = nextSocial !== state.profileSocialView;
+        state.profileSocialView = nextSocial;
         renderApp();
       }
       if (action === 'close-social') {
+        state.profileSocialTransition = Boolean(state.profileSocialView);
         state.profileSocialView = null;
         renderApp();
       }
