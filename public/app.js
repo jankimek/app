@@ -383,6 +383,7 @@
   }
 
   function renderProfilePanel() {
+    if (state.profileSocialView) return renderProfileSocialPage();
     const profileUrl = `${location.origin}/u/${state.me.username}`;
     const story = state.me.stories?.[0];
     return `
@@ -431,7 +432,6 @@
           <button class="primary" type="submit">Save profile</button>
         </form>
       </section>
-      ${renderProfileSocialPanel()}
       ${renderRecommendations()}
       ${renderTwoFactorPanel()}
       <section class="panel-card danger-zone">
@@ -440,22 +440,30 @@
     `;
   }
 
-  function renderProfileSocialPanel() {
-    if (!state.profileSocialView) return '';
+  function renderProfileSocialPage() {
     const view = state.profileSocialView === 'following' ? 'following' : 'followers';
     const users = view === 'followers' ? (state.me.followers || []) : (state.me.following || []);
     const empty = view === 'followers' ? 'No followers yet.' : 'Not following anyone yet.';
     return `
-      <section class="panel-card social-lists">
-        <div class="social-panel-head">
-          <div class="segmented social-switch">
-            <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers">Followers</button>
-            <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-social" data-social="following">Following</button>
-          </div>
-          <button class="icon-btn" data-action="close-social" aria-label="Close">${icon('x')}</button>
+      <section class="social-page">
+        <header class="page-header">
+          <button class="icon-btn" data-action="close-social" aria-label="Back">${icon('back')}</button>
+          <h2>${view === 'followers' ? 'Followers' : 'Following'}</h2>
+        </header>
+        <div class="segmented social-switch">
+          <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers">Followers</button>
+          <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-social" data-social="following">Following</button>
         </div>
-        <div class="mini-user-list">
-          ${users.slice(0, 24).map((item) => `<span>${avatarHtml(item)}<small>@${esc(item.username)}</small></span>`).join('') || `<p class="hint">${empty}</p>`}
+        <div class="social-user-list">
+          ${users.length ? users.map((item) => `
+            <article class="person-card social-user-row">
+              ${avatarHtml(item)}
+              <span class="person">
+                <strong>${esc(item.displayName)}</strong>
+                <small>@${esc(item.username)}${item.bio ? ' - ' + esc(item.bio) : ''}</small>
+              </span>
+            </article>
+          `).join('') : `<div class="empty-state">${empty}</div>`}
         </div>
       </section>
     `;

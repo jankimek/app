@@ -824,16 +824,28 @@ a {
   color: var(--muted);
 }
 
-.social-panel-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
 .social-switch {
   grid-template-columns: 1fr 1fr;
+}
+
+.social-page {
+  display: grid;
+  gap: 12px;
+  min-height: 100%;
+  align-content: start;
+}
+
+.social-user-list {
+  display: grid;
+  gap: 8px;
+}
+
+.social-user-row {
+  grid-template-columns: 44px minmax(0, 1fr);
+  background: transparent;
+  border: 0;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .story-card img,
