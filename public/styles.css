@@ -392,7 +392,7 @@ a {
   padding: 14px 14px 18px;
 }
 
-.tab-content {
+.tab-content.animate-tab {
   animation: tabSwap 0.22s ease;
 }
 
@@ -985,6 +985,11 @@ a {
   animation: overlayOut 0.18s ease forwards;
 }
 
+.overlay.no-motion,
+.overlay.no-motion.closing {
+  animation: none;
+}
+
 .notifications-page {
   display: grid;
   gap: 10px;
@@ -1049,6 +1054,11 @@ a {
   margin-bottom: max(10px, env(safe-area-inset-bottom));
   border-radius: 14px;
   padding-bottom: 10px;
+  animation: none;
+}
+
+.story-sheet.closing {
+  animation: none;
 }
 
 .action-sheet button {

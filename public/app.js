@@ -9,6 +9,7 @@
     twoFactorSetup: null,
     tab: 'chats',
     lastTab: 'chats',
+    tabTransition: false,
     contacts: [],
     chats: [],
     activePeer: null,
@@ -296,6 +297,7 @@
       ${renderActionSheet()}
       ${renderStoryMenu()}
     `;
+    state.tabTransition = false;
     setTimeout(() => {
       if (state.highlightMessageId) scrollHighlightedMessage();
       else scrollMessagesToBottom();
@@ -306,7 +308,7 @@
   function renderSidebar() {
     return `
       <aside class="sidebar">
-        <div class="side-content tab-content" data-tab="${esc(state.tab)}">
+        <div class="side-content tab-content ${state.tabTransition ? 'animate-tab' : ''}" data-tab="${esc(state.tab)}">
           ${state.tab === 'chats' ? renderChatsPanel() : state.tab === 'search' ? renderSearchPanel() : state.tab === 'notifications' ? renderNotificationsPage() : renderProfilePanel()}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
@@ -843,7 +845,7 @@
   function renderStoryMenu() {
     if (!state.storyMenuOpen) return '';
     return `
-      <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
+      <div class="overlay no-motion ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
         <section class="action-sheet story-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           <button data-action="post-story">${icon('story')} Post story</button>
           <button data-action="change-profile-picture">${icon('profile')} Change profile picture</button>
@@ -1655,6 +1657,13 @@
 
   function closeOverlays() {
     if (!state.actionSheet && !state.storyMenuOpen) return;
+    if (state.storyMenuOpen && !state.actionSheet) {
+      clearTimeout(overlayCloseTimer);
+      state.storyMenuOpen = false;
+      state.overlayClosing = false;
+      renderApp();
+      return;
+    }
     clearTimeout(overlayCloseTimer);
     state.overlayClosing = true;
     renderApp();
@@ -1768,8 +1777,10 @@
         renderAuth();
       }
       if (action === 'tab') {
+        const nextTab = target.dataset.tab;
         state.lastTab = state.tab;
-        state.tab = target.dataset.tab;
+        state.tabTransition = nextTab !== state.tab;
+        state.tab = nextTab;
         state.activePeer = null;
         state.chatProfileOpen = false;
         if (state.tab !== 'profile') state.profileSocialView = null;
@@ -1859,11 +1870,13 @@
       }
       if (action === 'open-notifications') {
         state.lastTab = state.tab;
+        state.tabTransition = true;
         state.tab = 'notifications';
         await refreshChatsOnly();
         renderApp();
       }
       if (action === 'back-from-notifications') {
+        state.tabTransition = true;
         state.tab = state.lastTab === 'notifications' ? 'chats' : (state.lastTab || 'chats');
         renderApp();
       }
@@ -2113,6 +2126,7 @@
         else if (state.activePeer) state.activePeer = null;
         else if (state.lastTab && state.lastTab !== state.tab) {
           const current = state.tab;
+          state.tabTransition = true;
           state.tab = state.lastTab;
           state.lastTab = current;
         }
