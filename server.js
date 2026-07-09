@@ -450,7 +450,8 @@ function publicStory(story) {
     file: publicFile(db.files[story.fileId]),
     createdAt: story.createdAt,
     expiresAt: story.expiresAt,
-    saved: Boolean(story.saved)
+    saved: Boolean(story.saved),
+    edits: story.edits || {}
   };
 }
 
@@ -957,6 +958,13 @@ async function handleApi(req, res, pathname, query) {
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       saved: false,
+      edits: {
+        filter: ['normal', 'warm', 'cool', 'mono', 'noir'].includes(body.edits?.filter) ? body.edits.filter : 'normal',
+        text: cleanText(body.edits?.text || '', 120),
+        zoom: Math.max(1, Math.min(3, Number(body.edits?.zoom || 1))),
+        trimStart: Math.max(0, Number(body.edits?.trimStart || 0)),
+        trimEnd: Math.max(0, Number(body.edits?.trimEnd || 0))
+      },
       deletedAt: null
     };
     db.stories[story.id] = story;
@@ -1300,10 +1308,15 @@ async function handleApi(req, res, pathname, query) {
     const peer = db.users[decodeURIComponent(messageListMatch[1])];
     if (!peer || !canViewChat(user.id, peer.id)) return sendError(res, 404, 'Chat not found.');
     const chatId = chatIdFor(user.id, peer.id);
-    const messages = (db.messages[chatId] || [])
+    const limit = Math.max(1, Math.min(500, Number(query.get('limit') || 200)));
+    const before = String(query.get('before') || '');
+    let visible = (db.messages[chatId] || [])
       .filter((message) => !(message.hiddenFor || []).includes(user.id))
-      .map(decorateMessage);
-    return sendJson(res, 200, { messages, peer: publicUser(peer, user.id) });
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    if (before) visible = visible.filter((message) => String(message.createdAt) < before);
+    const hasMore = visible.length > limit;
+    const page = visible.slice(Math.max(0, visible.length - limit)).map(decorateMessage);
+    return sendJson(res, 200, { messages: page, hasMore, peer: publicUser(peer, user.id) });
   }
 
   if (req.method === 'POST' && messageListMatch) {

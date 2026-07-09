@@ -29,7 +29,10 @@
     chats: [],
     activePeer: null,
     chatProfileOpen: false,
+    chatReturnAnimation: false,
     messages: [],
+    hasOlderMessages: false,
+    loadingOlderMessages: false,
     composerDrafts: {},
     highlightMessageId: null,
     searchResults: [],
@@ -43,6 +46,7 @@
     pendingRequestCount: 0,
     notifications: [],
     requests: [],
+    hiddenRecommendations: JSON.parse(localStorage.getItem('hiddenRecommendations') || '[]'),
     unreadByPeer: {},
     messageNotifications: localStorage.getItem('messageNotifications') === '1',
     actionSheet: null,
@@ -52,6 +56,8 @@
     settingsOpen: false,
     recommendationsOpen: false,
     avatarCrop: null,
+    storyEditor: null,
+    mediaViewer: null,
     stickerPanel: false,
     stickers: [],
     stickerMap: new Map(),
@@ -166,6 +172,7 @@
       file: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
       sticker: '<svg viewBox="0 0 24 24"><path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5"/><path d="M14 20c0-3.3 2.7-6 6-6"/><path d="M9 9h.01M15 9h.01M8.5 14a5 5 0 0 0 7 0"/></svg>',
       mic: '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg>',
+      play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7Z"/></svg>',
       send: '<svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4Z"/></svg>',
       bell: '<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>',
       x: '<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>',
@@ -329,7 +336,24 @@
     `;
   }
 
-  function renderApp() {
+  function captureMessagesScroll() {
+    const messages = document.getElementById('messages');
+    if (!messages) return null;
+    return {
+      top: messages.scrollTop,
+      bottom: messages.scrollHeight - messages.scrollTop - messages.clientHeight
+    };
+  }
+
+  function restoreMessagesScroll(snapshot) {
+    const messages = document.getElementById('messages');
+    if (!messages || !snapshot) return;
+    messages.scrollTop = snapshot.top;
+  }
+
+  function renderApp(options = {}) {
+    const scrollSnapshot = captureMessagesScroll();
+    const scrollMode = options.scroll || 'preserve';
     app.innerHTML = `
       <div class="app-shell ${state.activePeer ? 'chat-open' : ''}">
         ${renderSidebar()}
@@ -341,13 +365,17 @@
       ${renderProfileEditModal()}
       ${renderSettingsModal()}
       ${renderAvatarCropper()}
+      ${renderStoryEditor()}
+      ${renderMediaViewer()}
     `;
     state.tabTransition = false;
     setTimeout(() => {
       resizeComposerInput();
       if (state.highlightMessageId) scrollHighlightedMessage();
-      else scrollMessagesToBottom();
+      else if (scrollMode === 'bottom') scrollMessagesToBottom();
+      else restoreMessagesScroll(scrollSnapshot);
       attachCallStreams();
+      state.chatReturnAnimation = false;
     }, 0);
   }
 
@@ -420,6 +448,7 @@
   }
 
   function renderSearchPanel() {
+    const recommendations = visibleRecommendations();
     return `
       <section class="search-page-head">
         <input class="search-input" id="user-search" placeholder="Search users" autocomplete="off">
@@ -443,11 +472,12 @@
             <small>Add someone first, then message from the Messages tab.</small>
           </article>
         </div>
-        ${state.recommendations.length ? `
+        ${recommendations.length ? `
           <h2>People you may know</h2>
           <div class="recommendation-row expanded">
-            ${state.recommendations.slice(0, 8).map((user) => `
+            ${recommendations.slice(0, 8).map((user) => `
               <article class="recommend-card">
+                <button class="recommend-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>
                 ${avatarHtml(user)}
                 <strong>${esc(user.displayName)}</strong>
                 <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
@@ -492,13 +522,14 @@
       ${story ? `
         <section class="panel-card story-card">
           <h2>Story</h2>
-          ${story.file.mime.startsWith('video/') ? `<video src="${esc(story.file.url)}" controls playsinline></video>` : `<img src="${esc(story.file.url)}" alt="">`}
+          ${renderStoryMedia(story)}
           <div class="toolbar">
             ${story.saved ? '<span class="hint">Saved</span>' : `<button class="secondary" data-action="save-story" data-story-id="${esc(story.id)}">Save</button>`}
             <button class="danger" data-action="delete-story" data-story-id="${esc(story.id)}">Delete forever</button>
           </div>
         </section>
       ` : ''}
+      ${renderHighlights(state.me, true)}
       <section class="profile-fill">
         <h2>Activity</h2>
         <div class="profile-activity-grid">
@@ -541,6 +572,7 @@
   }
 
   function renderRecommendations() {
+    const recommendations = visibleRecommendations();
     return `
       <section class="suggestion-section">
         <button class="suggestion-toggle" data-action="toggle-recommendations">
@@ -549,8 +581,9 @@
         </button>
         ${state.recommendationsOpen ? `
           <div class="recommendation-row">
-            ${state.recommendations.length ? state.recommendations.map((user) => `
+            ${recommendations.length ? recommendations.map((user) => `
               <article class="recommend-card">
+                <button class="recommend-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>
                 ${avatarHtml(user)}
                 <strong>${esc(user.displayName)}</strong>
                 <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
@@ -559,6 +592,58 @@
             `).join('') : '<p class="hint">Friends of friends will appear here after you add more people.</p>'}
           </div>
         ` : ''}
+      </section>
+    `;
+  }
+
+  function visibleRecommendations() {
+    const hidden = new Set(state.hiddenRecommendations || []);
+    return state.recommendations.filter((user) => !hidden.has(user.id));
+  }
+
+  function storyFilterCss(filter) {
+    return {
+      warm: 'sepia(0.22) saturate(1.22) hue-rotate(-8deg)',
+      cool: 'saturate(1.15) hue-rotate(12deg)',
+      mono: 'grayscale(1)',
+      noir: 'grayscale(1) contrast(1.28) brightness(0.82)'
+    }[filter] || 'none';
+  }
+
+  function renderStoryMedia(story, compact = false) {
+    const edits = story.edits || {};
+    const isVideo = story.file?.mime?.startsWith('video/');
+    const style = `filter:${storyFilterCss(edits.filter)}; transform:scale(${Number(edits.zoom || 1)});`;
+    const mediaUrl = isVideo && (edits.trimStart || edits.trimEnd)
+      ? `${story.file.url}#t=${Number(edits.trimStart || 0)},${Number(edits.trimEnd || '') || ''}`
+      : story.file.url;
+    return `
+      <div class="story-preview ${compact ? 'compact' : ''}">
+        ${isVideo
+          ? `<video src="${esc(mediaUrl)}" controls playsinline style="${esc(style)}"></video>`
+          : `<img src="${esc(mediaUrl)}" alt="" style="${esc(style)}">`}
+        ${edits.text ? `<span class="story-text-overlay">${esc(edits.text)}</span>` : ''}
+      </div>
+    `;
+  }
+
+  function renderHighlights(user, own) {
+    const highlights = (user.stories || []).filter((story) => story.saved);
+    if (!own && !highlights.length) return '';
+    return `
+      <section class="highlight-strip">
+        <div class="highlight-head">
+          <strong>Highlights</strong>
+          ${own ? '<button class="mini-btn" data-action="post-story">New</button>' : ''}
+        </div>
+        <div class="highlight-row">
+          ${highlights.map((story) => `
+            <article class="highlight-item">
+              ${renderStoryMedia(story, true)}
+              <small>${esc(shortTime(story.createdAt))}</small>
+            </article>
+          `).join('') || '<p class="hint">Save a story to keep it here.</p>'}
+        </div>
       </section>
     `;
   }
@@ -642,7 +727,7 @@
     if (state.chatProfileOpen) return renderChatProfilePane();
 
     return `
-      <main class="chat-pane">
+      <main class="chat-pane ${state.chatReturnAnimation ? 'chat-returning' : ''}">
         <header class="chat-header">
           <button class="icon-btn back-btn" title="Back" aria-label="Back" data-action="back">${icon('back')}</button>
           <button class="chat-profile-button" data-action="open-chat-profile">
@@ -690,7 +775,7 @@
     return `
       <main class="chat-pane profile-pane">
         <header class="chat-header">
-          <button class="icon-btn back-btn" title="Back" aria-label="Back" data-action="close-chat-profile">${icon('back')}</button>
+          <button class="icon-btn" title="Back to chat" aria-label="Back to chat" data-action="close-chat-profile">${icon('back')}</button>
           <div class="chat-title">
             <strong>Profile</strong>
             <small>@${esc(peer.username)}</small>
@@ -714,6 +799,7 @@
               ${renderRelationshipButton(peer)}
             </div>
           </div>
+          ${renderHighlights(peer, false)}
           <section class="panel-card">
             <h2>Chat</h2>
             <div class="toolbar">
@@ -798,7 +884,8 @@
   }
 
   function renderMessagesList() {
-    if (state.messages.length) return `${state.messages.map(renderMessage).join('')}${renderTypingIndicator()}`;
+    const olderLoader = state.loadingOlderMessages ? '<div class="older-loader"><span class="spinner"></span></div>' : '';
+    if (state.messages.length) return `${olderLoader}${state.messages.map(renderMessage).join('')}${renderTypingIndicator()}`;
     if (state.activePeer && state.typingPeerId === state.activePeer.id) return renderTypingIndicator();
     return '<div class="empty-state">No messages yet. Send the first one.</div>';
   }
@@ -834,13 +921,21 @@
     if (message.deletedAt) return '<div class="message-text">Message deleted</div>';
     const attachment = message.attachment;
     if (message.kind === 'image' && attachment) {
-      return `<img class="media-image" src="${esc(attachment.url)}" alt="${esc(attachment.name)}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
+      return `<img class="media-image" src="${esc(attachment.url)}" alt="${esc(attachment.name)}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name)}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
     }
     if (message.kind === 'video' && attachment) {
-      return `<video class="media-video" src="${esc(attachment.url)}" controls playsinline></video>${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
+      return `<video class="media-video" src="${esc(attachment.url)}" controls playsinline preload="metadata"></video>${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
     }
     if (message.kind === 'voice' && attachment) {
-      return `<audio src="${esc(attachment.url)}" controls></audio>${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
+      return `
+        <button class="voice-note" data-action="toggle-voice" data-message-id="${esc(message.id)}">
+          <span class="voice-play">${icon('play')}</span>
+          <span class="voice-wave">${Array.from({ length: 18 }, (_, index) => `<i style="--h:${24 + ((index * 17) % 42)}%"></i>`).join('')}</span>
+          <span class="voice-time">Voice</span>
+          <audio src="${esc(attachment.url)}" preload="metadata"></audio>
+        </button>
+        ${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}
+      `;
     }
     if (message.kind === 'document' && attachment) {
       return `
@@ -856,7 +951,7 @@
     }
     if (message.kind === 'sticker' && attachment) {
       const local = state.stickerMap.get(message.stickerId);
-      if (local) return `<img class="sticker-img" src="${esc(local.dataUrl)}" alt="${esc(local.name)}">`;
+      if (local) return `<img class="sticker-img" src="${esc(local.dataUrl)}" alt="${esc(local.name)}" data-action="open-sticker-save" data-message-id="${esc(message.id)}">`;
       return `
         <div class="sticker-placeholder">
           <span class="person">
@@ -875,8 +970,8 @@
       <section class="sticker-panel">
         <div class="toolbar">
           <input class="search-input" id="sticker-text" placeholder="Create text sticker">
-          <button class="secondary" data-action="create-text-sticker">Create</button>
-          <button class="secondary" data-action="sticker-file-open">Image</button>
+          <button class="secondary" type="button" data-action="create-text-sticker">Create</button>
+          <button class="secondary" type="button" data-action="sticker-file-open">Image</button>
           <input id="sticker-file-input" type="file" accept="image/*" hidden>
         </div>
         <div class="sticker-grid">
@@ -904,7 +999,8 @@
         </span>
       </article>
     `).join('') : '<p class="hint">No unanswered requests.</p>';
-    const recent = state.notifications.length ? state.notifications.map((note) => `
+    const visibleNotes = state.notifications.filter((note) => note.type === 'request_accepted');
+    const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
         ${avatarHtml(note.actor)}
         <span class="person">
@@ -912,7 +1008,7 @@
           <small>${esc(note.text || note.type)} - ${esc(shortTime(note.createdAt))}</small>
         </span>
       </article>
-    `).join('') : '<p class="hint">Recent changes will appear here.</p>';
+    `).join('') : '<p class="hint">Follower updates will appear here.</p>';
     return `
       <section class="notifications-page">
         <header class="page-header">
@@ -975,6 +1071,16 @@
         `).join('')}
       `;
     }
+    if (sheet.type === 'sticker-save') {
+      const message = state.messages.find((item) => item.id === sheet.messageId);
+      body = `
+        <div class="sheet-note">
+          <strong>Sticker</strong>
+          <small>Save it to your sticker collection on this device.</small>
+        </div>
+        ${message?.attachment ? `<button data-action="save-message-sticker" data-message-id="${esc(message.id)}">Save sticker</button>` : ''}
+      `;
+    }
     if (sheet.type === 'profile-link') {
       body = `
         <input class="search-input" value="${esc(sheet.link)}" readonly>
@@ -986,6 +1092,60 @@
         <section class="action-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           ${body || '<p class="hint">No actions available.</p>'}
           <button data-action="close-overlays">Cancel</button>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderMediaViewer() {
+    if (!state.mediaViewer) return '';
+    return `
+      <div class="media-viewer" data-action="close-media">
+        <button class="icon-btn media-close" data-action="close-media" aria-label="Close">${icon('x')}</button>
+        <img src="${esc(state.mediaViewer.src)}" alt="${esc(state.mediaViewer.name || '')}">
+      </div>
+    `;
+  }
+
+  function renderStoryEditor() {
+    const editor = state.storyEditor;
+    if (!editor) return '';
+    const style = `filter:${storyFilterCss(editor.filter)}; transform:scale(${Number(editor.zoom || 1)});`;
+    return `
+      <div class="center-overlay story-editor-overlay" data-action="close-story-editor">
+        <section class="center-modal story-editor" data-stop-close>
+          <div class="modal-head">
+            <h2>Story</h2>
+            <button class="icon-btn" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
+          </div>
+          <div class="story-editor-preview">
+            ${editor.isVideo
+              ? `<video src="${esc(editor.dataUrl)}" controls playsinline style="${esc(style)}"></video>`
+              : `<img src="${esc(editor.dataUrl)}" alt="" style="${esc(style)}">`}
+            <span class="story-text-overlay">${esc(editor.text || '')}</span>
+          </div>
+          <div class="segmented story-filter-tabs">
+            ${['normal', 'warm', 'cool', 'mono', 'noir'].map((filter) => `
+              <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">${esc(filter)}</button>
+            `).join('')}
+          </div>
+          <label class="field">Text
+            <input id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Add text">
+          </label>
+          <label class="zoom-control">Crop zoom
+            <input id="story-editor-zoom" type="range" min="1" max="3" step="0.01" value="${esc(editor.zoom || 1)}">
+          </label>
+          ${editor.isVideo ? `
+            <div class="story-trim-row">
+              <label class="field">Start
+                <input id="story-trim-start" type="number" min="0" step="0.1" value="${esc(editor.trimStart || 0)}">
+              </label>
+              <label class="field">End
+                <input id="story-trim-end" type="number" min="0" step="0.1" value="${esc(editor.trimEnd || 0)}">
+              </label>
+            </div>
+          ` : ''}
+          <button class="primary crop-confirm" data-action="publish-story">Post story</button>
         </section>
       </div>
     `;
@@ -1153,10 +1313,13 @@
     state.stickerPanel = false;
     state.typingPeerId = null;
     state.highlightMessageId = highlightMessageId;
+    state.hasOlderMessages = false;
+    state.loadingOlderMessages = false;
     delete state.unreadByPeer[userId];
-    const data = await api(`/api/chats/${encodeURIComponent(userId)}/messages`);
+    const data = await api(`/api/chats/${encodeURIComponent(userId)}/messages?limit=200`);
     state.messages = data.messages;
-    renderApp();
+    state.hasOlderMessages = Boolean(data.hasMore);
+    renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
   }
 
   function userById(userId) {
@@ -1180,6 +1343,30 @@
     if (index >= 0) state.messages[index] = message;
     else state.messages.push(message);
     state.messages.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  }
+
+  async function loadOlderMessages() {
+    if (!state.activePeer || state.loadingOlderMessages || !state.hasOlderMessages || !state.messages.length) return;
+    const messagesEl = document.getElementById('messages');
+    const previousHeight = messagesEl?.scrollHeight || 0;
+    const previousTop = messagesEl?.scrollTop || 0;
+    state.loadingOlderMessages = true;
+    updateMessagesList({ scroll: 'preserve' });
+    try {
+      const before = encodeURIComponent(state.messages[0].createdAt);
+      const data = await api(`/api/chats/${encodeURIComponent(state.activePeer.id)}/messages?limit=200&before=${before}`);
+      const existing = new Set(state.messages.map((message) => message.id));
+      const older = (data.messages || []).filter((message) => !existing.has(message.id));
+      state.messages = [...older, ...state.messages].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      state.hasOlderMessages = Boolean(data.hasMore);
+    } finally {
+      state.loadingOlderMessages = false;
+      updateMessagesList({ scroll: 'preserve' });
+      requestAnimationFrame(() => {
+        const updated = document.getElementById('messages');
+        if (updated) updated.scrollTop = updated.scrollHeight - previousHeight + previousTop;
+      });
+    }
   }
 
   async function refreshChatsOnly() {
@@ -1390,21 +1577,75 @@
     await uploadAvatarData(canvas.toDataURL('image/png'), `cropped-${crop.name.replace(/\.[^.]+$/, '')}.png`, crop.lastModified);
   }
 
-  async function uploadStory(file) {
+  async function beginStoryEditor(file) {
     if (!file) return;
+    state.storyEditor = {
+      dataUrl: await fileToDataUrl(file),
+      name: file.name || 'story',
+      type: file.type || 'application/octet-stream',
+      lastModified: file.lastModified || Date.now(),
+      isVideo: file.type.startsWith('video/'),
+      filter: 'normal',
+      text: '',
+      zoom: 1,
+      trimStart: 0,
+      trimEnd: 0
+    };
+    state.storyMenuOpen = false;
+    renderApp();
+  }
+
+  async function storyEditorOutput() {
+    const editor = state.storyEditor;
+    if (!editor || editor.isVideo) return editor?.dataUrl || '';
+    const image = await loadImage(editor.dataUrl);
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 1920;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#05070b';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.filter = storyFilterCss(editor.filter);
+    const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight) * Number(editor.zoom || 1);
+    const w = image.naturalWidth * scale;
+    const h = image.naturalHeight * scale;
+    ctx.drawImage(image, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    ctx.filter = 'none';
+    if (editor.text) {
+      ctx.font = '800 72px system-ui, sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = 'rgba(0,0,0,.55)';
+      ctx.shadowBlur = 14;
+      wrapCanvasText(ctx, editor.text, canvas.width / 2, canvas.height * 0.78, canvas.width - 150, 84);
+    }
+    return canvas.toDataURL('image/png');
+  }
+
+  async function publishStory() {
+    const editor = state.storyEditor;
+    if (!editor) return;
     const data = await api('/api/me/story', {
       method: 'POST',
       body: {
         file: {
-          name: file.name,
-          type: file.type,
-          dataUrl: await fileToDataUrl(file),
-          lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null
+          name: editor.isVideo ? editor.name : `edited-${editor.name.replace(/\.[^.]+$/, '')}.png`,
+          type: editor.isVideo ? editor.type : 'image/png',
+          dataUrl: await storyEditorOutput(),
+          lastModified: editor.lastModified ? new Date(editor.lastModified).toISOString() : null
+        },
+        edits: {
+          filter: editor.filter,
+          text: editor.text,
+          zoom: editor.zoom,
+          trimStart: editor.trimStart,
+          trimEnd: editor.trimEnd
         }
       }
     });
     state.me = data.user;
     state.storyMenuOpen = false;
+    state.storyEditor = null;
     renderApp();
   }
 
@@ -1446,7 +1687,7 @@
     });
     upsertMessage(data.message);
     await refreshChatsOnly();
-    renderApp();
+    renderApp({ scroll: 'bottom' });
   }
 
   function classifyFile(file) {
@@ -1653,7 +1894,7 @@
       if (event.chatId === activeIds) {
         if (event.message.senderId === state.typingPeerId) state.typingPeerId = null;
         upsertMessage(event.message);
-        renderApp();
+        if (!updateMessagesList()) renderApp();
       }
       if (incoming && !activelyViewing) {
         state.unreadByPeer[event.message.senderId] = (state.unreadByPeer[event.message.senderId] || 0) + 1;
@@ -1794,7 +2035,10 @@
   async function createTextSticker() {
     const input = document.getElementById('sticker-text');
     const text = input?.value.trim();
-    if (!text) return;
+    if (!text) {
+      alert('Type sticker text first.');
+      return;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = 512;
     canvas.height = 512;
@@ -1817,6 +2061,8 @@
       createdAt: new Date().toISOString()
     };
     await saveSticker(sticker);
+    if (input) input.value = '';
+    state.stickerPanel = true;
     renderApp();
   }
 
@@ -1839,6 +2085,7 @@
       createdAt: new Date().toISOString()
     };
     await saveSticker(sticker);
+    state.stickerPanel = true;
     renderApp();
   }
 
@@ -2097,12 +2344,14 @@
     input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
   }
 
-  function updateMessagesList() {
+  function updateMessagesList(options = {}) {
     const messages = document.getElementById('messages');
     if (!messages || !state.activePeer || state.chatProfileOpen) return false;
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
+    const previousTop = messages.scrollTop;
     messages.innerHTML = renderMessagesList();
-    if (wasNearBottom) scrollMessagesToBottom();
+    if (options.scroll === 'bottom' || (!options.scroll && wasNearBottom)) scrollMessagesToBottom();
+    if (options.scroll === 'preserve') messages.scrollTop = previousTop;
     return true;
   }
 
@@ -2188,7 +2437,8 @@
     if (!target) return;
     const action = target.dataset.action;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
-    if (action === 'close-modal' && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-story-editor' && target.classList.contains('story-editor-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
       if (action === 'auth-mode') {
@@ -2250,6 +2500,7 @@
       if (action === 'close-chat-profile') {
         state.chatProfileOpen = false;
         state.chatProfileSocialView = null;
+        state.chatReturnAnimation = true;
         renderApp();
       }
       if (action === 'send-text') {
@@ -2273,6 +2524,53 @@
       }
       if (action === 'download-sticker') {
         await downloadSticker(target.dataset.messageId);
+      }
+      if (action === 'open-sticker-save') {
+        openActionSheet({ type: 'sticker-save', messageId: target.dataset.messageId });
+      }
+      if (action === 'save-message-sticker') {
+        await downloadSticker(target.dataset.messageId);
+        state.actionSheet = null;
+        renderApp();
+      }
+      if (action === 'open-media') {
+        state.mediaViewer = { src: target.dataset.src, name: target.dataset.name || '' };
+        renderApp();
+      }
+      if (action === 'close-media') {
+        state.mediaViewer = null;
+        renderApp();
+      }
+      if (action === 'close-story-editor') {
+        state.storyEditor = null;
+        renderApp();
+      }
+      if (action === 'story-filter') {
+        if (state.storyEditor) state.storyEditor.filter = target.dataset.filter || 'normal';
+        renderApp();
+      }
+      if (action === 'publish-story') {
+        await publishStory();
+      }
+      if (action === 'toggle-voice') {
+        const button = target.closest('.voice-note');
+        const audio = button?.querySelector('audio');
+        if (audio) {
+          if (audio.paused) {
+            document.querySelectorAll('.voice-note audio').forEach((item) => {
+              if (item !== audio) {
+                item.pause();
+                item.closest('.voice-note')?.classList.remove('playing');
+              }
+            });
+            await audio.play();
+            button.classList.add('playing');
+            audio.onended = () => button.classList.remove('playing');
+          } else {
+            audio.pause();
+            button.classList.remove('playing');
+          }
+        }
       }
       if (action === 'reply-message') {
         state.replyTo = state.messages.find((message) => message.id === target.dataset.messageId) || null;
@@ -2370,6 +2668,13 @@
       if (action === 'toggle-recommendations') {
         state.recommendationsOpen = !state.recommendationsOpen;
         renderApp();
+      }
+      if (action === 'dismiss-recommendation') {
+        if (confirm('Never show this recommendation again?')) {
+          state.hiddenRecommendations = Array.from(new Set([...(state.hiddenRecommendations || []), target.dataset.userId]));
+          localStorage.setItem('hiddenRecommendations', JSON.stringify(state.hiddenRecommendations));
+          renderApp();
+        }
       }
       if (action === 'toggle-profile-privacy') {
         await updateProfilePatch({ socialPublic: target.checked });
@@ -2493,7 +2798,7 @@
       if (event.target.id === 'story-input') {
         const file = event.target.files[0];
         event.target.value = '';
-        if (file) await uploadStory(file);
+        if (file) await beginStoryEditor(file);
       }
     } catch (error) {
       alert(error.message);
@@ -2538,6 +2843,26 @@
       if (img) img.style.transform = `scale(${state.avatarCrop.zoom})`;
       return;
     }
+    if (event.target.id === 'story-editor-text' && state.storyEditor) {
+      state.storyEditor.text = event.target.value.slice(0, 120);
+      const overlay = document.querySelector('.story-editor-preview .story-text-overlay');
+      if (overlay) overlay.textContent = state.storyEditor.text;
+      return;
+    }
+    if (event.target.id === 'story-editor-zoom' && state.storyEditor) {
+      state.storyEditor.zoom = Number(event.target.value || 1);
+      const media = document.querySelector('.story-editor-preview img, .story-editor-preview video');
+      if (media) media.style.transform = `scale(${state.storyEditor.zoom})`;
+      return;
+    }
+    if (event.target.id === 'story-trim-start' && state.storyEditor) {
+      state.storyEditor.trimStart = Number(event.target.value || 0);
+      return;
+    }
+    if (event.target.id === 'story-trim-end' && state.storyEditor) {
+      state.storyEditor.trimEnd = Number(event.target.value || 0);
+      return;
+    }
     if (event.target.id === 'user-search') {
       const query = event.target.value;
       clearTimeout(searchTimer);
@@ -2553,6 +2878,12 @@
       state.typingTimer = setTimeout(() => sendTypingSignal(false), 900);
     }
   });
+
+  document.addEventListener('scroll', (event) => {
+    if (event.target?.id === 'messages' && event.target.scrollTop < 80) {
+      loadOlderMessages().catch((error) => alert(error.message));
+    }
+  }, true);
 
   document.addEventListener('keydown', async (event) => {
     if (event.target.id === 'composer-text' && event.key === 'Enter' && !event.shiftKey) {
