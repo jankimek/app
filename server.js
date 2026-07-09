@@ -240,7 +240,7 @@ function publicFile(file) {
   };
 }
 
-function basicPublicUser(user) {
+function basicPublicUser(user, viewerId = null) {
   if (!user) return null;
   const avatar = user.profile.avatarFileId ? db.files[user.profile.avatarFileId] : null;
   return {
@@ -249,7 +249,7 @@ function basicPublicUser(user) {
     displayName: user.profile.displayName || user.username,
     bio: user.profile.bio || '',
     avatar: publicFile(avatar),
-    stories: activeStoriesFor(user.id).map(publicStory),
+    stories: activeStoriesFor(user.id).map((story) => publicStory(story, viewerId)),
     url: `/u/${encodeURIComponent(user.username)}`,
     createdAt: user.createdAt,
     searchable: user.profile?.searchable !== false
@@ -261,7 +261,7 @@ function publicUser(user, viewerId = null) {
   const relation = viewerId ? relationFor(viewerId, user.id) : {};
   const follow = followStatsFor(user, viewerId);
   return {
-    ...basicPublicUser(user),
+    ...basicPublicUser(user, viewerId),
     ...follow,
     isContact: Boolean(viewerId && (db.contacts[viewerId] || []).includes(user.id)),
     ...relation
@@ -291,8 +291,8 @@ function followStatsFor(user, viewerId = null) {
     followersVisible: visible,
     followerCount: visible ? followers.length : null,
     followingCount: visible ? following.length : null,
-    followers: visible ? followers.map((id) => basicPublicUser(db.users[id])) : [],
-    following: visible ? following.map((id) => basicPublicUser(db.users[id])) : []
+    followers: visible ? followers.map((id) => basicPublicUser(db.users[id], viewerId)) : [],
+    following: visible ? following.map((id) => basicPublicUser(db.users[id], viewerId)) : []
   };
 }
 
@@ -346,8 +346,8 @@ function publicRequest(request, viewerId) {
   if (!request) return null;
   return {
     id: request.id,
-    from: basicPublicUser(db.users[request.fromId]),
-    to: basicPublicUser(db.users[request.toId]),
+    from: basicPublicUser(db.users[request.fromId], viewerId),
+    to: basicPublicUser(db.users[request.toId], viewerId),
     status: request.status,
     createdAt: request.createdAt,
     respondedAt: request.respondedAt || null
@@ -387,7 +387,7 @@ function publicNotification(notification, viewerId) {
   return {
     id: notification.id,
     type: notification.type,
-    actor: basicPublicUser(db.users[notification.actorId]),
+    actor: basicPublicUser(db.users[notification.actorId], viewerId),
     request: notification.requestId ? publicRequest(db.friendRequests[notification.requestId], viewerId) : null,
     text: notification.text,
     createdAt: notification.createdAt
@@ -442,8 +442,22 @@ function activeStoriesFor(userId) {
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
 
-function publicStory(story) {
+function storyActor(user) {
+  if (!user) return null;
+  const avatar = user.profile.avatarFileId ? db.files[user.profile.avatarFileId] : null;
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.profile.displayName || user.username,
+    avatar: publicFile(avatar)
+  };
+}
+
+function publicStory(story, viewerId = null) {
   if (!story) return null;
+  const views = Array.isArray(story.views) ? story.views : [];
+  const likes = Array.isArray(story.likes) ? story.likes : [];
+  const comments = Array.isArray(story.comments) ? story.comments : [];
   return {
     id: story.id,
     ownerId: story.ownerId,
@@ -451,7 +465,17 @@ function publicStory(story) {
     createdAt: story.createdAt,
     expiresAt: story.expiresAt,
     saved: Boolean(story.saved),
-    edits: story.edits || {}
+    edits: story.edits || {},
+    viewed: Boolean(viewerId && (viewerId === story.ownerId || views.includes(viewerId))),
+    likeCount: likes.length,
+    likedByMe: Boolean(viewerId && likes.includes(viewerId)),
+    commentCount: comments.length,
+    comments: comments.slice(-30).map((comment) => ({
+      id: comment.id,
+      text: comment.text,
+      createdAt: comment.createdAt,
+      user: storyActor(db.users[comment.userId])
+    }))
   };
 }
 
@@ -962,14 +986,25 @@ async function handleApi(req, res, pathname, query) {
         filter: ['normal', 'warm', 'cool', 'mono', 'noir'].includes(body.edits?.filter) ? body.edits.filter : 'normal',
         text: cleanText(body.edits?.text || '', 120),
         zoom: Math.max(1, Math.min(3, Number(body.edits?.zoom || 1))),
+        textX: Math.max(5, Math.min(95, Number(body.edits?.textX || 50))),
+        textY: Math.max(5, Math.min(95, Number(body.edits?.textY || 72))),
+        textRotation: Math.max(-180, Math.min(180, Number(body.edits?.textRotation || 0))),
+        textColor: /^#[0-9a-f]{6}$/i.test(String(body.edits?.textColor || '')) ? body.edits.textColor : '#ffffff',
+        textFont: ['system', 'serif', 'mono', 'script'].includes(body.edits?.textFont) ? body.edits.textFont : 'system',
+        pollQuestion: cleanText(body.edits?.pollQuestion || '', 80),
+        pollOptionA: cleanText(body.edits?.pollOptionA || 'Yes', 40),
+        pollOptionB: cleanText(body.edits?.pollOptionB || 'No', 40),
         trimStart: Math.max(0, Number(body.edits?.trimStart || 0)),
         trimEnd: Math.max(0, Number(body.edits?.trimEnd || 0))
       },
+      views: [],
+      likes: [],
+      comments: [],
       deletedAt: null
     };
     db.stories[story.id] = story;
     await saveStories();
-    return sendJson(res, 201, { story: publicStory(story), user: publicUser(user, user.id) });
+    return sendJson(res, 201, { story: publicStory(story, user.id), user: publicUser(user, user.id) });
   }
 
   const storySaveMatch = /^\/api\/stories\/([^/]+)\/save$/.exec(pathname);
@@ -981,7 +1016,53 @@ async function handleApi(req, res, pathname, query) {
     story.saved = true;
     story.expiresAt = null;
     await saveStories();
-    return sendJson(res, 200, { story: publicStory(story), user: publicUser(user, user.id) });
+    return sendJson(res, 200, { story: publicStory(story, user.id), user: publicUser(user, user.id) });
+  }
+
+  const storyViewMatch = /^\/api\/stories\/([^/]+)\/view$/.exec(pathname);
+  if (req.method === 'POST' && storyViewMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const story = db.stories[decodeURIComponent(storyViewMatch[1])];
+    if (!story || story.deletedAt) return sendError(res, 404, 'Story not found.');
+    if (!Array.isArray(story.views)) story.views = [];
+    if (story.ownerId !== user.id && !story.views.includes(user.id)) story.views.push(user.id);
+    await saveStories();
+    return sendJson(res, 200, { story: publicStory(story, user.id) });
+  }
+
+  const storyLikeMatch = /^\/api\/stories\/([^/]+)\/like$/.exec(pathname);
+  if (req.method === 'POST' && storyLikeMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const story = db.stories[decodeURIComponent(storyLikeMatch[1])];
+    if (!story || story.deletedAt) return sendError(res, 404, 'Story not found.');
+    if (!Array.isArray(story.likes)) story.likes = [];
+    if (story.likes.includes(user.id)) story.likes = story.likes.filter((id) => id !== user.id);
+    else story.likes.push(user.id);
+    await saveStories();
+    return sendJson(res, 200, { story: publicStory(story, user.id) });
+  }
+
+  const storyCommentMatch = /^\/api\/stories\/([^/]+)\/comments$/.exec(pathname);
+  if (req.method === 'POST' && storyCommentMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const story = db.stories[decodeURIComponent(storyCommentMatch[1])];
+    if (!story || story.deletedAt) return sendError(res, 404, 'Story not found.');
+    const body = await readJsonBody(req);
+    const text = cleanText(body.text || '', 280);
+    if (!text) return sendError(res, 400, 'Write a comment first.');
+    if (!Array.isArray(story.comments)) story.comments = [];
+    story.comments.push({
+      id: id('comment'),
+      userId: user.id,
+      text,
+      createdAt: nowIso()
+    });
+    story.comments = story.comments.slice(-200);
+    await saveStories();
+    return sendJson(res, 201, { story: publicStory(story, user.id) });
   }
 
   const storyDeleteMatch = /^\/api\/stories\/([^/]+)$/.exec(pathname);

@@ -69,6 +69,7 @@
     recordStream: null,
     recordChunks: [],
     drag: null,
+    storyTextDrag: null,
     edgeSwipe: null,
     longPressTimer: null,
     longPressTriggered: false,
@@ -157,7 +158,9 @@
 
   function avatarHtml(user) {
     const avatarUrl = user?.avatar?.url;
-    return `<span class="avatar">${avatarUrl ? `<img src="${esc(avatarUrl)}" alt="">` : esc(initials(user))}</span>`;
+    const story = user?.stories?.[0];
+    const storyRing = story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : '';
+    return `<span class="avatar ${story ? 'has-story' : ''}">${avatarUrl ? `<img src="${esc(avatarUrl)}" alt="">` : esc(initials(user))}${storyRing}</span>`;
   }
 
   function icon(name) {
@@ -184,7 +187,14 @@
       edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
       menu: '<svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
       chevron: '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>',
-      lock: '<svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>'
+      lock: '<svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+      heart: '<svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.4 5.4 0 0 0-7.7 0L12 5.7l-1.1-1.1a5.4 5.4 0 0 0-7.7 7.7L12 21l8.8-8.7a5.4 5.4 0 0 0 0-7.7Z"/></svg>',
+      comment: '<svg viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-8.5 8.5 9 9 0 0 1-4.1-1L3 21l1.5-5.1A8.5 8.5 0 1 1 21 12Z"/></svg>',
+      text: '<svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>',
+      filter: '<svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>',
+      poll: '<svg viewBox="0 0 24 24"><path d="M5 19V9M12 19V5M19 19v-7"/></svg>',
+      rotate: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>',
+      smile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -382,7 +392,7 @@
   function renderSidebar() {
     return `
       <aside class="sidebar">
-        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'left' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}">
+        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}">
           ${state.tab === 'chats' ? renderChatsPanel() : state.tab === 'search' ? renderSearchPanel() : state.tab === 'notifications' ? renderNotificationsPage() : renderProfilePanel()}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
@@ -502,7 +512,7 @@
       <section class="profile-hero">
         <button class="avatar profile-avatar-btn" data-action="avatar-menu" title="Profile picture and story">
           ${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}
-          ${story ? '<span class="story-ring"></span>' : ''}
+          ${story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : ''}
         </button>
         <div>
           <strong>${esc(state.me.displayName)}</strong>
@@ -523,6 +533,7 @@
         <section class="panel-card story-card">
           <h2>Story</h2>
           ${renderStoryMedia(story)}
+          ${renderStoryEngagement(story)}
           <div class="toolbar">
             ${story.saved ? '<span class="hint">Saved</span>' : `<button class="secondary" data-action="save-story" data-story-id="${esc(story.id)}">Save</button>`}
             <button class="danger" data-action="delete-story" data-story-id="${esc(story.id)}">Delete forever</button>
@@ -610,6 +621,95 @@
     }[filter] || 'none';
   }
 
+  function storyTextFontCss(font) {
+    return {
+      serif: 'Georgia, serif',
+      mono: '"SFMono-Regular", Consolas, monospace',
+      script: '"Brush Script MT", "Segoe Script", cursive',
+      system: 'Inter, system-ui, sans-serif'
+    }[font] || 'Inter, system-ui, sans-serif';
+  }
+
+  function storyTextStyle(edits = {}) {
+    const x = clamp(Number(edits.textX || 50), 5, 95);
+    const y = clamp(Number(edits.textY || 72), 5, 95);
+    const rotation = clamp(Number(edits.textRotation || 0), -180, 180);
+    const color = /^#[0-9a-f]{6}$/i.test(String(edits.textColor || '')) ? edits.textColor : '#ffffff';
+    return `left:${x}%;top:${y}%;transform:translate(-50%,-50%) rotate(${rotation}deg);color:${color};font-family:${storyTextFontCss(edits.textFont)};`;
+  }
+
+  function storyTextToolPanel(editor) {
+    const colors = ['#ffffff', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffd166', '#111827'];
+    const fonts = [
+      ['system', 'Aa'],
+      ['serif', 'Serif'],
+      ['mono', 'Mono'],
+      ['script', 'Script']
+    ];
+    return `
+      <label class="field">Text
+        <input id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Add text">
+      </label>
+      <div class="story-color-row">
+        ${colors.map((color) => `<button class="${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
+      </div>
+      <div class="story-font-row">
+        ${fonts.map(([font, label]) => `<button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">${esc(label)}</button>`).join('')}
+      </div>
+      <label class="zoom-control">Rotate
+        <input id="story-text-rotation" type="range" min="-180" max="180" step="1" value="${esc(editor.textRotation || 0)}">
+      </label>
+    `;
+  }
+
+  function storyFilterToolPanel(editor) {
+    return `
+      <div class="segmented story-filter-tabs">
+        ${['normal', 'warm', 'cool', 'mono', 'noir'].map((filter) => `
+          <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">${esc(filter)}</button>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function storyCropToolPanel(editor) {
+    return `
+      <label class="zoom-control">Crop zoom
+        <input id="story-editor-zoom" type="range" min="1" max="3" step="0.01" value="${esc(editor.zoom || 1)}">
+      </label>
+      ${editor.isVideo ? `
+        <div class="story-trim-row">
+          <label class="field">Start
+            <input id="story-trim-start" type="number" min="0" step="0.1" value="${esc(editor.trimStart || 0)}">
+          </label>
+          <label class="field">End
+            <input id="story-trim-end" type="number" min="0" step="0.1" value="${esc(editor.trimEnd || 0)}">
+          </label>
+        </div>
+      ` : ''}
+    `;
+  }
+
+  function storyToolPanel(editor) {
+    if (editor.activeTool === 'filter') return storyFilterToolPanel(editor);
+    if (editor.activeTool === 'emoji') return `<p class="hint">Add emoji as text, then move it with your finger.</p><input class="search-input" id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Type emoji or text">`;
+    if (editor.activeTool === 'poll') return `
+      <label class="field">Poll question
+        <input id="story-poll-question" value="${esc(editor.pollQuestion || '')}" maxlength="80" placeholder="Ask a question">
+      </label>
+      <div class="story-trim-row">
+        <label class="field">Option 1
+          <input id="story-poll-a" value="${esc(editor.pollOptionA || 'Yes')}" maxlength="40">
+        </label>
+        <label class="field">Option 2
+          <input id="story-poll-b" value="${esc(editor.pollOptionB || 'No')}" maxlength="40">
+        </label>
+      </div>
+    `;
+    if (editor.activeTool === 'crop') return storyCropToolPanel(editor);
+    return storyTextToolPanel(editor);
+  }
+
   function renderStoryMedia(story, compact = false) {
     const edits = story.edits || {};
     const isVideo = story.file?.mime?.startsWith('video/');
@@ -620,9 +720,54 @@
     return `
       <div class="story-preview ${compact ? 'compact' : ''}">
         ${isVideo
-          ? `<video src="${esc(mediaUrl)}" controls playsinline style="${esc(style)}"></video>`
+          ? `<video src="${esc(mediaUrl)}" ${compact ? 'muted' : 'controls'} playsinline style="${esc(style)}"></video>`
           : `<img src="${esc(mediaUrl)}" alt="" style="${esc(style)}">`}
-        ${edits.text ? `<span class="story-text-overlay">${esc(edits.text)}</span>` : ''}
+        ${edits.text ? `<span class="story-text-overlay" style="${esc(storyTextStyle(edits))}">${esc(edits.text)}</span>` : ''}
+        ${edits.pollQuestion ? renderPollSticker(edits, compact) : ''}
+      </div>
+    `;
+  }
+
+  function renderPollSticker(edits = {}, compact = false) {
+    if (compact) return '';
+    return `
+      <div class="story-poll-sticker">
+        <strong>${esc(edits.pollQuestion || '')}</strong>
+        <span>${esc(edits.pollOptionA || 'Yes')}</span>
+        <span>${esc(edits.pollOptionB || 'No')}</span>
+      </div>
+    `;
+  }
+
+  function updateStoryPollPreview() {
+    const editor = state.storyEditor;
+    const preview = document.querySelector('.story-editor-preview');
+    if (!editor || !preview) return;
+    let sticker = preview.querySelector('.story-poll-sticker');
+    if (!editor.pollQuestion) {
+      sticker?.remove();
+      return;
+    }
+    if (!sticker) {
+      preview.insertAdjacentHTML('beforeend', renderPollSticker(editor));
+      sticker = preview.querySelector('.story-poll-sticker');
+    }
+    if (!sticker) return;
+    sticker.querySelector('strong').textContent = editor.pollQuestion || '';
+    const options = sticker.querySelectorAll('span');
+    if (options[0]) options[0].textContent = editor.pollOptionA || 'Yes';
+    if (options[1]) options[1].textContent = editor.pollOptionB || 'No';
+  }
+
+  function renderStoryEngagement(story, compact = false) {
+    return `
+      <div class="story-engagement ${compact ? 'compact' : ''}">
+        <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="Like story">
+          ${icon('heart')}<span>${story.likeCount || 0}</span>
+        </button>
+        <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="Comments">
+          ${icon('comment')}<span>${story.commentCount || 0}</span>
+        </button>
       </div>
     `;
   }
@@ -634,15 +779,23 @@
       <section class="highlight-strip">
         <div class="highlight-head">
           <strong>Highlights</strong>
-          ${own ? '<button class="mini-btn" data-action="post-story">New</button>' : ''}
         </div>
         <div class="highlight-row">
+          ${own ? `
+            <button class="highlight-add" data-action="post-story" aria-label="Add highlight">
+              <span>+</span>
+              <small>New</small>
+            </button>
+          ` : ''}
           ${highlights.map((story) => `
             <article class="highlight-item">
-              ${renderStoryMedia(story, true)}
+              <button class="highlight-media" data-action="view-story" data-story-id="${esc(story.id)}">
+                ${renderStoryMedia(story, true)}
+              </button>
+              ${renderStoryEngagement(story, true)}
               <small>${esc(shortTime(story.createdAt))}</small>
             </article>
-          `).join('') || '<p class="hint">Save a story to keep it here.</p>'}
+          `).join('') || (own ? '' : '<p class="hint">Save a story to keep it here.</p>')}
         </div>
       </section>
     `;
@@ -783,10 +936,16 @@
         </header>
         <section class="chat-profile-content">
           <div class="peer-profile-hero">
-            <span class="avatar big-avatar">
-              ${peer.avatar?.url ? `<img src="${esc(peer.avatar.url)}" alt="">` : esc(initials(peer))}
-              ${story ? '<span class="story-ring"></span>' : ''}
-            </span>
+            ${story ? `
+              <button class="avatar big-avatar story-avatar-btn" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View story">
+                ${peer.avatar?.url ? `<img src="${esc(peer.avatar.url)}" alt="">` : esc(initials(peer))}
+                <span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>
+              </button>
+            ` : `
+              <span class="avatar big-avatar">
+                ${peer.avatar?.url ? `<img src="${esc(peer.avatar.url)}" alt="">` : esc(initials(peer))}
+              </span>
+            `}
             <strong>${esc(peer.displayName)}</strong>
             <span>@${esc(peer.username)}</span>
             <div class="social-stats centered">
@@ -863,8 +1022,9 @@
     const mine = message.senderId === state.me.id;
     const highlighted = state.highlightMessageId === message.id;
     const stickerMessage = message.kind === 'sticker' && !message.deletedAt;
+    const mediaMessage = ['image', 'video'].includes(message.kind) && message.attachment && !message.deletedAt;
     return `
-      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''}" data-message-id="${esc(message.id)}">
+      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''}" data-message-id="${esc(message.id)}">
         <div class="bubble">
           ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
           ${renderMessageBody(message)}
@@ -921,7 +1081,7 @@
     if (message.deletedAt) return '<div class="message-text">Message deleted</div>';
     const attachment = message.attachment;
     if (message.kind === 'image' && attachment) {
-      return `<img class="media-image" src="${esc(attachment.url)}" alt="${esc(attachment.name)}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name)}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
+      return `<img class="media-image" src="${esc(attachment.url)}" alt="${esc(attachment.name)}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name)}" data-type="${esc(attachment.mime || 'image/*')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
     }
     if (message.kind === 'video' && attachment) {
       return `<video class="media-video" src="${esc(attachment.url)}" controls playsinline preload="metadata"></video>${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
@@ -1087,6 +1247,30 @@
         <button data-action="copy-profile-link" data-link="${esc(sheet.link)}">${icon('link')} Copy to clipboard</button>
       `;
     }
+    if (sheet.type === 'story-comments') {
+      const story = storyById(sheet.storyId);
+      body = story ? `
+        <div class="sheet-note">
+          <strong>Comments</strong>
+          <small>${esc(shortTime(story.createdAt))}</small>
+        </div>
+        <div class="story-comment-list">
+          ${(story.comments || []).length ? story.comments.map((comment) => `
+            <article>
+              ${avatarHtml(comment.user)}
+              <span>
+                <strong>${esc(comment.user?.displayName || 'User')}</strong>
+                <small>${esc(comment.text)}</small>
+              </span>
+            </article>
+          `).join('') : '<p class="hint">No comments yet.</p>'}
+        </div>
+        <div class="story-comment-box">
+          <input class="search-input" id="story-comment-input" maxlength="280" placeholder="Add a comment">
+          <button data-action="submit-story-comment" data-story-id="${esc(story.id)}">${icon('send')}</button>
+        </div>
+      ` : '<p class="hint">Story not found.</p>';
+    }
     return `
       <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
         <section class="action-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
@@ -1099,10 +1283,13 @@
 
   function renderMediaViewer() {
     if (!state.mediaViewer) return '';
+    const isVideo = state.mediaViewer.type?.startsWith('video/');
     return `
       <div class="media-viewer" data-action="close-media">
         <button class="icon-btn media-close" data-action="close-media" aria-label="Close">${icon('x')}</button>
-        <img src="${esc(state.mediaViewer.src)}" alt="${esc(state.mediaViewer.name || '')}">
+        ${isVideo
+          ? `<video src="${esc(state.mediaViewer.src)}" controls autoplay playsinline data-stop-close></video>`
+          : `<img src="${esc(state.mediaViewer.src)}" alt="${esc(state.mediaViewer.name || '')}" data-stop-close>`}
       </div>
     `;
   }
@@ -1111,42 +1298,36 @@
     const editor = state.storyEditor;
     if (!editor) return '';
     const style = `filter:${storyFilterCss(editor.filter)}; transform:scale(${Number(editor.zoom || 1)});`;
+    const tools = [
+      ['text', 'Text', 'text'],
+      ['emoji', 'Emoji', 'smile'],
+      ['filter', 'Filter', 'filter'],
+      ['poll', 'Poll', 'poll'],
+      ['crop', editor.isVideo ? 'Trim' : 'Crop', 'rotate']
+    ];
     return `
-      <div class="center-overlay story-editor-overlay" data-action="close-story-editor">
-        <section class="center-modal story-editor" data-stop-close>
-          <div class="modal-head">
-            <h2>Story</h2>
-            <button class="icon-btn" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
-          </div>
+      <div class="story-editor-page" data-action="close-story-editor">
+        <div class="story-editor-canvas" data-stop-close>
           <div class="story-editor-preview">
             ${editor.isVideo
               ? `<video src="${esc(editor.dataUrl)}" controls playsinline style="${esc(style)}"></video>`
               : `<img src="${esc(editor.dataUrl)}" alt="" style="${esc(style)}">`}
-            <span class="story-text-overlay">${esc(editor.text || '')}</span>
+            <button class="story-draggable-text ${editor.text ? '' : 'empty'}" data-action="story-text-drag" style="${esc(storyTextStyle(editor))}">
+              ${esc(editor.text || 'Aa')}
+            </button>
+            ${editor.pollQuestion ? renderPollSticker(editor) : ''}
           </div>
-          <div class="segmented story-filter-tabs">
-            ${['normal', 'warm', 'cool', 'mono', 'noir'].map((filter) => `
-              <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">${esc(filter)}</button>
-            `).join('')}
-          </div>
-          <label class="field">Text
-            <input id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Add text">
-          </label>
-          <label class="zoom-control">Crop zoom
-            <input id="story-editor-zoom" type="range" min="1" max="3" step="0.01" value="${esc(editor.zoom || 1)}">
-          </label>
-          ${editor.isVideo ? `
-            <div class="story-trim-row">
-              <label class="field">Start
-                <input id="story-trim-start" type="number" min="0" step="0.1" value="${esc(editor.trimStart || 0)}">
-              </label>
-              <label class="field">End
-                <input id="story-trim-end" type="number" min="0" step="0.1" value="${esc(editor.trimEnd || 0)}">
-              </label>
-            </div>
-          ` : ''}
-          <button class="primary crop-confirm" data-action="publish-story">Post story</button>
+        </div>
+        <button class="icon-btn story-editor-close" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
+        <aside class="story-tool-rail" data-stop-close>
+          ${tools.map(([tool, label, iconName]) => `
+            <button class="${editor.activeTool === tool ? 'active' : ''}" data-action="story-tool" data-tool="${tool}" title="${esc(label)}" aria-label="${esc(label)}">${icon(iconName)}</button>
+          `).join('')}
+        </aside>
+        <section class="story-tool-panel" data-stop-close>
+          ${storyToolPanel(editor)}
         </section>
+        <button class="primary story-post-btn" data-action="publish-story">Post story</button>
       </div>
     `;
   }
@@ -1585,8 +1766,17 @@
       type: file.type || 'application/octet-stream',
       lastModified: file.lastModified || Date.now(),
       isVideo: file.type.startsWith('video/'),
+      activeTool: 'text',
       filter: 'normal',
       text: '',
+      textX: 50,
+      textY: 72,
+      textRotation: 0,
+      textColor: '#ffffff',
+      textFont: 'system',
+      pollQuestion: '',
+      pollOptionA: 'Yes',
+      pollOptionB: 'No',
       zoom: 1,
       trimStart: 0,
       trimEnd: 0
@@ -1612,12 +1802,43 @@
     ctx.drawImage(image, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
     ctx.filter = 'none';
     if (editor.text) {
-      ctx.font = '800 72px system-ui, sans-serif';
-      ctx.fillStyle = '#fff';
+      ctx.font = `800 72px ${storyTextFontCss(editor.textFont)}`;
+      ctx.fillStyle = editor.textColor || '#ffffff';
       ctx.textAlign = 'center';
       ctx.shadowColor = 'rgba(0,0,0,.55)';
       ctx.shadowBlur = 14;
-      wrapCanvasText(ctx, editor.text, canvas.width / 2, canvas.height * 0.78, canvas.width - 150, 84);
+      ctx.save();
+      ctx.translate(canvas.width * (clamp(Number(editor.textX || 50), 5, 95) / 100), canvas.height * (clamp(Number(editor.textY || 72), 5, 95) / 100));
+      ctx.rotate((clamp(Number(editor.textRotation || 0), -180, 180) * Math.PI) / 180);
+      wrapCanvasText(ctx, editor.text, 0, 0, canvas.width - 150, 84);
+      ctx.restore();
+    }
+    if (editor.pollQuestion) {
+      const boxW = 760;
+      const boxH = 270;
+      const x = (canvas.width - boxW) / 2;
+      const y = canvas.height * 0.58;
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,.42)';
+      ctx.shadowBlur = 24;
+      ctx.fillStyle = 'rgba(255,255,255,.94)';
+      roundedRect(ctx, x, y, boxW, boxH, 38);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#111827';
+      ctx.textAlign = 'center';
+      ctx.font = '800 46px system-ui, sans-serif';
+      wrapCanvasText(ctx, editor.pollQuestion, canvas.width / 2, y + 72, boxW - 90, 52);
+      ctx.fillStyle = '#f1f5f9';
+      roundedRect(ctx, x + 45, y + 150, (boxW - 105) / 2, 72, 28);
+      ctx.fill();
+      roundedRect(ctx, x + 60 + (boxW - 105) / 2, y + 150, (boxW - 105) / 2, 72, 28);
+      ctx.fill();
+      ctx.fillStyle = '#111827';
+      ctx.font = '800 32px system-ui, sans-serif';
+      ctx.fillText(editor.pollOptionA || 'Yes', x + 45 + ((boxW - 105) / 4), y + 195);
+      ctx.fillText(editor.pollOptionB || 'No', x + 60 + ((boxW - 105) * 3 / 4), y + 195);
+      ctx.restore();
     }
     return canvas.toDataURL('image/png');
   }
@@ -1638,6 +1859,14 @@
           filter: editor.filter,
           text: editor.text,
           zoom: editor.zoom,
+          textX: editor.textX,
+          textY: editor.textY,
+          textRotation: editor.textRotation,
+          textColor: editor.textColor,
+          textFont: editor.textFont,
+          pollQuestion: editor.pollQuestion,
+          pollOptionA: editor.pollOptionA,
+          pollOptionB: editor.pollOptionB,
           trimStart: editor.trimStart,
           trimEnd: editor.trimEnd
         }
@@ -1658,6 +1887,72 @@
   async function deleteStory(storyId) {
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}`, { method: 'DELETE' });
     state.me = data.user;
+    renderApp();
+  }
+
+  function storyUsers() {
+    return [
+      state.me,
+      state.activePeer,
+      state.publicProfile,
+      ...state.contacts,
+      ...state.chats.map((chat) => chat.peer),
+      ...state.searchResults,
+      ...state.recommendations,
+      ...state.requests.flatMap((request) => [request.from, request.to]),
+      ...state.notifications.map((note) => note.actor)
+    ].filter(Boolean);
+  }
+
+  function storyById(storyId) {
+    for (const user of storyUsers()) {
+      const story = (user.stories || []).find((item) => item.id === storyId);
+      if (story) return story;
+    }
+    return null;
+  }
+
+  function replaceStory(updatedStory) {
+    if (!updatedStory) return;
+    for (const user of storyUsers()) {
+      if (user.id !== updatedStory.ownerId) continue;
+      const stories = user.stories || [];
+      const index = stories.findIndex((story) => story.id === updatedStory.id);
+      if (index >= 0) stories[index] = { ...stories[index], ...updatedStory };
+      else stories.unshift(updatedStory);
+      user.stories = stories.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    }
+  }
+
+  async function viewStory(storyId) {
+    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/view`, { method: 'POST' });
+    replaceStory(data.story);
+    if (data.story?.file) {
+      state.mediaViewer = {
+        src: data.story.file.url,
+        name: data.story.file.name || 'Story',
+        type: data.story.file.mime || ''
+      };
+    }
+    renderApp();
+  }
+
+  async function toggleStoryLike(storyId) {
+    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/like`, { method: 'POST' });
+    replaceStory(data.story);
+    renderApp();
+  }
+
+  async function submitStoryComment(storyId) {
+    const input = document.getElementById('story-comment-input');
+    const text = (input?.value || '').trim();
+    if (!text) return;
+    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments`, {
+      method: 'POST',
+      body: { text }
+    });
+    replaceStory(data.story);
+    state.actionSheet = { type: 'story-comments', storyId };
     renderApp();
   }
 
@@ -2438,7 +2733,8 @@
     const action = target.dataset.action;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
-    if (action === 'close-story-editor' && target.classList.contains('story-editor-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-media' && target.classList.contains('media-viewer') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
       if (action === 'auth-mode') {
@@ -2534,7 +2830,7 @@
         renderApp();
       }
       if (action === 'open-media') {
-        state.mediaViewer = { src: target.dataset.src, name: target.dataset.name || '' };
+        state.mediaViewer = { src: target.dataset.src, name: target.dataset.name || '', type: target.dataset.type || '' };
         renderApp();
       }
       if (action === 'close-media') {
@@ -2549,8 +2845,32 @@
         if (state.storyEditor) state.storyEditor.filter = target.dataset.filter || 'normal';
         renderApp();
       }
+      if (action === 'story-tool') {
+        if (state.storyEditor) state.storyEditor.activeTool = target.dataset.tool || 'text';
+        renderApp();
+      }
+      if (action === 'story-color') {
+        if (state.storyEditor) state.storyEditor.textColor = target.dataset.color || '#ffffff';
+        renderApp();
+      }
+      if (action === 'story-font') {
+        if (state.storyEditor) state.storyEditor.textFont = target.dataset.font || 'system';
+        renderApp();
+      }
       if (action === 'publish-story') {
         await publishStory();
+      }
+      if (action === 'view-story') {
+        await viewStory(target.dataset.storyId);
+      }
+      if (action === 'like-story') {
+        await toggleStoryLike(target.dataset.storyId);
+      }
+      if (action === 'open-story-comments') {
+        openActionSheet({ type: 'story-comments', storyId: target.dataset.storyId });
+      }
+      if (action === 'submit-story-comment') {
+        await submitStoryComment(target.dataset.storyId);
       }
       if (action === 'toggle-voice') {
         const button = target.closest('.voice-note');
@@ -2845,8 +3165,11 @@
     }
     if (event.target.id === 'story-editor-text' && state.storyEditor) {
       state.storyEditor.text = event.target.value.slice(0, 120);
-      const overlay = document.querySelector('.story-editor-preview .story-text-overlay');
-      if (overlay) overlay.textContent = state.storyEditor.text;
+      const overlay = document.querySelector('.story-draggable-text');
+      if (overlay) {
+        overlay.textContent = state.storyEditor.text || 'Aa';
+        overlay.classList.toggle('empty', !state.storyEditor.text);
+      }
       return;
     }
     if (event.target.id === 'story-editor-zoom' && state.storyEditor) {
@@ -2855,12 +3178,33 @@
       if (media) media.style.transform = `scale(${state.storyEditor.zoom})`;
       return;
     }
+    if (event.target.id === 'story-text-rotation' && state.storyEditor) {
+      state.storyEditor.textRotation = Number(event.target.value || 0);
+      const overlay = document.querySelector('.story-draggable-text');
+      if (overlay) overlay.style.cssText = storyTextStyle(state.storyEditor);
+      return;
+    }
     if (event.target.id === 'story-trim-start' && state.storyEditor) {
       state.storyEditor.trimStart = Number(event.target.value || 0);
       return;
     }
     if (event.target.id === 'story-trim-end' && state.storyEditor) {
       state.storyEditor.trimEnd = Number(event.target.value || 0);
+      return;
+    }
+    if (event.target.id === 'story-poll-question' && state.storyEditor) {
+      state.storyEditor.pollQuestion = event.target.value.slice(0, 80);
+      updateStoryPollPreview();
+      return;
+    }
+    if (event.target.id === 'story-poll-a' && state.storyEditor) {
+      state.storyEditor.pollOptionA = event.target.value.slice(0, 40);
+      updateStoryPollPreview();
+      return;
+    }
+    if (event.target.id === 'story-poll-b' && state.storyEditor) {
+      state.storyEditor.pollOptionB = event.target.value.slice(0, 40);
+      updateStoryPollPreview();
       return;
     }
     if (event.target.id === 'user-search') {
@@ -2899,6 +3243,18 @@
   document.addEventListener('pointerdown', async (event) => {
     if (state.me && event.clientX < 24 && !event.target.closest('input,textarea,button,a')) {
       state.edgeSwipe = { startX: event.clientX, startY: event.clientY };
+    }
+
+    const storyText = event.target.closest('[data-action="story-text-drag"]');
+    if (state.storyEditor && storyText) {
+      event.preventDefault();
+      const canvas = storyText.closest('.story-editor-preview');
+      const rect = canvas?.getBoundingClientRect();
+      if (rect) {
+        state.storyTextDrag = { pointerId: event.pointerId, rect };
+        storyText.setPointerCapture?.(event.pointerId);
+      }
+      return;
     }
 
     const cropStage = event.target.closest('#crop-stage');
@@ -2972,6 +3328,14 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.storyEditor && state.storyTextDrag?.pointerId === event.pointerId) {
+      const rect = state.storyTextDrag.rect;
+      state.storyEditor.textX = clamp(((event.clientX - rect.left) / rect.width) * 100, 5, 95);
+      state.storyEditor.textY = clamp(((event.clientY - rect.top) / rect.height) * 100, 5, 95);
+      const overlay = document.querySelector('.story-draggable-text');
+      if (overlay) overlay.style.cssText = storyTextStyle(state.storyEditor);
+      return;
+    }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
       cropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       const crop = state.avatarCrop;
@@ -3017,6 +3381,10 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.storyTextDrag?.pointerId === event.pointerId) {
+      state.storyTextDrag = null;
+      return;
+    }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
       cropPointers.delete(event.pointerId);
       state.avatarCrop.drag = null;
@@ -3074,6 +3442,7 @@
     }
     if (state.avatarCrop?.drag) state.avatarCrop.drag = null;
     if (state.avatarCrop?.pinch) state.avatarCrop.pinch = null;
+    state.storyTextDrag = null;
     cropPointers.clear();
     state.edgeSwipe = null;
     clearTimeout(state.longPressTimer);
