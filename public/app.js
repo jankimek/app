@@ -54,6 +54,7 @@
     stickers: [],
     stickerMap: new Map(),
     replyTo: null,
+    typingPeerId: null,
     ws: null,
     typingTimer: null,
     recorder: null,
@@ -623,11 +624,11 @@
     const isMe = user.id === state.me?.id;
     let controls = '<button class="mini-btn" disabled>You</button>';
     if (!isMe) {
-      if (user.isContact) controls = `<button class="mini-btn" data-action="open-chat" data-user-id="${esc(user.id)}">Chat</button>`;
+      if (user.isContact) controls = `<button class="mini-btn" disabled>Following</button><button class="mini-btn" data-action="open-chat" data-user-id="${esc(user.id)}">Message</button>`;
       else if (user.incomingRequest) controls = `<button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button><button class="mini-btn" data-action="decline-request" data-request-id="${esc(user.incomingRequest.id)}">Decline</button>`;
       else if (user.outgoingRequest) controls = '<button class="mini-btn" disabled>Requested</button>';
       else if (user.hasBlocked || user.blockedBy) controls = '<button class="mini-btn" disabled>Blocked</button>';
-      else controls = `<button class="mini-btn" data-action="add-contact" data-username="${esc(user.username)}">Add</button>`;
+      else controls = `<button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>`;
     }
     return `
       <article class="person-card">
@@ -668,7 +669,7 @@
           </button>
           <button class="chat-title" data-action="open-chat-profile">
             <strong>${esc(state.activePeer.displayName)}</strong>
-            <small>@${esc(state.activePeer.username)} <span id="typing-label"></span></small>
+            <small>@${esc(state.activePeer.username)}</small>
           </button>
           <div class="toolbar" style="margin-left:auto">
             <button class="icon-btn" title="Voice call" aria-label="Voice call" data-action="audio-call">${icon('phone')}</button>
@@ -676,7 +677,8 @@
           </div>
         </header>
         <section class="messages" id="messages">
-          ${state.messages.length ? state.messages.map(renderMessage).join('') : '<div class="empty-state">No messages yet. Send the first one.</div>'}
+          ${state.messages.length ? state.messages.map(renderMessage).join('') : (state.typingPeerId === state.activePeer.id ? '' : '<div class="empty-state">No messages yet. Send the first one.</div>')}
+          ${renderTypingIndicator()}
         </section>
         <footer>
           ${state.stickerPanel ? renderStickerPanel() : ''}
@@ -727,6 +729,9 @@
                 : '<span>Followers private</span>'}
             </div>
             <p>${esc(peer.bio || 'No bio yet.')}</p>
+            <div class="toolbar">
+              ${renderRelationshipButton(peer)}
+            </div>
           </div>
           ${peer.followersVisible ? renderSocialLists(peer) : ''}
           <section class="panel-card">
@@ -756,15 +761,39 @@
   function renderMessage(message) {
     const mine = message.senderId === state.me.id;
     const highlighted = state.highlightMessageId === message.id;
+    const stickerMessage = message.kind === 'sticker' && !message.deletedAt;
     return `
-      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''}" data-message-id="${esc(message.id)}">
+      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''}" data-message-id="${esc(message.id)}">
         <div class="bubble">
           ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
           ${renderMessageBody(message)}
+          <div class="swipe-time">${esc(formatTime(message.createdAt))}</div>
         </div>
-        <div class="swipe-time">${esc(formatTime(message.createdAt))}</div>
       </article>
     `;
+  }
+
+  function renderTypingIndicator() {
+    if (!state.activePeer || state.typingPeerId !== state.activePeer.id) return '';
+    return `
+      <article class="typing-message">
+        <div class="typing-bubble">typing...</div>
+      </article>
+    `;
+  }
+
+  function renderRelationshipButton(user) {
+    if (!user || user.id === state.me?.id) return '<button class="mini-btn" disabled>You</button>';
+    if (user.isContact) return '<button class="mini-btn" disabled>Following</button>';
+    if (user.incomingRequest) {
+      return `
+        <button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button>
+        <button class="mini-btn" data-action="decline-request" data-request-id="${esc(user.incomingRequest.id)}">Decline</button>
+      `;
+    }
+    if (user.outgoingRequest) return '<button class="mini-btn" disabled>Requested</button>';
+    if (user.hasBlocked || user.blockedBy) return '<button class="mini-btn" disabled>Blocked</button>';
+    return `<button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>`;
   }
 
   function renderMessageBody(message) {
@@ -1072,6 +1101,7 @@
     state.chatProfileOpen = false;
     state.replyTo = null;
     state.stickerPanel = false;
+    state.typingPeerId = null;
     state.highlightMessageId = highlightMessageId;
     delete state.unreadByPeer[userId];
     const data = await api(`/api/chats/${encodeURIComponent(userId)}/messages`);
@@ -1122,6 +1152,9 @@
   async function addContact(username) {
     const data = await api(`/api/contacts/${encodeURIComponent(username)}`, { method: 'POST' });
     state.searchResults = state.searchResults.map((user) => user.id === data.user.id ? data.user : user);
+    state.recommendations = state.recommendations.map((user) => user.id === data.user.id ? data.user : user);
+    if (state.publicProfile?.id === data.user.id) state.publicProfile = data.user;
+    if (state.activePeer?.id === data.user.id) state.activePeer = data.user;
     await loadContactsAndChats();
     renderApp();
   }
@@ -1545,6 +1578,7 @@
       const incoming = event.message.recipientId === state.me.id;
       const activelyViewing = event.chatId === activeIds && !document.hidden;
       if (event.chatId === activeIds) {
+        if (event.message.senderId === state.typingPeerId) state.typingPeerId = null;
         upsertMessage(event.message);
         renderApp();
       }
@@ -1580,9 +1614,11 @@
       if (state.activePeer) state.activePeer = userById(state.activePeer.id) || state.activePeer;
       renderApp();
     }
-    if (event.type === 'typing' && event.from === state.activePeer?.id) {
-      const label = document.getElementById('typing-label');
-      if (label) label.textContent = event.isTyping ? 'typing...' : '';
+    if (event.type === 'typing') {
+      if (event.from === state.activePeer?.id) {
+        state.typingPeerId = event.isTyping ? event.from : null;
+        renderApp();
+      }
     }
     if (event.type === 'signal') {
       await handleSignal(event.from, event.payload);
@@ -2562,14 +2598,18 @@
     }
     if (state.drag) {
       const dx = event.clientX - state.drag.startX;
+      const draggedMessage = state.messages.find((message) => message.id === state.drag.id);
+      const mine = draggedMessage?.senderId === state.me.id;
+      const replySwipe = mine ? dx < -70 : dx > 70;
+      const cancelSwipe = mine ? dx > 70 : dx < -70;
       state.drag.el.style.transform = '';
       state.drag.el.style.transition = '';
       state.drag.el.classList.remove('reveal-time');
-      if (dx < -70) {
-        state.replyTo = state.messages.find((message) => message.id === state.drag.id) || null;
+      if (replySwipe) {
+        state.replyTo = draggedMessage || null;
         renderApp();
       }
-      if (dx > 70 && state.replyTo?.id === state.drag.id) {
+      if (cancelSwipe && state.replyTo?.id === state.drag.id) {
         state.replyTo = null;
         renderApp();
       }

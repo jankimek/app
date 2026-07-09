@@ -601,6 +601,8 @@ a {
 
 .message {
   max-width: min(680px, 84%);
+  width: fit-content;
+  min-width: 0;
   touch-action: pan-y;
   position: relative;
   display: grid;
@@ -610,10 +612,12 @@ a {
 
 .message.mine {
   align-self: flex-end;
+  justify-items: end;
 }
 
 .message.theirs {
   align-self: flex-start;
+  justify-items: start;
 }
 
 .message.highlighted .bubble {
@@ -622,6 +626,9 @@ a {
 }
 
 .bubble {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid rgba(165, 115, 255, 0.22);
   border-radius: 18px;
   padding: 8px 11px;
@@ -637,26 +644,29 @@ a {
 }
 
 .swipe-time {
-  position: static;
-  justify-self: start;
+  display: block;
   color: rgba(196, 203, 214, 0.78);
   font-size: 11px;
+  line-height: 1.15;
   white-space: nowrap;
   opacity: 0;
-  height: 0;
-  padding: 0 8px;
+  max-height: 0;
+  margin-top: 0;
+  padding: 0;
   overflow: hidden;
   pointer-events: none;
-  transition: opacity 0.12s ease, height 0.12s ease;
+  text-align: left;
+  transition: opacity 0.12s ease, max-height 0.12s ease, margin-top 0.12s ease;
 }
 
 .mine .swipe-time {
-  justify-self: end;
+  text-align: right;
 }
 
 .message.reveal-time .swipe-time {
   opacity: 1;
-  height: 17px;
+  max-height: 16px;
+  margin-top: 4px;
 }
 
 .deleted .bubble {
@@ -679,6 +689,8 @@ a {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 14px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .message-meta {
@@ -717,6 +729,41 @@ a {
 .sticker-img {
   max-width: 180px;
   max-height: 180px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.message.sticker-message .bubble {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.message.sticker-message.highlighted .bubble {
+  filter: drop-shadow(0 0 20px rgba(117, 103, 255, 0.44));
+}
+
+.message.sticker-message .swipe-time {
+  padding: 0 2px;
+}
+
+.typing-message {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: min(680px, 84%);
+}
+
+.typing-bubble {
+  width: fit-content;
+  border: 1px solid rgba(165, 115, 255, 0.18);
+  border-radius: 18px;
+  padding: 8px 11px;
+  background: rgba(13, 20, 35, 0.92);
+  color: rgba(214, 220, 231, 0.76);
+  font-size: 13px;
+  box-shadow: 0 0 14px rgba(94, 87, 255, 0.12);
 }
 
 .doc-tile,
