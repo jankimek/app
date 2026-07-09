@@ -70,6 +70,8 @@
     recordChunks: [],
     drag: null,
     storyTextDrag: null,
+    storyTextGesture: null,
+    storyDraw: null,
     edgeSwipe: null,
     longPressTimer: null,
     longPressTriggered: false,
@@ -77,6 +79,7 @@
   };
 
   const cropPointers = new Map();
+  const storyTextPointers = new Map();
 
   function freshCallState() {
     return {
@@ -194,7 +197,16 @@
       filter: '<svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>',
       poll: '<svg viewBox="0 0 24 24"><path d="M5 19V9M12 19V5M19 19v-7"/></svg>',
       rotate: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>',
-      smile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>'
+      smile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>',
+      pen: '<svg viewBox="0 0 24 24"><path d="M16 4l4 4L8 20H4v-4L16 4Z"/><path d="m14 6 4 4"/></svg>',
+      music: '<svg viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>',
+      download: '<svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>',
+      stickers: '<svg viewBox="0 0 24 24"><path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5"/><path d="M14 20c0-3.3 2.7-6 6-6"/><path d="M9 10h.01M15 10h.01M8.5 14a5 5 0 0 0 7 0"/></svg>',
+      alignLeft: '<svg viewBox="0 0 24 24"><path d="M4 6h14M4 10h10M4 14h14M4 18h8"/></svg>',
+      alignCenter: '<svg viewBox="0 0 24 24"><path d="M5 6h14M8 10h8M5 14h14M9 18h6"/></svg>',
+      alignRight: '<svg viewBox="0 0 24 24"><path d="M6 6h14M10 10h10M6 14h14M12 18h8"/></svg>',
+      sparkle: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>',
+      location: '<svg viewBox="0 0 24 24"><path d="M12 22s7-5.3 7-12a7 7 0 0 0-14 0c0 6.7 7 12 7 12Z"/><circle cx="12" cy="10" r="2.5"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -632,33 +644,77 @@
 
   function storyTextStyle(edits = {}) {
     const x = clamp(Number(edits.textX || 50), 5, 95);
-    const y = clamp(Number(edits.textY || 72), 5, 95);
+    const y = clamp(Number(edits.textY || 50), 5, 95);
     const rotation = clamp(Number(edits.textRotation || 0), -180, 180);
     const color = /^#[0-9a-f]{6}$/i.test(String(edits.textColor || '')) ? edits.textColor : '#ffffff';
-    return `left:${x}%;top:${y}%;transform:translate(-50%,-50%) rotate(${rotation}deg);color:${color};font-family:${storyTextFontCss(edits.textFont)};`;
+    const size = clamp(Number(edits.textSize || 44), 22, 96);
+    const align = ['left', 'center', 'right'].includes(edits.textAlign) ? edits.textAlign : 'center';
+    const bg = /^#[0-9a-f]{6}$/i.test(String(edits.textBgColor || '')) ? edits.textBgColor : '#000000';
+    const bgAlpha = edits.textBgEnabled ? '0.58' : '0';
+    const frame = edits.textFrame ? '1.5px solid rgba(255,255,255,.82)' : '1.5px solid transparent';
+    return `left:${x}%;top:${y}%;transform:translate(-50%,-50%) rotate(${rotation}deg);color:${color};font-family:${storyTextFontCss(edits.textFont)};font-size:${size}px;text-align:${align};background:${hexToRgba(bg, bgAlpha)};border:${frame};`;
+  }
+
+  function storyTextClass(edits = {}) {
+    const effect = ['none', 'shadow', 'glow', 'neon'].includes(edits.textEffect) ? edits.textEffect : 'shadow';
+    const animation = ['none', 'fade', 'rise', 'pop'].includes(edits.textAnimation) ? edits.textAnimation : 'none';
+    return `text-effect-${effect} text-anim-${animation}`;
+  }
+
+  function hexToRgba(hex, alpha) {
+    const value = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if (!value) return `rgba(0,0,0,${alpha})`;
+    const int = parseInt(value[1], 16);
+    return `rgba(${(int >> 16) & 255},${(int >> 8) & 255},${int & 255},${alpha})`;
   }
 
   function storyTextToolPanel(editor) {
     const colors = ['#ffffff', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffd166', '#111827'];
+    const bgColors = ['#000000', '#1f2937', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffffff'];
     const fonts = [
       ['system', 'Aa'],
       ['serif', 'Serif'],
       ['mono', 'Mono'],
       ['script', 'Script']
     ];
+    const effects = [
+      ['shadow', 'Shadow'],
+      ['glow', 'Glow'],
+      ['neon', 'Neon'],
+      ['none', 'Plain']
+    ];
+    const animations = [
+      ['none', 'Still'],
+      ['fade', 'Fade'],
+      ['rise', 'Rise'],
+      ['pop', 'Pop']
+    ];
     return `
       <label class="field">Text
         <input id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Add text">
       </label>
+      <div class="story-control-row">
+        <button class="${editor.textAlign === 'left' ? 'active' : ''}" data-action="story-text-align" data-align="left">${icon('alignLeft')}</button>
+        <button class="${(editor.textAlign || 'center') === 'center' ? 'active' : ''}" data-action="story-text-align" data-align="center">${icon('alignCenter')}</button>
+        <button class="${editor.textAlign === 'right' ? 'active' : ''}" data-action="story-text-align" data-align="right">${icon('alignRight')}</button>
+        <button class="${editor.textBgEnabled ? 'active' : ''}" data-action="story-text-bg">BG</button>
+        <button class="${editor.textFrame ? 'active' : ''}" data-action="story-text-frame">Frame</button>
+      </div>
       <div class="story-color-row">
         ${colors.map((color) => `<button class="${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
+      </div>
+      <div class="story-color-row">
+        ${bgColors.map((color) => `<button class="${editor.textBgColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-bg-color" data-color="${color}" aria-label="Text background color"></button>`).join('')}
       </div>
       <div class="story-font-row">
         ${fonts.map(([font, label]) => `<button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">${esc(label)}</button>`).join('')}
       </div>
-      <label class="zoom-control">Rotate
-        <input id="story-text-rotation" type="range" min="-180" max="180" step="1" value="${esc(editor.textRotation || 0)}">
-      </label>
+      <div class="story-chip-row">
+        ${effects.map(([effect, label]) => `<button class="${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">${esc(label)}</button>`).join('')}
+      </div>
+      <div class="story-chip-row">
+        ${animations.map(([animation, label]) => `<button class="${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="story-text-animation" data-animation="${animation}">${esc(label)}</button>`).join('')}
+      </div>
     `;
   }
 
@@ -690,9 +746,57 @@
     `;
   }
 
+  function storyStickerToolPanel(editor) {
+    return `
+      <input class="search-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="80" placeholder="@user, #hashtag, place, question">
+      <div class="story-sticker-grid">
+        <button data-action="add-story-sticker" data-sticker-type="emoji">Emoji</button>
+        <button data-action="add-story-sticker" data-sticker-type="gif">GIF</button>
+        <button data-action="add-story-sticker" data-sticker-type="question">Question</button>
+        <button data-action="add-story-sticker" data-sticker-type="hashtag">#Hashtag</button>
+        <button data-action="add-story-sticker" data-sticker-type="countdown">Countdown</button>
+        <button data-action="add-story-sticker" data-sticker-type="location">${icon('location')} Location</button>
+      </div>
+    `;
+  }
+
+  function storyDrawToolPanel(editor) {
+    const colors = ['#ffffff', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffd166', '#111827'];
+    return `
+      <div class="story-color-row">
+        ${colors.map((color) => `<button class="${editor.drawColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-draw-color" data-color="${color}" aria-label="Draw color"></button>`).join('')}
+      </div>
+      <label class="zoom-control">Brush
+        <input id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}">
+      </label>
+      <button class="secondary" data-action="undo-story-draw">Undo last stroke</button>
+    `;
+  }
+
+  function storyAudioToolPanel(editor) {
+    return `
+      <button class="secondary" data-action="story-audio-open">${icon('music')} Choose audio</button>
+      <input id="story-audio-input" type="file" accept="audio/*" hidden>
+      ${editor.audio ? `
+        <div class="story-audio-edit">
+          <audio src="${esc(editor.audio.dataUrl)}" controls></audio>
+          <div class="story-trim-row">
+            <label class="field">Start
+              <input id="story-audio-start" type="number" min="0" step="0.1" value="${esc(editor.audioStart || 0)}">
+            </label>
+            <label class="field">End max 30s
+              <input id="story-audio-end" type="number" min="0" step="0.1" value="${esc(editor.audioEnd || 30)}">
+            </label>
+          </div>
+        </div>
+      ` : '<p class="hint">Add audio, then trim it to 30 seconds or less.</p>'}
+    `;
+  }
+
   function storyToolPanel(editor) {
     if (editor.activeTool === 'filter') return storyFilterToolPanel(editor);
-    if (editor.activeTool === 'emoji') return `<p class="hint">Add emoji as text, then move it with your finger.</p><input class="search-input" id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Type emoji or text">`;
+    if (editor.activeTool === 'stickers') return storyStickerToolPanel(editor);
+    if (editor.activeTool === 'draw') return storyDrawToolPanel(editor);
     if (editor.activeTool === 'poll') return `
       <label class="field">Poll question
         <input id="story-poll-question" value="${esc(editor.pollQuestion || '')}" maxlength="80" placeholder="Ask a question">
@@ -706,6 +810,7 @@
         </label>
       </div>
     `;
+    if (editor.activeTool === 'audio') return storyAudioToolPanel(editor);
     if (editor.activeTool === 'crop') return storyCropToolPanel(editor);
     return storyTextToolPanel(editor);
   }
@@ -722,8 +827,57 @@
         ${isVideo
           ? `<video src="${esc(mediaUrl)}" ${compact ? 'muted' : 'controls'} playsinline style="${esc(style)}"></video>`
           : `<img src="${esc(mediaUrl)}" alt="" style="${esc(style)}">`}
-        ${edits.text ? `<span class="story-text-overlay" style="${esc(storyTextStyle(edits))}">${esc(edits.text)}</span>` : ''}
+        ${renderStoryDrawings(edits)}
+        ${renderStoryStickers(edits)}
+        ${edits.text ? `<span class="story-text-overlay ${esc(storyTextClass(edits))}" style="${esc(storyTextStyle(edits))}">${esc(edits.text)}</span>` : ''}
         ${edits.pollQuestion ? renderPollSticker(edits, compact) : ''}
+        ${story.audio && !compact ? renderStoryAudio(story) : ''}
+      </div>
+    `;
+  }
+
+  function storyStickerStyle(sticker = {}) {
+    const x = clamp(Number(sticker.x || 50), 5, 95);
+    const y = clamp(Number(sticker.y || 42), 5, 95);
+    const rotation = clamp(Number(sticker.rotation || 0), -180, 180);
+    const size = clamp(Number(sticker.size || 1), 0.7, 1.8);
+    return `left:${x}%;top:${y}%;transform:translate(-50%,-50%) rotate(${rotation}deg) scale(${size});`;
+  }
+
+  function renderStoryStickers(edits = {}) {
+    const stickers = Array.isArray(edits.stickers) ? edits.stickers : [];
+    return stickers.map((sticker) => `
+      <span class="story-sticker story-sticker-${esc(sticker.type || 'emoji')}" style="${esc(storyStickerStyle(sticker))}">
+        ${esc(sticker.label || '')}
+      </span>
+    `).join('');
+  }
+
+  function drawingPath(points = []) {
+    return points.map((point, index) => `${index ? 'L' : 'M'} ${Number(point.x || 0).toFixed(2)} ${Number(point.y || 0).toFixed(2)}`).join(' ');
+  }
+
+  function renderStoryDrawings(edits = {}) {
+    const drawings = Array.isArray(edits.drawings) ? edits.drawings : [];
+    if (!drawings.length) return '';
+    return `
+      <svg class="story-drawing-layer" viewBox="0 0 100 100" preserveAspectRatio="none">
+        ${drawings.map((stroke) => `<path d="${esc(drawingPath(stroke.points || []))}" stroke="${esc(stroke.color || '#ffffff')}" stroke-width="${Number(stroke.size || 5) / 10}" />`).join('')}
+      </svg>
+    `;
+  }
+
+  function renderStoryAudio(story) {
+    const edits = story.edits || {};
+    const start = Number(edits.audioStart || 0);
+    const end = Number(edits.audioEnd || 30);
+    const source = story.audio?.url ? `${story.audio.url}#t=${start},${end}` : '';
+    if (!source) return '';
+    return `
+      <div class="story-audio-sticker">
+        ${icon('music')}
+        <span>${esc(story.audio.name || 'Audio')}</span>
+        <audio src="${esc(source)}" controls></audio>
       </div>
     `;
   }
@@ -757,6 +911,32 @@
     const options = sticker.querySelectorAll('span');
     if (options[0]) options[0].textContent = editor.pollOptionA || 'Yes';
     if (options[1]) options[1].textContent = editor.pollOptionB || 'No';
+  }
+
+  function updateStoryTextUi() {
+    const editor = state.storyEditor;
+    const overlay = document.querySelector('.story-draggable-text');
+    if (!editor || !overlay) return;
+    overlay.style.cssText = storyTextStyle(editor);
+    overlay.className = `story-draggable-text ${editor.text ? '' : 'empty'} ${storyTextClass(editor)}`;
+    overlay.textContent = editor.text || 'Aa';
+    const size = document.getElementById('story-text-size');
+    if (size) size.value = String(editor.textSize || 44);
+  }
+
+  function updateStoryDrawPreview() {
+    const preview = document.querySelector('.story-editor-preview');
+    if (!state.storyEditor || !preview) return;
+    preview.querySelector('.story-drawing-layer')?.remove();
+    const html = renderStoryDrawings(state.storyEditor);
+    if (html) preview.insertAdjacentHTML('afterbegin', html);
+  }
+
+  function updateStoryStickerPreview() {
+    const preview = document.querySelector('.story-editor-preview');
+    if (!state.storyEditor || !preview) return;
+    preview.querySelectorAll('.story-sticker').forEach((item) => item.remove());
+    preview.insertAdjacentHTML('beforeend', renderStoryStickers(state.storyEditor));
   }
 
   function renderStoryEngagement(story, compact = false) {
@@ -1159,7 +1339,7 @@
         </span>
       </article>
     `).join('') : '<p class="hint">No unanswered requests.</p>';
-    const visibleNotes = state.notifications.filter((note) => note.type === 'request_accepted');
+    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'mention'].includes(note.type));
     const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
         ${avatarHtml(note.actor)}
@@ -1300,9 +1480,11 @@
     const style = `filter:${storyFilterCss(editor.filter)}; transform:scale(${Number(editor.zoom || 1)});`;
     const tools = [
       ['text', 'Text', 'text'],
-      ['emoji', 'Emoji', 'smile'],
+      ['stickers', 'Stickers', 'stickers'],
+      ['draw', 'Draw', 'pen'],
       ['filter', 'Filter', 'filter'],
       ['poll', 'Poll', 'poll'],
+      ['audio', 'Audio', 'music'],
       ['crop', editor.isVideo ? 'Trim' : 'Crop', 'rotate']
     ];
     return `
@@ -1312,18 +1494,31 @@
             ${editor.isVideo
               ? `<video src="${esc(editor.dataUrl)}" controls playsinline style="${esc(style)}"></video>`
               : `<img src="${esc(editor.dataUrl)}" alt="" style="${esc(style)}">`}
-            <button class="story-draggable-text ${editor.text ? '' : 'empty'}" data-action="story-text-drag" style="${esc(storyTextStyle(editor))}">
+            ${renderStoryDrawings(editor)}
+            ${renderStoryStickers(editor)}
+            <button class="story-draggable-text ${editor.text ? '' : 'empty'} ${esc(storyTextClass(editor))}" data-action="story-text-drag" style="${esc(storyTextStyle(editor))}">
               ${esc(editor.text || 'Aa')}
             </button>
             ${editor.pollQuestion ? renderPollSticker(editor) : ''}
+            ${editor.audio ? `
+              <div class="story-audio-sticker">
+                ${icon('music')}
+                <span>${esc(editor.audio.name || 'Audio')}</span>
+                <audio src="${esc(editor.audio.dataUrl)}" controls></audio>
+              </div>
+            ` : ''}
           </div>
         </div>
         <button class="icon-btn story-editor-close" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
+        <button class="icon-btn story-editor-download" data-action="download-story-edit" aria-label="Download edit">${icon('download')}</button>
         <aside class="story-tool-rail" data-stop-close>
           ${tools.map(([tool, label, iconName]) => `
             <button class="${editor.activeTool === tool ? 'active' : ''}" data-action="story-tool" data-tool="${tool}" title="${esc(label)}" aria-label="${esc(label)}">${icon(iconName)}</button>
           `).join('')}
         </aside>
+        ${editor.activeTool === 'text' ? `
+          <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" aria-label="Text size">
+        ` : ''}
         <section class="story-tool-panel" data-stop-close>
           ${storyToolPanel(editor)}
         </section>
@@ -1720,6 +1915,10 @@
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
 
+  function pointerAngle(a, b) {
+    return Math.atan2(b.y - a.y, b.x - a.x);
+  }
+
   function updateCropUi() {
     const crop = state.avatarCrop;
     if (!crop) return;
@@ -1770,19 +1969,125 @@
       filter: 'normal',
       text: '',
       textX: 50,
-      textY: 72,
+      textY: 50,
       textRotation: 0,
       textColor: '#ffffff',
       textFont: 'system',
+      textSize: 44,
+      textAlign: 'center',
+      textEffect: 'shadow',
+      textAnimation: 'none',
+      textBgEnabled: false,
+      textBgColor: '#000000',
+      textFrame: false,
+      drawings: [],
+      drawColor: '#ffffff',
+      drawSize: 6,
+      stickers: [],
+      stickerDraft: '',
       pollQuestion: '',
       pollOptionA: 'Yes',
       pollOptionB: 'No',
+      audio: null,
+      audioStart: 0,
+      audioEnd: 30,
       zoom: 1,
       trimStart: 0,
       trimEnd: 0
     };
     state.storyMenuOpen = false;
     renderApp();
+  }
+
+  async function beginStoryAudio(file) {
+    if (!file || !state.storyEditor) return;
+    if (!file.type.startsWith('audio/')) {
+      alert('Choose an audio file.');
+      return;
+    }
+    state.storyEditor.audio = {
+      dataUrl: await fileToDataUrl(file),
+      name: file.name || 'story-audio',
+      type: file.type || 'audio/mpeg',
+      lastModified: file.lastModified || Date.now()
+    };
+    state.storyEditor.audioStart = 0;
+    state.storyEditor.audioEnd = 30;
+    renderApp();
+  }
+
+  function addStorySticker(type = 'emoji') {
+    const editor = state.storyEditor;
+    if (!editor) return;
+    const draft = (editor.stickerDraft || '').trim();
+    const defaults = {
+      emoji: '✨',
+      gif: 'GIF',
+      question: draft || 'Ask me',
+      hashtag: draft ? (draft.startsWith('#') ? draft : `#${draft.replace(/^@/, '')}`) : '#New',
+      countdown: draft || 'Countdown',
+      location: draft || 'Location'
+    };
+    const sticker = {
+      id: `story_sticker_${cryptoRandom()}`,
+      type,
+      label: defaults[type] || draft || 'Sticker',
+      x: 50,
+      y: 42,
+      rotation: 0,
+      size: type === 'emoji' ? 1.25 : 1
+    };
+    editor.stickers = [...(editor.stickers || []), sticker].slice(-20);
+    editor.stickerDraft = '';
+    updateStoryStickerPreview();
+    renderApp();
+  }
+
+  async function downloadStoryEdit() {
+    const editor = state.storyEditor;
+    if (!editor) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    if (!editor.isVideo) {
+      const blob = dataUrlToBlob(await storyEditorOutput());
+      downloadBlob(blob, `story-edit-${stamp}.png`);
+    } else {
+      downloadBlob(dataUrlToBlob(editor.dataUrl), `story-video-${stamp}.${(editor.type || 'video/mp4').split('/')[1] || 'mp4'}`);
+    }
+    const stateBlob = new Blob([JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      edits: storyEditPayload(editor),
+      audio: editor.audio ? { name: editor.audio.name, type: editor.audio.type, trimStart: editor.audioStart, trimEnd: Math.min(Number(editor.audioEnd || 30), Number(editor.audioStart || 0) + 30) } : null
+    }, null, 2)], { type: 'application/json' });
+    downloadBlob(stateBlob, `story-edit-${stamp}.json`);
+  }
+
+  function storyEditPayload(editor) {
+    return {
+      filter: editor.filter,
+      text: editor.text,
+      zoom: editor.zoom,
+      textX: editor.textX,
+      textY: editor.textY,
+      textRotation: editor.textRotation,
+      textColor: editor.textColor,
+      textFont: editor.textFont,
+      textSize: editor.textSize,
+      textAlign: editor.textAlign,
+      textEffect: editor.textEffect,
+      textAnimation: editor.textAnimation,
+      textBgEnabled: editor.textBgEnabled,
+      textBgColor: editor.textBgColor,
+      textFrame: editor.textFrame,
+      drawings: editor.drawings,
+      stickers: editor.stickers,
+      pollQuestion: editor.pollQuestion,
+      pollOptionA: editor.pollOptionA,
+      pollOptionB: editor.pollOptionB,
+      audioStart: editor.audioStart,
+      audioEnd: Math.min(Number(editor.audioEnd || 30), Number(editor.audioStart || 0) + 30),
+      trimStart: editor.trimStart,
+      trimEnd: editor.trimEnd
+    };
   }
 
   async function storyEditorOutput() {
@@ -1801,16 +2106,20 @@
     const h = image.naturalHeight * scale;
     ctx.drawImage(image, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
     ctx.filter = 'none';
+    drawStoryDrawingsOnCanvas(ctx, editor, canvas.width, canvas.height);
+    drawStoryStickersOnCanvas(ctx, editor, canvas.width, canvas.height);
     if (editor.text) {
-      ctx.font = `800 72px ${storyTextFontCss(editor.textFont)}`;
+      const textSize = clamp(Number(editor.textSize || 44), 22, 96) * 1.55;
+      ctx.font = `800 ${textSize}px ${storyTextFontCss(editor.textFont)}`;
       ctx.fillStyle = editor.textColor || '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.shadowColor = 'rgba(0,0,0,.55)';
-      ctx.shadowBlur = 14;
+      ctx.textAlign = ['left', 'center', 'right'].includes(editor.textAlign) ? editor.textAlign : 'center';
+      ctx.textBaseline = 'middle';
+      applyCanvasTextEffect(ctx, editor);
       ctx.save();
-      ctx.translate(canvas.width * (clamp(Number(editor.textX || 50), 5, 95) / 100), canvas.height * (clamp(Number(editor.textY || 72), 5, 95) / 100));
+      ctx.translate(canvas.width * (clamp(Number(editor.textX || 50), 5, 95) / 100), canvas.height * (clamp(Number(editor.textY || 50), 5, 95) / 100));
       ctx.rotate((clamp(Number(editor.textRotation || 0), -180, 180) * Math.PI) / 180);
-      wrapCanvasText(ctx, editor.text, 0, 0, canvas.width - 150, 84);
+      if (editor.textBgEnabled || editor.textFrame) drawCanvasTextBox(ctx, editor.text, textSize, editor);
+      wrapCanvasText(ctx, editor.text, 0, 0, canvas.width - 150, textSize * 1.15);
       ctx.restore();
     }
     if (editor.pollQuestion) {
@@ -1843,6 +2152,111 @@
     return canvas.toDataURL('image/png');
   }
 
+  function applyCanvasTextEffect(ctx, editor) {
+    if (editor.textEffect === 'glow') {
+      ctx.shadowColor = editor.textColor || '#ffffff';
+      ctx.shadowBlur = 22;
+      return;
+    }
+    if (editor.textEffect === 'neon') {
+      ctx.shadowColor = '#ff4fa3';
+      ctx.shadowBlur = 30;
+      return;
+    }
+    if (editor.textEffect === 'none') {
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      return;
+    }
+    ctx.shadowColor = 'rgba(0,0,0,.62)';
+    ctx.shadowBlur = 14;
+  }
+
+  function drawCanvasTextBox(ctx, text, size, editor) {
+    const lines = canvasTextLines(ctx, text, 880).slice(0, 5);
+    const width = Math.min(930, Math.max(...lines.map((line) => ctx.measureText(line).width), 120) + 70);
+    const height = lines.length * size * 1.15 + 42;
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,.28)';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = editor.textBgEnabled ? hexToRgba(editor.textBgColor || '#000000', 0.58) : 'transparent';
+    roundedRect(ctx, -width / 2, -height / 2, width, height, 26);
+    if (editor.textBgEnabled) ctx.fill();
+    if (editor.textFrame) {
+      ctx.strokeStyle = 'rgba(255,255,255,.82)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function canvasTextLines(ctx, text, maxWidth) {
+    const words = String(text || '').split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawStoryDrawingsOnCanvas(ctx, editor, width, height) {
+    for (const stroke of editor.drawings || []) {
+      const points = stroke.points || [];
+      if (points.length < 2) continue;
+      ctx.save();
+      ctx.strokeStyle = stroke.color || '#ffffff';
+      ctx.lineWidth = Math.max(2, Number(stroke.size || 6) * 2.4);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const x = (Number(point.x || 0) / 100) * width;
+        const y = (Number(point.y || 0) / 100) * height;
+        if (index) ctx.lineTo(x, y);
+        else ctx.moveTo(x, y);
+      });
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawStoryStickersOnCanvas(ctx, editor, width, height) {
+    for (const sticker of editor.stickers || []) {
+      ctx.save();
+      const x = (clamp(Number(sticker.x || 50), 5, 95) / 100) * width;
+      const y = (clamp(Number(sticker.y || 42), 5, 95) / 100) * height;
+      const scale = clamp(Number(sticker.size || 1), 0.7, 1.8);
+      ctx.translate(x, y);
+      ctx.rotate((clamp(Number(sticker.rotation || 0), -180, 180) * Math.PI) / 180);
+      ctx.scale(scale, scale);
+      ctx.font = sticker.type === 'emoji' ? '96px system-ui, sans-serif' : '800 48px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if (sticker.type !== 'emoji') {
+        const label = sticker.label || '';
+        const boxWidth = Math.min(760, Math.max(180, ctx.measureText(label).width + 90));
+        ctx.fillStyle = sticker.type === 'gif' ? 'rgba(255,79,163,.86)' : 'rgba(255,255,255,.9)';
+        roundedRect(ctx, -boxWidth / 2, -48, boxWidth, 96, 32);
+        ctx.fill();
+        ctx.fillStyle = sticker.type === 'gif' ? '#fff' : '#111827';
+      } else {
+        ctx.fillStyle = '#fff';
+      }
+      ctx.shadowColor = 'rgba(0,0,0,.35)';
+      ctx.shadowBlur = 10;
+      ctx.fillText(sticker.label || '', 0, 0);
+      ctx.restore();
+    }
+  }
+
   async function publishStory() {
     const editor = state.storyEditor;
     if (!editor) return;
@@ -1864,12 +2278,29 @@
           textRotation: editor.textRotation,
           textColor: editor.textColor,
           textFont: editor.textFont,
+          textSize: editor.textSize,
+          textAlign: editor.textAlign,
+          textEffect: editor.textEffect,
+          textAnimation: editor.textAnimation,
+          textBgEnabled: editor.textBgEnabled,
+          textBgColor: editor.textBgColor,
+          textFrame: editor.textFrame,
+          drawings: editor.drawings,
+          stickers: editor.stickers,
           pollQuestion: editor.pollQuestion,
           pollOptionA: editor.pollOptionA,
           pollOptionB: editor.pollOptionB,
+          audioStart: editor.audioStart,
+          audioEnd: Math.min(Number(editor.audioEnd || 30), Number(editor.audioStart || 0) + 30),
           trimStart: editor.trimStart,
           trimEnd: editor.trimEnd
-        }
+        },
+        audio: editor.audio ? {
+          name: editor.audio.name,
+          type: editor.audio.type,
+          dataUrl: editor.audio.dataUrl,
+          lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
+        } : null
       }
     });
     state.me = data.user;
@@ -2023,6 +2454,15 @@
 
   function blobToDataUrl(blob) {
     return fileToDataUrl(blob);
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    const [header, data] = String(dataUrl || '').split(',');
+    const mime = /^data:([^;]+)/.exec(header || '')?.[1] || 'application/octet-stream';
+    const binary = atob(data || '');
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: mime });
   }
 
   async function downloadMeta(messageId) {
@@ -2851,11 +3291,63 @@
       }
       if (action === 'story-color') {
         if (state.storyEditor) state.storyEditor.textColor = target.dataset.color || '#ffffff';
+        updateStoryTextUi();
+      }
+      if (action === 'story-bg-color') {
+        if (state.storyEditor) {
+          state.storyEditor.textBgColor = target.dataset.color || '#000000';
+          state.storyEditor.textBgEnabled = true;
+        }
+        updateStoryTextUi();
         renderApp();
       }
       if (action === 'story-font') {
         if (state.storyEditor) state.storyEditor.textFont = target.dataset.font || 'system';
+        updateStoryTextUi();
+      }
+      if (action === 'story-text-align') {
+        if (state.storyEditor) state.storyEditor.textAlign = target.dataset.align || 'center';
+        updateStoryTextUi();
         renderApp();
+      }
+      if (action === 'story-text-bg') {
+        if (state.storyEditor) state.storyEditor.textBgEnabled = !state.storyEditor.textBgEnabled;
+        updateStoryTextUi();
+        renderApp();
+      }
+      if (action === 'story-text-frame') {
+        if (state.storyEditor) state.storyEditor.textFrame = !state.storyEditor.textFrame;
+        updateStoryTextUi();
+        renderApp();
+      }
+      if (action === 'story-text-effect') {
+        if (state.storyEditor) state.storyEditor.textEffect = target.dataset.effect || 'shadow';
+        updateStoryTextUi();
+        renderApp();
+      }
+      if (action === 'story-text-animation') {
+        if (state.storyEditor) state.storyEditor.textAnimation = target.dataset.animation || 'none';
+        updateStoryTextUi();
+        renderApp();
+      }
+      if (action === 'story-draw-color') {
+        if (state.storyEditor) state.storyEditor.drawColor = target.dataset.color || '#ffffff';
+        renderApp();
+      }
+      if (action === 'undo-story-draw') {
+        if (state.storyEditor) {
+          state.storyEditor.drawings = (state.storyEditor.drawings || []).slice(0, -1);
+          updateStoryDrawPreview();
+        }
+      }
+      if (action === 'add-story-sticker') {
+        addStorySticker(target.dataset.stickerType);
+      }
+      if (action === 'story-audio-open') {
+        document.getElementById('story-audio-input')?.click();
+      }
+      if (action === 'download-story-edit') {
+        await downloadStoryEdit();
       }
       if (action === 'publish-story') {
         await publishStory();
@@ -3120,6 +3612,11 @@
         event.target.value = '';
         if (file) await beginStoryEditor(file);
       }
+      if (event.target.id === 'story-audio-input') {
+        const file = event.target.files[0];
+        event.target.value = '';
+        if (file) await beginStoryAudio(file);
+      }
     } catch (error) {
       alert(error.message);
     }
@@ -3180,8 +3677,16 @@
     }
     if (event.target.id === 'story-text-rotation' && state.storyEditor) {
       state.storyEditor.textRotation = Number(event.target.value || 0);
-      const overlay = document.querySelector('.story-draggable-text');
-      if (overlay) overlay.style.cssText = storyTextStyle(state.storyEditor);
+      updateStoryTextUi();
+      return;
+    }
+    if (event.target.id === 'story-text-size' && state.storyEditor) {
+      state.storyEditor.textSize = Number(event.target.value || 44);
+      updateStoryTextUi();
+      return;
+    }
+    if (event.target.id === 'story-draw-size' && state.storyEditor) {
+      state.storyEditor.drawSize = Number(event.target.value || 6);
       return;
     }
     if (event.target.id === 'story-trim-start' && state.storyEditor) {
@@ -3205,6 +3710,21 @@
     if (event.target.id === 'story-poll-b' && state.storyEditor) {
       state.storyEditor.pollOptionB = event.target.value.slice(0, 40);
       updateStoryPollPreview();
+      return;
+    }
+    if (event.target.id === 'story-sticker-text' && state.storyEditor) {
+      state.storyEditor.stickerDraft = event.target.value.slice(0, 80);
+      return;
+    }
+    if (event.target.id === 'story-audio-start' && state.storyEditor) {
+      state.storyEditor.audioStart = Math.max(0, Number(event.target.value || 0));
+      state.storyEditor.audioEnd = Math.min(Math.max(state.storyEditor.audioEnd || 30, state.storyEditor.audioStart), state.storyEditor.audioStart + 30);
+      return;
+    }
+    if (event.target.id === 'story-audio-end' && state.storyEditor) {
+      const start = Math.max(0, Number(state.storyEditor.audioStart || 0));
+      state.storyEditor.audioEnd = Math.min(Math.max(start, Number(event.target.value || start + 30)), start + 30);
+      event.target.value = String(state.storyEditor.audioEnd);
       return;
     }
     if (event.target.id === 'user-search') {
@@ -3251,9 +3771,42 @@
       const canvas = storyText.closest('.story-editor-preview');
       const rect = canvas?.getBoundingClientRect();
       if (rect) {
-        state.storyTextDrag = { pointerId: event.pointerId, rect };
+        storyTextPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (storyTextPointers.size >= 2) {
+          const points = Array.from(storyTextPointers.values()).slice(0, 2);
+          state.storyTextDrag = null;
+          state.storyTextGesture = {
+            pointerIds: Array.from(storyTextPointers.keys()).slice(0, 2),
+            angle: pointerAngle(points[0], points[1]),
+            distance: Math.max(1, pointerDistance(points[0], points[1])),
+            rotation: Number(state.storyEditor.textRotation || 0),
+            size: Number(state.storyEditor.textSize || 44)
+          };
+        } else {
+          state.storyTextDrag = { pointerId: event.pointerId, rect };
+        }
         storyText.setPointerCapture?.(event.pointerId);
       }
+      return;
+    }
+
+    const storyPreview = event.target.closest('.story-editor-preview');
+    if (state.storyEditor?.activeTool === 'draw' && storyPreview && !event.target.closest('button,input,textarea,a,audio,video')) {
+      event.preventDefault();
+      const rect = storyPreview.getBoundingClientRect();
+      const point = {
+        x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
+        y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100)
+      };
+      const stroke = {
+        color: state.storyEditor.drawColor || '#ffffff',
+        size: Number(state.storyEditor.drawSize || 6),
+        points: [point]
+      };
+      state.storyEditor.drawings = [...(state.storyEditor.drawings || []), stroke].slice(-80);
+      state.storyDraw = { pointerId: event.pointerId, rect, stroke };
+      storyPreview.setPointerCapture?.(event.pointerId);
+      updateStoryDrawPreview();
       return;
     }
 
@@ -3328,12 +3881,35 @@
   });
 
   document.addEventListener('pointermove', (event) => {
-    if (state.storyEditor && state.storyTextDrag?.pointerId === event.pointerId) {
-      const rect = state.storyTextDrag.rect;
-      state.storyEditor.textX = clamp(((event.clientX - rect.left) / rect.width) * 100, 5, 95);
-      state.storyEditor.textY = clamp(((event.clientY - rect.top) / rect.height) * 100, 5, 95);
-      const overlay = document.querySelector('.story-draggable-text');
-      if (overlay) overlay.style.cssText = storyTextStyle(state.storyEditor);
+    if (state.storyEditor && storyTextPointers.has(event.pointerId)) {
+      storyTextPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (state.storyTextGesture && storyTextPointers.size >= 2) {
+        const ids = state.storyTextGesture.pointerIds;
+        const points = ids.map((id) => storyTextPointers.get(id)).filter(Boolean);
+        if (points.length >= 2) {
+          const angleDelta = pointerAngle(points[0], points[1]) - state.storyTextGesture.angle;
+          const distance = Math.max(1, pointerDistance(points[0], points[1]));
+          state.storyEditor.textRotation = state.storyTextGesture.rotation + (angleDelta * 180) / Math.PI;
+          state.storyEditor.textSize = clamp(state.storyTextGesture.size * (distance / state.storyTextGesture.distance), 22, 96);
+          updateStoryTextUi();
+        }
+        return;
+      }
+      if (state.storyTextDrag?.pointerId === event.pointerId) {
+        const rect = state.storyTextDrag.rect;
+        state.storyEditor.textX = clamp(((event.clientX - rect.left) / rect.width) * 100, 5, 95);
+        state.storyEditor.textY = clamp(((event.clientY - rect.top) / rect.height) * 100, 5, 95);
+        updateStoryTextUi();
+      }
+      return;
+    }
+    if (state.storyDraw?.pointerId === event.pointerId) {
+      const rect = state.storyDraw.rect;
+      state.storyDraw.stroke.points.push({
+        x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
+        y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100)
+      });
+      updateStoryDrawPreview();
       return;
     }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
@@ -3381,8 +3957,14 @@
   });
 
   document.addEventListener('pointerup', (event) => {
-    if (state.storyTextDrag?.pointerId === event.pointerId) {
-      state.storyTextDrag = null;
+    if (storyTextPointers.has(event.pointerId)) {
+      storyTextPointers.delete(event.pointerId);
+      if (state.storyTextDrag?.pointerId === event.pointerId) state.storyTextDrag = null;
+      if (storyTextPointers.size < 2) state.storyTextGesture = null;
+      return;
+    }
+    if (state.storyDraw?.pointerId === event.pointerId) {
+      state.storyDraw = null;
       return;
     }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
@@ -3443,6 +4025,9 @@
     if (state.avatarCrop?.drag) state.avatarCrop.drag = null;
     if (state.avatarCrop?.pinch) state.avatarCrop.pinch = null;
     state.storyTextDrag = null;
+    state.storyTextGesture = null;
+    state.storyDraw = null;
+    storyTextPointers.clear();
     cropPointers.clear();
     state.edgeSwipe = null;
     clearTimeout(state.longPressTimer);

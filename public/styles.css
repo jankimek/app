@@ -257,6 +257,7 @@ a {
   height: 40px;
   padding: 0;
   flex: 0 0 auto;
+  border-radius: 50%;
 }
 
 .ui-icon {
@@ -610,7 +611,7 @@ a {
 
 .message {
   max-width: min(680px, 84%);
-  width: fit-content;
+  width: max-content;
   min-width: 0;
   touch-action: pan-y;
   position: relative;
@@ -640,15 +641,16 @@ a {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
-  width: fit-content;
+  width: max-content;
   max-width: 100%;
   min-width: 0;
+  position: relative;
   border: 1px solid rgba(236, 114, 202, 0.22);
   border-radius: 18px;
   padding: 8px 11px;
   background: linear-gradient(135deg, #101a34, #25183e 58%, #361832 100%);
   box-shadow: 0 0 18px rgba(185, 88, 210, 0.16), 0 10px 24px rgba(0, 0, 0, 0.2);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .mine .bubble {
@@ -660,28 +662,34 @@ a {
 
 .swipe-time {
   display: block;
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 6px;
   color: rgba(196, 203, 214, 0.78);
   font-size: 11px;
   line-height: 1.15;
   white-space: nowrap;
   opacity: 0;
-  max-height: 0;
-  margin-top: 0;
   padding: 0;
-  overflow: hidden;
   pointer-events: none;
   text-align: left;
-  transition: opacity 0.12s ease, max-height 0.12s ease, margin-top 0.12s ease;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  transform: translateY(-2px);
 }
 
 .mine .swipe-time {
+  left: auto;
+  right: 6px;
   text-align: right;
 }
 
 .message.reveal-time .swipe-time {
   opacity: 1;
-  max-height: 16px;
-  margin-top: 4px;
+  transform: translateY(0);
+}
+
+.message.reveal-time {
+  margin-bottom: 16px;
 }
 
 .deleted .bubble {
@@ -705,7 +713,7 @@ a {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 14px;
-  width: fit-content;
+  width: max-content;
   max-width: 100%;
 }
 
@@ -1243,14 +1251,135 @@ a {
 
 .story-text-overlay {
   position: absolute;
+  z-index: 4;
   max-width: 86%;
   text-align: center;
   color: #fff;
   font-weight: 800;
-  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.72);
   pointer-events: none;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  padding: 6px 10px;
+  border-radius: 14px;
+  line-height: 1.05;
+}
+
+.text-effect-shadow {
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.78);
+}
+
+.text-effect-glow {
+  text-shadow: 0 0 12px currentColor, 0 0 28px currentColor;
+}
+
+.text-effect-neon {
+  text-shadow: 0 0 6px #fff, 0 0 18px #ff5fb8, 0 0 34px #8e6cff;
+}
+
+.text-effect-none {
+  text-shadow: none;
+}
+
+.text-anim-fade {
+  animation: storyTextFade 0.55s ease both;
+}
+
+.text-anim-rise {
+  animation: storyTextRise 0.58s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.text-anim-pop {
+  animation: storyTextPop 0.42s cubic-bezier(0.2, 1.35, 0.3, 1) both;
+}
+
+.story-drawing-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.story-drawing-layer path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.story-sticker {
+  position: absolute;
+  z-index: 3;
+  display: inline-grid;
+  place-items: center;
+  min-height: 38px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  color: #111827;
+  background: rgba(255, 255, 255, 0.9);
+  font-weight: 850;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+  transform-origin: center;
+}
+
+.story-sticker-emoji {
+  padding: 0;
+  min-height: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #fff;
+  font-size: 54px;
+  animation: stickerFloat 1.8s ease-in-out infinite alternate;
+}
+
+.story-sticker-gif {
+  color: #fff;
+  background: linear-gradient(135deg, #ff5fb8, #8e6cff);
+  animation: stickerPulse 0.9s ease-in-out infinite alternate;
+}
+
+.story-sticker-question {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.story-sticker-hashtag {
+  background: rgba(79, 210, 194, 0.92);
+}
+
+.story-sticker-countdown {
+  color: #fff;
+  background: rgba(17, 24, 39, 0.82);
+}
+
+.story-sticker-location {
+  color: #fff;
+  background: rgba(30, 64, 175, 0.88);
+}
+
+.story-audio-sticker {
+  position: absolute;
+  left: 50%;
+  bottom: 8%;
+  transform: translateX(-50%);
+  z-index: 4;
+  width: min(360px, 84%);
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 18px;
+  background: rgba(5, 7, 11, 0.72);
+  color: var(--text);
+  backdrop-filter: blur(14px);
+}
+
+.story-audio-sticker audio {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 34px;
 }
 
 .story-poll-sticker {
@@ -1627,14 +1756,16 @@ a {
 .story-draggable-text {
   position: absolute;
   z-index: 4;
-  max-width: 78%;
-  min-height: 34px;
-  padding: 4px 8px;
+  width: max-content;
+  max-width: 82%;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 14px;
   background: transparent;
   color: #fff;
-  font-size: clamp(26px, 6vw, 56px);
+  font-size: 44px;
   line-height: 1.05;
   font-weight: 850;
   text-align: center;
@@ -1643,45 +1774,69 @@ a {
   overflow-wrap: anywhere;
   touch-action: none;
   cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .story-draggable-text.empty {
   color: rgba(255, 255, 255, 0.48);
-  outline: 1px dashed rgba(255, 255, 255, 0.26);
+  outline: 0;
 }
 
 .story-editor-close {
   position: fixed;
-  left: max(14px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
   top: max(14px, env(safe-area-inset-top));
   z-index: 5;
-  background: rgba(0, 0, 0, 0.36);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(12px);
+}
+
+.story-editor-download {
+  position: fixed;
+  left: max(12px, env(safe-area-inset-left));
+  top: max(14px, env(safe-area-inset-top));
+  z-index: 5;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(12px);
 }
 
 .story-tool-rail {
   position: fixed;
   right: max(10px, env(safe-area-inset-right));
-  top: 22%;
+  top: calc(max(14px, env(safe-area-inset-top)) + 54px);
   z-index: 5;
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  max-height: calc(var(--app-height) - 150px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.story-tool-rail::-webkit-scrollbar {
+  display: none;
 }
 
 .story-tool-rail button {
-  width: 44px;
-  height: 44px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   display: grid;
   place-items: center;
   color: var(--text);
-  background: rgba(0, 0, 0, 0.38);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(10px);
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  transition: transform 0.16s ease, background 0.16s ease, color 0.16s ease;
 }
 
 .story-tool-rail button.active {
   background: rgba(255, 255, 255, 0.92);
   color: #06080d;
+  transform: scale(1.07);
 }
 
 .story-tool-panel {
@@ -1697,6 +1852,17 @@ a {
   background: rgba(5, 7, 11, 0.72);
   border: 1px solid rgba(255, 255, 255, 0.11);
   backdrop-filter: blur(16px);
+}
+
+.story-size-slider {
+  position: fixed;
+  left: max(10px, env(safe-area-inset-left));
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  z-index: 6;
+  width: 180px;
+  transform-origin: left bottom;
+  transform: rotate(-90deg);
+  accent-color: #f4f7fb;
 }
 
 .story-post-btn {
@@ -1735,7 +1901,9 @@ a {
 }
 
 .story-color-row,
-.story-font-row {
+.story-font-row,
+.story-chip-row,
+.story-control-row {
   display: flex;
   gap: 8px;
   overflow-x: auto;
@@ -1767,6 +1935,48 @@ a {
 .story-font-row button.active {
   background: #f4f7fb;
   color: #05070b;
+}
+
+.story-chip-row button,
+.story-control-row button,
+.story-sticker-grid button {
+  min-height: 34px;
+  border-radius: 999px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.story-chip-row button.active,
+.story-control-row button.active {
+  background: #f4f7fb;
+  color: #05070b;
+}
+
+.story-control-row .ui-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.story-sticker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.story-audio-edit {
+  display: grid;
+  gap: 10px;
+}
+
+.story-audio-edit audio {
+  width: 100%;
 }
 
 .settings-modal {
@@ -2109,6 +2319,49 @@ a {
 @keyframes wavePulse {
   to {
     transform: scaleY(0.55);
+  }
+}
+
+@keyframes storyTextFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes storyTextRise {
+  from {
+    opacity: 0;
+    translate: 0 18px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes storyTextPop {
+  from {
+    opacity: 0;
+    scale: 0.82;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes stickerFloat {
+  to {
+    translate: 0 -8px;
+  }
+}
+
+@keyframes stickerPulse {
+  to {
+    scale: 1.06;
   }
 }
 

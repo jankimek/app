@@ -466,6 +466,7 @@ function publicStory(story, viewerId = null) {
     expiresAt: story.expiresAt,
     saved: Boolean(story.saved),
     edits: story.edits || {},
+    audio: publicFile(db.files[story.audioFileId]),
     viewed: Boolean(viewerId && (viewerId === story.ownerId || views.includes(viewerId))),
     likeCount: likes.length,
     likedByMe: Boolean(viewerId && likes.includes(viewerId)),
@@ -477,6 +478,57 @@ function publicStory(story, viewerId = null) {
       user: storyActor(db.users[comment.userId])
     }))
   };
+}
+
+function cleanStoryDrawings(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 80).map((stroke) => ({
+    color: /^#[0-9a-f]{6}$/i.test(String(stroke?.color || '')) ? stroke.color : '#ffffff',
+    size: Math.max(2, Math.min(20, Number(stroke?.size || 6))),
+    points: Array.isArray(stroke?.points)
+      ? stroke.points.slice(0, 350).map((point) => ({
+        x: Math.max(0, Math.min(100, Number(point?.x || 0))),
+        y: Math.max(0, Math.min(100, Number(point?.y || 0)))
+      }))
+      : []
+  })).filter((stroke) => stroke.points.length);
+}
+
+function cleanStoryStickers(raw) {
+  const validTypes = new Set(['emoji', 'gif', 'question', 'hashtag', 'countdown', 'location']);
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 20).map((sticker) => ({
+    id: cleanText(sticker?.id || id('sticker'), 80),
+    type: validTypes.has(sticker?.type) ? sticker.type : 'emoji',
+    label: cleanText(sticker?.label || '', 80),
+    x: Math.max(5, Math.min(95, Number(sticker?.x || 50))),
+    y: Math.max(5, Math.min(95, Number(sticker?.y || 42))),
+    rotation: Math.max(-180, Math.min(180, Number(sticker?.rotation || 0))),
+    size: Math.max(0.7, Math.min(1.8, Number(sticker?.size || 1)))
+  })).filter((sticker) => sticker.label);
+}
+
+function mentionedUsers(text, excludeUserId = null) {
+  const names = Array.from(new Set(String(text || '').match(/@([a-zA-Z0-9_.]{3,24})/g)?.map((item) => item.slice(1).toLowerCase()) || []));
+  return names
+    .map((name) => userByUsername(name))
+    .filter((user) => user && user.id !== excludeUserId);
+}
+
+function notifyMentions(actor, text, source) {
+  const notifications = [];
+  for (const target of mentionedUsers(text, actor.id)) {
+    const note = addNotification(target.id, 'mention', actor.id, null, `${actor.username} mentioned you ${source}.`);
+    if (note) {
+      notifications.push({ target, note });
+      pushToUser(target.id, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(target.id).length,
+        notification: publicNotification(note, target.id)
+      });
+    }
+  }
+  return notifications;
 }
 
 function ensureChatMessages(chatId) {
@@ -975,10 +1027,18 @@ async function handleApi(req, res, pathname, query) {
       return sendError(res, 400, 'Stories must be images or videos.');
     }
     const file = await saveUpload(body.file, user.id, 'story');
+    let audioFile = null;
+    if (body.audio?.dataUrl) {
+      if (!mimeFromDataUrl(body.audio.dataUrl).startsWith('audio/')) return sendError(res, 400, 'Story audio must be an audio file.');
+      audioFile = await saveUpload(body.audio, user.id, 'story-audio');
+    }
+    const audioStart = Math.max(0, Number(body.edits?.audioStart || 0));
+    const audioEnd = Math.min(Math.max(audioStart, Number(body.edits?.audioEnd || audioStart + 30)), audioStart + 30);
     const story = {
       id: id('story'),
       ownerId: user.id,
       fileId: file.id,
+      audioFileId: audioFile?.id || null,
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       saved: false,
@@ -987,13 +1047,24 @@ async function handleApi(req, res, pathname, query) {
         text: cleanText(body.edits?.text || '', 120),
         zoom: Math.max(1, Math.min(3, Number(body.edits?.zoom || 1))),
         textX: Math.max(5, Math.min(95, Number(body.edits?.textX || 50))),
-        textY: Math.max(5, Math.min(95, Number(body.edits?.textY || 72))),
+        textY: Math.max(5, Math.min(95, Number(body.edits?.textY || 50))),
         textRotation: Math.max(-180, Math.min(180, Number(body.edits?.textRotation || 0))),
         textColor: /^#[0-9a-f]{6}$/i.test(String(body.edits?.textColor || '')) ? body.edits.textColor : '#ffffff',
         textFont: ['system', 'serif', 'mono', 'script'].includes(body.edits?.textFont) ? body.edits.textFont : 'system',
+        textSize: Math.max(22, Math.min(96, Number(body.edits?.textSize || 44))),
+        textAlign: ['left', 'center', 'right'].includes(body.edits?.textAlign) ? body.edits.textAlign : 'center',
+        textEffect: ['none', 'shadow', 'glow', 'neon'].includes(body.edits?.textEffect) ? body.edits.textEffect : 'shadow',
+        textAnimation: ['none', 'fade', 'rise', 'pop'].includes(body.edits?.textAnimation) ? body.edits.textAnimation : 'none',
+        textBgEnabled: Boolean(body.edits?.textBgEnabled),
+        textBgColor: /^#[0-9a-f]{6}$/i.test(String(body.edits?.textBgColor || '')) ? body.edits.textBgColor : '#000000',
+        textFrame: Boolean(body.edits?.textFrame),
+        drawings: cleanStoryDrawings(body.edits?.drawings),
+        stickers: cleanStoryStickers(body.edits?.stickers),
         pollQuestion: cleanText(body.edits?.pollQuestion || '', 80),
         pollOptionA: cleanText(body.edits?.pollOptionA || 'Yes', 40),
         pollOptionB: cleanText(body.edits?.pollOptionB || 'No', 40),
+        audioStart,
+        audioEnd,
         trimStart: Math.max(0, Number(body.edits?.trimStart || 0)),
         trimEnd: Math.max(0, Number(body.edits?.trimEnd || 0))
       },
@@ -1003,7 +1074,13 @@ async function handleApi(req, res, pathname, query) {
       deletedAt: null
     };
     db.stories[story.id] = story;
-    await saveStories();
+    const mentionText = [
+      story.edits.text,
+      story.edits.pollQuestion,
+      ...story.edits.stickers.map((sticker) => sticker.label)
+    ].join(' ');
+    notifyMentions(user, mentionText, 'in a story');
+    await Promise.all([saveStories(), saveNotifications()]);
     return sendJson(res, 201, { story: publicStory(story, user.id), user: publicUser(user, user.id) });
   }
 
@@ -1061,7 +1138,8 @@ async function handleApi(req, res, pathname, query) {
       createdAt: nowIso()
     });
     story.comments = story.comments.slice(-200);
-    await saveStories();
+    notifyMentions(user, text, 'in a story comment');
+    await Promise.all([saveStories(), saveNotifications()]);
     return sendJson(res, 201, { story: publicStory(story, user.id) });
   }
 
