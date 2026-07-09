@@ -689,7 +689,6 @@ async function handleApi(req, res, pathname, query) {
     if (!/^[a-zA-Z0-9_.]{3,24}$/.test(username)) {
       return sendError(res, 400, 'Username must be 3-24 characters and use letters, numbers, underscores, or dots.');
     }
-    if (!email && !phone) return sendError(res, 400, 'Add an email or phone number.');
     if (password.length < 8) return sendError(res, 400, 'Password must be at least 8 characters.');
     if (Object.values(db.users).some((user) => user.usernameLower === usernameLower)) {
       return sendError(res, 409, 'That username is already taken.');

@@ -935,28 +935,6 @@ a {
   font-size: 13px;
 }
 
-.mini-user-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.mini-user-list > span {
-  display: grid;
-  justify-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-
-.mini-user-list small {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-}
-
 .social-switch {
   position: relative;
   grid-template-columns: 1fr 1fr;

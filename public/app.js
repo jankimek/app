@@ -37,6 +37,7 @@
     conversationResults: [],
     conversationSearching: false,
     profileSocialView: null,
+    chatProfileSocialView: null,
     recommendations: [],
     publicProfile: null,
     pendingRequestCount: 0,
@@ -281,12 +282,6 @@
               ${state.authMode === 'register' ? `
                 <label class="field">Username
                   <input name="username" autocomplete="username" placeholder="emran_01" required>
-                </label>
-                <label class="field">Email
-                  <input name="email" type="email" autocomplete="email" placeholder="you@example.com">
-                </label>
-                <label class="field">Phone
-                  <input name="phone" autocomplete="tel" placeholder="+49123456789">
                 </label>
               ` : `
                 <label class="field">Email, phone, or username
@@ -545,29 +540,6 @@
     `;
   }
 
-  function renderSocialLists(user) {
-    if (!user.followersVisible) {
-      return `
-        <section class="panel-card">
-          <h2>Followers</h2>
-          <p class="hint">This profile keeps followers and following private.</p>
-        </section>
-      `;
-    }
-    return `
-      <section class="panel-card social-lists">
-        <h2>Followers</h2>
-        <div class="mini-user-list">
-          ${(user.followers || []).slice(0, 8).map((item) => `<span>${avatarHtml(item)}<small>@${esc(item.username)}</small></span>`).join('') || '<p class="hint">No followers yet.</p>'}
-        </div>
-        <h2>Following</h2>
-        <div class="mini-user-list">
-          ${(user.following || []).slice(0, 8).map((item) => `<span>${avatarHtml(item)}<small>@${esc(item.username)}</small></span>`).join('') || '<p class="hint">Not following anyone yet.</p>'}
-        </div>
-      </section>
-    `;
-  }
-
   function renderRecommendations() {
     return `
       <section class="suggestion-section">
@@ -712,6 +684,7 @@
   function renderChatProfilePane() {
     const peer = state.activePeer;
     const story = peer.stories?.[0];
+    if (state.chatProfileSocialView) return renderChatProfileSocialPage(peer);
     return `
       <main class="chat-pane profile-pane">
         <header class="chat-header">
@@ -731,7 +704,7 @@
             <span>@${esc(peer.username)}</span>
             <div class="social-stats centered">
               ${peer.followersVisible
-                ? `<span><strong>${peer.followerCount ?? 0}</strong> followers</span><span><strong>${peer.followingCount ?? 0}</strong> following</span>`
+                ? `<button type="button" class="social-stat-btn" data-action="open-peer-social" data-social="followers"><strong>${peer.followerCount ?? 0}</strong> followers</button><button type="button" class="social-stat-btn" data-action="open-peer-social" data-social="following"><strong>${peer.followingCount ?? 0}</strong> following</button>`
                 : '<span>Followers private</span>'}
             </div>
             <p>${esc(peer.bio || 'No bio yet.')}</p>
@@ -739,7 +712,6 @@
               ${renderRelationshipButton(peer)}
             </div>
           </div>
-          ${peer.followersVisible ? renderSocialLists(peer) : ''}
           <section class="panel-card">
             <h2>Chat</h2>
             <div class="toolbar">
@@ -759,6 +731,40 @@
             ${peer.blockedBy ? '<p class="hint">This user has blocked messaging.</p>' : ''}
             ${peer.hasBlocked ? '<p class="hint">Messaging is blocked until you unblock this user.</p>' : ''}
           </section>
+        </section>
+      </main>
+    `;
+  }
+
+  function renderChatProfileSocialPage(peer) {
+    const view = state.chatProfileSocialView === 'following' ? 'following' : 'followers';
+    const users = view === 'followers' ? (peer.followers || []) : (peer.following || []);
+    const empty = view === 'followers' ? 'No followers yet.' : 'Not following anyone yet.';
+    return `
+      <main class="chat-pane profile-pane">
+        <header class="chat-header">
+          <button class="icon-btn back-btn" title="Back" aria-label="Back" data-action="close-peer-social">${icon('back')}</button>
+          <div class="chat-title">
+            <strong>${esc(view === 'followers' ? 'Followers' : 'Following')}</strong>
+            <small>@${esc(peer.username)}</small>
+          </div>
+        </header>
+        <section class="chat-profile-content">
+          <div class="segmented social-switch is-${view}">
+            <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-peer-social" data-social="followers">Followers</button>
+            <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-peer-social" data-social="following">Following</button>
+          </div>
+          <div class="social-user-list">
+            ${users.length ? users.map((item) => `
+              <article class="person-card social-user-row">
+                ${avatarHtml(item)}
+                <span class="person">
+                  <strong>${esc(item.displayName)}</strong>
+                  <small>@${esc(item.username)}${item.bio ? ' - ' + esc(item.bio) : ''}</small>
+                </span>
+              </article>
+            `).join('') : `<div class="empty-state">${empty}</div>`}
+          </div>
         </section>
       </main>
     `;
@@ -1111,6 +1117,7 @@
     if (!peer) return;
     state.activePeer = peer;
     state.chatProfileOpen = false;
+    state.chatProfileSocialView = null;
     state.replyTo = null;
     state.stickerPanel = false;
     state.typingPeerId = null;
@@ -2079,8 +2086,6 @@
             }
           : {
               username: formValue(form, 'username'),
-              email: formValue(form, 'email'),
-              phone: formValue(form, 'phone'),
               password: formValue(form, 'password')
             };
         const data = await api(`/api/auth/${state.authMode}`, { method: 'POST', body });
@@ -2091,6 +2096,7 @@
         state.activePeer = null;
         state.chatProfileOpen = false;
         state.profileSocialView = null;
+        state.chatProfileSocialView = null;
         await loadContactsAndChats();
         renderApp();
         connectWs();
@@ -2152,6 +2158,7 @@
         state.tab = 'chats';
         state.lastTab = 'chats';
         state.profileSocialView = null;
+        state.chatProfileSocialView = null;
         renderAuth();
       }
       if (action === 'tab') {
@@ -2163,8 +2170,10 @@
         if (isMobileLayout()) {
           state.activePeer = null;
           state.chatProfileOpen = false;
+          state.chatProfileSocialView = null;
         } else if (state.activePeer) {
           state.chatProfileOpen = false;
+          state.chatProfileSocialView = null;
         }
         if (state.tab !== 'profile') state.profileSocialView = null;
         renderApp();
@@ -2179,14 +2188,17 @@
       if (action === 'back') {
         state.activePeer = null;
         state.chatProfileOpen = false;
+        state.chatProfileSocialView = null;
         renderApp();
       }
       if (action === 'open-chat-profile') {
         state.chatProfileOpen = true;
+        state.chatProfileSocialView = null;
         renderApp();
       }
       if (action === 'close-chat-profile') {
         state.chatProfileOpen = false;
+        state.chatProfileSocialView = null;
         renderApp();
       }
       if (action === 'send-text') {
@@ -2310,6 +2322,14 @@
       }
       if (action === 'close-social') {
         state.profileSocialView = null;
+        renderApp();
+      }
+      if (action === 'open-peer-social') {
+        state.chatProfileSocialView = target.dataset.social === 'following' ? 'following' : 'followers';
+        renderApp();
+      }
+      if (action === 'close-peer-social') {
+        state.chatProfileSocialView = null;
         renderApp();
       }
       if (action === 'avatar-menu') {
