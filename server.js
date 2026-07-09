@@ -219,12 +219,15 @@ function publicUser(user, viewerId = null) {
 
 function followStatsFor(user, viewerId = null) {
   const accepted = Object.values(db.friendRequests).filter((request) => request.status === 'accepted');
-  let followers = accepted.filter((request) => request.toId === user.id).map((request) => request.fromId);
-  let following = accepted.filter((request) => request.fromId === user.id).map((request) => request.toId);
-  if (!followers.length && !following.length && (db.contacts[user.id] || []).length) {
-    followers = db.contacts[user.id] || [];
-    following = db.contacts[user.id] || [];
-  }
+  const contacts = db.contacts[user.id] || [];
+  let followers = [
+    ...accepted.filter((request) => request.toId === user.id).map((request) => request.fromId),
+    ...contacts
+  ];
+  let following = [
+    ...accepted.filter((request) => request.fromId === user.id).map((request) => request.toId),
+    ...contacts
+  ];
   followers = Array.from(new Set(followers)).filter((id) => db.users[id]);
   following = Array.from(new Set(following)).filter((id) => db.users[id]);
   const visible = user.profile?.socialPublic !== false || viewerId === user.id;
