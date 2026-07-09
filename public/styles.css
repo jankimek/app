@@ -468,6 +468,7 @@ a {
 }
 
 .bottom-tab {
+  position: relative;
   min-width: 0;
   border-radius: 8px;
   background: transparent;
@@ -490,6 +491,11 @@ a {
 
 .bottom-tab.active svg {
   stroke-width: 2.9;
+}
+
+.bottom-tab .tab-dot {
+  top: 13px;
+  right: calc(50% - 16px);
 }
 
 .chat-list,
@@ -524,6 +530,16 @@ a {
   background: rgba(255, 255, 255, 0.045);
 }
 
+.chat-item.unread .person strong {
+  color: #fff;
+  font-weight: 850;
+}
+
+.chat-item.unread .person small,
+.chat-item.unread .chat-meta {
+  color: rgba(237, 245, 255, 0.78);
+}
+
 .conversation-hit .person small {
   color: var(--soft);
   white-space: nowrap;
@@ -536,19 +552,6 @@ a {
   justify-items: end;
   gap: 5px;
   color: var(--muted);
-}
-
-.unread-badge {
-  min-width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  padding: 0 6px;
-  background: #7c68ff;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 800;
 }
 
 .person {
@@ -601,23 +604,25 @@ a {
 
 .message {
   max-width: min(680px, 84%);
-  width: fit-content;
+  width: auto;
   min-width: 0;
   touch-action: pan-y;
   position: relative;
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 3px;
   transition: transform 0.16s ease;
 }
 
 .message.mine {
   align-self: flex-end;
-  justify-items: end;
+  align-items: flex-end;
 }
 
 .message.theirs {
   align-self: flex-start;
-  justify-items: start;
+  align-items: flex-start;
 }
 
 .message.highlighted .bubble {
@@ -626,7 +631,10 @@ a {
 }
 
 .bubble {
-  width: fit-content;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: auto;
   max-width: 100%;
   min-width: 0;
   border: 1px solid rgba(165, 115, 255, 0.22);
@@ -638,6 +646,7 @@ a {
 }
 
 .mine .bubble {
+  align-items: flex-end;
   background: linear-gradient(135deg, #0e2b50, #452065 82%);
   border-color: rgba(176, 133, 255, 0.34);
   box-shadow: 0 0 20px rgba(93, 90, 255, 0.27), 0 10px 24px rgba(0, 0, 0, 0.22);
@@ -686,10 +695,11 @@ a {
 }
 
 .message-text {
+  display: inline-block;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 14px;
-  width: fit-content;
+  width: auto;
   max-width: 100%;
 }
 

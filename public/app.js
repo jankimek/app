@@ -183,11 +183,17 @@
 
   function navButton(tab, label, iconName) {
     const active = state.tab === tab || (state.tab === 'notifications' && tab === 'chats');
+    const unreadDot = tab === 'chats' && hasUnreadMessages();
     return `
       <button class="bottom-tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" title="${esc(label)}" aria-label="${esc(label)}">
         ${icon(iconName)}
+        ${unreadDot ? '<span class="red-dot tab-dot"></span>' : ''}
       </button>
     `;
+  }
+
+  function hasUnreadMessages() {
+    return Object.values(state.unreadByPeer).some((count) => Number(count) > 0);
   }
 
   function isMobileLayout() {
@@ -370,7 +376,7 @@
     const chatRows = state.chats.length ? state.chats.map((chat) => {
       const unread = state.unreadByPeer[chat.peer.id] || 0;
       return `
-        <button class="chat-item ${state.activePeer?.id === chat.peer.id ? 'active' : ''}" data-action="open-chat" data-user-id="${esc(chat.peer.id)}" data-peer-id="${esc(chat.peer.id)}">
+        <button class="chat-item ${state.activePeer?.id === chat.peer.id ? 'active' : ''} ${unread ? 'unread' : ''}" data-action="open-chat" data-user-id="${esc(chat.peer.id)}" data-peer-id="${esc(chat.peer.id)}">
           ${avatarHtml(chat.peer)}
           <span class="person">
             <strong>${esc(chat.peer.displayName)}</strong>
@@ -378,7 +384,6 @@
           </span>
           <span class="chat-meta">
             <small>${chat.latest ? esc(shortTime(chat.latest.createdAt)) : ''}</small>
-            ${unread ? `<span class="unread-badge">${unread > 9 ? '9+' : unread}</span>` : ''}
           </span>
         </button>
       `;
