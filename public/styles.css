@@ -392,8 +392,12 @@ a {
   padding: 14px 14px 18px;
 }
 
-.tab-content.animate-tab {
-  animation: tabSwap 0.22s ease;
+.tab-content.animate-tab.from-right {
+  animation: tabFromRight 0.22s ease;
+}
+
+.tab-content.animate-tab.from-left {
+  animation: tabFromLeft 0.22s ease;
 }
 
 .tab-content[data-tab="profile"],
@@ -424,7 +428,7 @@ a {
 }
 
 .panel-heading {
-  margin: 0 0 14px;
+  margin: 0 0 18px;
 }
 
 .panel-heading h2 {
@@ -485,7 +489,7 @@ a {
 .profile-link-box {
   width: 100%;
   padding: 10px;
-  border-radius: 8px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.043);
   border: 1px solid rgba(255, 255, 255, 0.075);
   display: grid;
@@ -499,7 +503,7 @@ a {
 .chat-item {
   border: 0;
   background: transparent;
-  padding: 8px 4px;
+  padding: 10px 6px;
 }
 
 .chat-item.active {
@@ -565,6 +569,8 @@ a {
   max-width: min(680px, 84%);
   touch-action: pan-y;
   position: relative;
+  display: grid;
+  gap: 3px;
   transition: transform 0.16s ease;
 }
 
@@ -597,24 +603,26 @@ a {
 }
 
 .swipe-time {
-  position: absolute;
-  top: 50%;
-  right: 12px;
-  transform: translateY(-50%);
+  position: static;
+  justify-self: start;
   color: rgba(196, 203, 214, 0.78);
   font-size: 11px;
   white-space: nowrap;
   opacity: 0;
+  height: 0;
+  padding: 0 8px;
+  overflow: hidden;
   pointer-events: none;
+  transition: opacity 0.12s ease, height 0.12s ease;
 }
 
 .mine .swipe-time {
-  left: 12px;
-  right: auto;
+  justify-self: end;
 }
 
 .message.reveal-time .swipe-time {
   opacity: 1;
+  height: 17px;
 }
 
 .deleted .bubble {
@@ -741,6 +749,41 @@ a {
   padding: 8px 4px 16px;
 }
 
+.profile-top-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.profile-username {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-inline-btn {
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  display: inline-grid;
+  place-items: center;
+  vertical-align: middle;
+}
+
+.icon-inline-btn .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.profile-bio {
+  margin: 6px 0 0;
+  color: var(--soft);
+  font-size: 13px;
+}
+
 .profile-avatar-btn {
   position: relative;
   width: 78px;
@@ -824,7 +867,29 @@ a {
 }
 
 .social-switch {
+  position: relative;
   grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+}
+
+.social-switch::before {
+  content: "";
+  position: absolute;
+  inset: 4px auto 4px 4px;
+  width: calc(50% - 4px);
+  border-radius: 6px;
+  background: var(--panel-2);
+  transition: transform 0.18s ease;
+}
+
+.social-switch.is-following::before {
+  transform: translateX(100%);
+}
+
+.social-switch button {
+  position: relative;
+  z-index: 1;
+  background: transparent !important;
 }
 
 .social-page {
@@ -845,6 +910,123 @@ a {
   border: 0;
   padding-left: 4px;
   padding-right: 4px;
+}
+
+.profile-fill,
+.suggestion-section,
+.search-discover,
+.settings-block {
+  padding: 14px 4px;
+}
+
+.profile-fill h2,
+.suggestion-section h2,
+.search-discover h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.profile-activity-grid,
+.discover-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.profile-activity-grid span,
+.discover-grid article {
+  min-height: 82px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 12px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+}
+
+.profile-activity-grid strong,
+.discover-grid strong {
+  font-size: 18px;
+}
+
+.profile-activity-grid small,
+.discover-grid small {
+  color: var(--muted);
+}
+
+.discover-grid {
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 18px;
+}
+
+.suggestion-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 14px;
+  padding: 10px 4px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.chevron {
+  transition: transform 0.18s ease;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
+.recommendation-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(132px, 150px);
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 0 8px;
+}
+
+.recommendation-row.expanded {
+  animation: suggestionsDown 0.18s ease;
+}
+
+.recommend-card {
+  min-height: 178px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 12px;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 7px;
+  text-align: center;
+}
+
+.recommend-card .avatar {
+  width: 58px;
+  height: 58px;
+}
+
+.recommend-card strong,
+.recommend-card small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recommend-card small {
+  color: var(--muted);
+}
+
+.follow-btn {
+  width: 100%;
+  background: var(--text);
+  color: #05070b;
+  border-color: transparent;
+  font-weight: 700;
 }
 
 .story-card img,
@@ -1001,6 +1183,121 @@ a {
   animation: none;
 }
 
+.center-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.46);
+}
+
+.center-modal,
+.crop-modal {
+  width: min(430px, 100%);
+  max-height: min(720px, calc(100dvh - 36px));
+  overflow: auto;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: #080c13;
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+
+.settings-modal {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-modal .panel-card {
+  margin: 0;
+  border-radius: 18px;
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.settings-block {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 14px;
+}
+
+.settings-block h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.switch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+}
+
+.switch-row + .switch-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.switch-row strong,
+.switch-row small {
+  display: block;
+}
+
+.switch-row small {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.switch-row input {
+  appearance: none;
+  width: 52px;
+  height: 30px;
+  border-radius: 999px;
+  background: #202938;
+  position: relative;
+  outline: none;
+  transition: background 0.18s ease;
+}
+
+.switch-row input::before {
+  content: "";
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  left: 3px;
+  top: 3px;
+  border-radius: 50%;
+  background: #f4f7fb;
+  transition: transform 0.18s ease;
+}
+
+.switch-row input:checked {
+  background: #705cff;
+}
+
+.switch-row input:checked::before {
+  transform: translateX(22px);
+}
+
 .notifications-page {
   display: grid;
   gap: 10px;
@@ -1065,11 +1362,54 @@ a {
   margin-bottom: max(10px, env(safe-area-inset-bottom));
   border-radius: 14px;
   padding-bottom: 10px;
-  animation: none;
 }
 
 .story-sheet.closing {
-  animation: none;
+  animation: sheetDown 0.18s ease forwards;
+}
+
+.crop-overlay {
+  z-index: 55;
+}
+
+.crop-stage {
+  width: min(320px, calc(100vw - 58px));
+  height: min(360px, calc(100dvh - 240px));
+  min-height: 280px;
+  margin: 12px auto;
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  background: #05070b;
+  touch-action: none;
+}
+
+.crop-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  pointer-events: none;
+}
+
+.crop-mask {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.crop-circle {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.34), 0 0 22px rgba(255, 255, 255, 0.26);
+  cursor: grab;
+  touch-action: none;
+}
+
+.crop-confirm {
+  width: 100%;
 }
 
 .action-sheet button {
@@ -1088,7 +1428,7 @@ a {
   color: #ff8e9a;
 }
 
-@keyframes tabSwap {
+@keyframes tabFromRight {
   from {
     opacity: 0;
     transform: translateX(18px);
@@ -1096,6 +1436,28 @@ a {
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+@keyframes tabFromLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes suggestionsDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

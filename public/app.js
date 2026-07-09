@@ -10,7 +10,7 @@
     tab: 'chats',
     lastTab: 'chats',
     tabTransition: false,
-    profileSocialTransition: false,
+    tabDirection: 'right',
     contacts: [],
     chats: [],
     activePeer: null,
@@ -30,6 +30,10 @@
     actionSheet: null,
     storyMenuOpen: false,
     overlayClosing: false,
+    profileEditOpen: false,
+    settingsOpen: false,
+    recommendationsOpen: false,
+    avatarCrop: null,
     stickerPanel: false,
     stickers: [],
     stickerMap: new Map(),
@@ -148,7 +152,11 @@
       trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 16h10l1-16"/></svg>',
       mute: '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="m23 9-6 6M17 9l6 6"/></svg>',
       block: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/></svg>',
-      story: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M12 8v8M8 12h8"/></svg>'
+      story: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M12 8v8M8 12h8"/></svg>',
+      edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+      menu: '<svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+      chevron: '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>',
+      lock: '<svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -164,6 +172,14 @@
 
   function isMobileLayout() {
     return window.matchMedia('(max-width: 860px)').matches;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function tabIndex(tab) {
+    return { chats: 0, search: 1, notifications: 0, profile: 2 }[tab] ?? 0;
   }
 
   function describeMessage(message) {
@@ -301,9 +317,11 @@
       <div id="call-dock-slot">${renderCallDock()}</div>
       ${renderActionSheet()}
       ${renderStoryMenu()}
+      ${renderProfileEditModal()}
+      ${renderSettingsModal()}
+      ${renderAvatarCropper()}
     `;
     state.tabTransition = false;
-    state.profileSocialTransition = false;
     setTimeout(() => {
       if (state.highlightMessageId) scrollHighlightedMessage();
       else scrollMessagesToBottom();
@@ -314,7 +332,7 @@
   function renderSidebar() {
     return `
       <aside class="sidebar">
-        <div class="side-content tab-content ${state.tabTransition || state.profileSocialTransition ? 'animate-tab' : ''}" data-tab="${esc(state.tab)}">
+        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'left' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}">
           ${state.tab === 'chats' ? renderChatsPanel() : state.tab === 'search' ? renderSearchPanel() : state.tab === 'notifications' ? renderNotificationsPage() : renderProfilePanel()}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
@@ -384,6 +402,34 @@
           ${renderSearchResults()}
         </div>
       </section>
+      <section class="search-discover">
+        <h2>Discover</h2>
+        <div class="discover-grid">
+          <article>
+            ${icon('search')}
+            <strong>Search usernames</strong>
+            <small>Find people by username or display name.</small>
+          </article>
+          <article>
+            ${icon('messages')}
+            <strong>Start a chat</strong>
+            <small>Add someone first, then message from the Messages tab.</small>
+          </article>
+        </div>
+        ${state.recommendations.length ? `
+          <h2>People you may know</h2>
+          <div class="recommendation-row expanded">
+            ${state.recommendations.slice(0, 8).map((user) => `
+              <article class="recommend-card">
+                ${avatarHtml(user)}
+                <strong>${esc(user.displayName)}</strong>
+                <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
+                <button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>
+              </article>
+            `).join('')}
+          </div>
+        ` : ''}
+      </section>
       ${state.publicProfile ? renderPublicProfileCard(state.publicProfile) : ''}
     `;
   }
@@ -393,6 +439,9 @@
     const profileUrl = `${location.origin}/u/${state.me.username}`;
     const story = state.me.stories?.[0];
     return `
+      <section class="profile-top-actions">
+        <button class="icon-btn" data-action="open-settings" aria-label="Settings">${icon('menu')}</button>
+      </section>
       <section class="profile-hero">
         <button class="avatar profile-avatar-btn" data-action="avatar-menu" title="Profile picture and story">
           ${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}
@@ -400,11 +449,12 @@
         </button>
         <div>
           <strong>${esc(state.me.displayName)}</strong>
-          <span>@${esc(state.me.username)}</span>
+          <span class="profile-username">@${esc(state.me.username)} <button class="icon-inline-btn" data-action="open-profile-edit" aria-label="Edit profile">${icon('edit')}</button></span>
           <div class="social-stats">
             <button type="button" class="social-stat-btn" data-action="open-social" data-social="followers"><strong>${state.me.followerCount ?? 0}</strong> followers</button>
             <button type="button" class="social-stat-btn" data-action="open-social" data-social="following"><strong>${state.me.followingCount ?? 0}</strong> following</button>
           </div>
+          ${state.me.bio ? `<p class="profile-bio">${esc(state.me.bio)}</p>` : ''}
           <div class="toolbar profile-hero-actions">
             <button class="mini-btn" data-action="show-profile-link" data-link="${esc(profileUrl)}">${icon('link')} Link</button>
           </div>
@@ -422,27 +472,15 @@
           </div>
         </section>
       ` : ''}
-      <section class="panel-card">
-        <h2>Profile</h2>
-        <form class="form" data-form="profile">
-          <label class="field">Display name
-            <input name="displayName" value="${esc(state.me.displayName)}" maxlength="60">
-          </label>
-          <label class="field">Bio
-            <textarea name="bio" maxlength="280">${esc(state.me.bio || '')}</textarea>
-          </label>
-          <label class="checkbox-field">
-            <input name="socialPublic" type="checkbox" ${state.me.socialPublic ? 'checked' : ''}>
-            <span>Show followers and following publicly</span>
-          </label>
-          <button class="primary" type="submit">Save profile</button>
-        </form>
+      <section class="profile-fill">
+        <h2>Activity</h2>
+        <div class="profile-activity-grid">
+          <span><strong>${state.contacts.length}</strong><small>friends</small></span>
+          <span><strong>${state.me.stories?.length || 0}</strong><small>stories</small></span>
+          <span><strong>${state.chats.length}</strong><small>chats</small></span>
+        </div>
       </section>
       ${renderRecommendations()}
-      ${renderTwoFactorPanel()}
-      <section class="panel-card danger-zone">
-        <button class="danger logout-btn" data-action="logout">Log out</button>
-      </section>
     `;
   }
 
@@ -456,7 +494,7 @@
           <button class="icon-btn" data-action="close-social" aria-label="Back">${icon('back')}</button>
           <h2>${view === 'followers' ? 'Followers' : 'Following'}</h2>
         </header>
-        <div class="segmented social-switch">
+        <div class="segmented social-switch is-${view}">
           <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers">Followers</button>
           <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-social" data-social="following">Following</button>
         </div>
@@ -499,29 +537,24 @@
   }
 
   function renderRecommendations() {
-    if (!state.recommendations.length) {
-      return `
-        <section class="panel-card">
-          <h2>Suggestions</h2>
-          <p class="hint">Friends of friends will appear here after you add more people.</p>
-        </section>
-      `;
-    }
     return `
-      <section class="panel-card">
-        <h2>Suggestions</h2>
-        <div class="result-list">
-          ${state.recommendations.map((user) => `
-            <article class="person-card">
-              ${avatarHtml(user)}
-              <span class="person">
+      <section class="suggestion-section">
+        <button class="suggestion-toggle" data-action="toggle-recommendations">
+          <span>Suggested for you</span>
+          <span class="chevron ${state.recommendationsOpen ? 'open' : ''}">${icon('chevron')}</span>
+        </button>
+        ${state.recommendationsOpen ? `
+          <div class="recommendation-row">
+            ${state.recommendations.length ? state.recommendations.map((user) => `
+              <article class="recommend-card">
+                ${avatarHtml(user)}
                 <strong>${esc(user.displayName)}</strong>
-                <small>@${esc(user.username)} - ${esc(user.mutualCount)} mutual</small>
-              </span>
-              <button class="mini-btn" data-action="add-contact" data-username="${esc(user.username)}">Add</button>
-            </article>
-          `).join('')}
-        </div>
+                <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
+                <button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>
+              </article>
+            `).join('') : '<p class="hint">Friends of friends will appear here after you add more people.</p>'}
+          </div>
+        ` : ''}
       </section>
     `;
   }
@@ -701,11 +734,11 @@
     const highlighted = state.highlightMessageId === message.id;
     return `
       <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''}" data-message-id="${esc(message.id)}">
-        <div class="swipe-time">${esc(formatTime(message.createdAt))}</div>
         <div class="bubble">
           ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
           ${renderMessageBody(message)}
         </div>
+        <div class="swipe-time">${esc(formatTime(message.createdAt))}</div>
       </article>
     `;
   }
@@ -859,10 +892,88 @@
   function renderStoryMenu() {
     if (!state.storyMenuOpen) return '';
     return `
-      <div class="overlay no-motion ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
+      <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
         <section class="action-sheet story-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           <button data-action="post-story">${icon('story')} Post story</button>
           <button data-action="change-profile-picture">${icon('profile')} Change profile picture</button>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderProfileEditModal() {
+    if (!state.profileEditOpen) return '';
+    return `
+      <div class="center-overlay" data-action="close-modal">
+        <section class="center-modal" data-stop-close>
+          <header class="modal-head">
+            <h2>Edit profile</h2>
+            <button class="icon-btn" data-action="close-modal" aria-label="Close">${icon('x')}</button>
+          </header>
+          <form class="form" data-form="profile-edit">
+            <label class="field">Username
+              <input name="username" value="${esc(state.me.username)}" maxlength="24" autocomplete="username">
+            </label>
+            <label class="field">Bio
+              <textarea name="bio" maxlength="280">${esc(state.me.bio || '')}</textarea>
+            </label>
+            <button class="primary" type="submit">Save</button>
+          </form>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderSettingsModal() {
+    if (!state.settingsOpen) return '';
+    return `
+      <div class="center-overlay" data-action="close-modal">
+        <section class="center-modal settings-modal" data-stop-close>
+          <header class="modal-head">
+            <h2>Settings</h2>
+            <button class="icon-btn" data-action="close-modal" aria-label="Close">${icon('x')}</button>
+          </header>
+          <section class="settings-block">
+            <h3>${icon('lock')} Privacy</h3>
+            <label class="switch-row">
+              <span>
+                <strong>Show followers and following</strong>
+                <small>People can see your follower and following counts and lists.</small>
+              </span>
+              <input type="checkbox" data-action="toggle-profile-privacy" ${state.me.socialPublic ? 'checked' : ''}>
+            </label>
+            <label class="switch-row">
+              <span>
+                <strong>Show when searched</strong>
+                <small>If a user searches up another user, you appear in the search results.</small>
+              </span>
+              <input type="checkbox" data-action="toggle-profile-searchable" ${state.me.searchable !== false ? 'checked' : ''}>
+            </label>
+          </section>
+          ${renderTwoFactorPanel()}
+          <section class="settings-block danger-zone">
+            <button class="danger logout-btn" data-action="logout">Log out</button>
+          </section>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderAvatarCropper() {
+    if (!state.avatarCrop) return '';
+    return `
+      <div class="center-overlay crop-overlay">
+        <section class="crop-modal">
+          <header class="modal-head">
+            <h2>Crop profile picture</h2>
+            <button class="icon-btn" data-action="cancel-avatar-crop" aria-label="Close">${icon('x')}</button>
+          </header>
+          <div class="crop-stage" id="crop-stage">
+            <img src="${esc(state.avatarCrop.dataUrl)}" alt="">
+            <div class="crop-mask"></div>
+            <div class="crop-circle" style="left:${state.avatarCrop.x}px; top:${state.avatarCrop.y}px; width:${state.avatarCrop.size}px; height:${state.avatarCrop.size}px"></div>
+          </div>
+          <button class="primary crop-confirm" data-action="confirm-avatar-crop">Confirm</button>
         </section>
       </div>
     `;
@@ -1027,22 +1138,94 @@
     renderApp();
   }
 
+  async function updateProfilePatch(patch) {
+    const body = {
+      username: state.me.username,
+      displayName: state.me.displayName,
+      bio: state.me.bio || '',
+      socialPublic: state.me.socialPublic,
+      searchable: state.me.searchable !== false,
+      ...patch
+    };
+    const data = await api('/api/me/profile', { method: 'PATCH', body });
+    state.me = data.user;
+    return data.user;
+  }
+
   async function uploadAvatar(file) {
     if (!file) return;
+    await uploadAvatarData(await fileToDataUrl(file), file.name, file.lastModified);
+  }
+
+  async function uploadAvatarData(dataUrl, name = 'avatar.png', lastModified = null) {
     const body = {
       displayName: state.me.displayName,
       bio: state.me.bio || '',
+      username: state.me.username,
+      socialPublic: state.me.socialPublic,
+      searchable: state.me.searchable !== false,
       avatar: {
-        name: file.name,
-        type: file.type,
-        dataUrl: await fileToDataUrl(file),
-        lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null
+        name,
+        type: mimeFromDataUrl(dataUrl),
+        dataUrl,
+        lastModified: lastModified ? new Date(lastModified).toISOString() : null
       }
     };
     const data = await api('/api/me/profile', { method: 'PATCH', body });
     state.me = data.user;
     state.storyMenuOpen = false;
+    state.avatarCrop = null;
     renderApp();
+  }
+
+  async function beginAvatarCrop(file) {
+    if (!file) return;
+    const dataUrl = await fileToDataUrl(file);
+    state.avatarCrop = {
+      dataUrl,
+      name: file.name || 'avatar.png',
+      lastModified: file.lastModified || Date.now(),
+      x: 42,
+      y: 42,
+      size: 220,
+      drag: null
+    };
+    renderApp();
+  }
+
+  function mimeFromDataUrl(dataUrl) {
+    return /^data:([^;,]+)/.exec(String(dataUrl || ''))?.[1] || 'image/png';
+  }
+
+  function loadImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  }
+
+  async function confirmAvatarCrop() {
+    const crop = state.avatarCrop;
+    const stage = document.getElementById('crop-stage');
+    if (!crop || !stage) return;
+    const rect = stage.getBoundingClientRect();
+    const img = await loadImage(crop.dataUrl);
+    const scale = Math.max(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+    const displayW = img.naturalWidth * scale;
+    const displayH = img.naturalHeight * scale;
+    const offsetX = (rect.width - displayW) / 2;
+    const offsetY = (rect.height - displayH) / 2;
+    const sx = Math.max(0, (crop.x - offsetX) / scale);
+    const sy = Math.max(0, (crop.y - offsetY) / scale);
+    const sourceSize = Math.min(img.naturalWidth - sx, img.naturalHeight - sy, crop.size / scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, sx, sy, sourceSize, sourceSize, 0, 0, 512, 512);
+    await uploadAvatarData(canvas.toDataURL('image/png'), `cropped-${crop.name.replace(/\.[^.]+$/, '')}.png`, crop.lastModified);
   }
 
   async function uploadStory(file) {
@@ -1671,13 +1854,6 @@
 
   function closeOverlays() {
     if (!state.actionSheet && !state.storyMenuOpen) return;
-    if (state.storyMenuOpen && !state.actionSheet) {
-      clearTimeout(overlayCloseTimer);
-      state.storyMenuOpen = false;
-      state.overlayClosing = false;
-      renderApp();
-      return;
-    }
     clearTimeout(overlayCloseTimer);
     state.overlayClosing = true;
     renderApp();
@@ -1751,6 +1927,15 @@
         state.me = data.user;
         renderApp();
       }
+      if (form.dataset.form === 'profile-edit') {
+        await updateProfilePatch({
+          username: formValue(form, 'username'),
+          displayName: state.me.displayName,
+          bio: formValue(form, 'bio')
+        });
+        state.profileEditOpen = false;
+        renderApp();
+      }
     } catch (error) {
       if (error.data?.requiresTwoFactor) {
         state.needsTwoFactor = true;
@@ -1768,6 +1953,7 @@
     if (!target) return;
     const action = target.dataset.action;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-modal' && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
       if (action === 'auth-mode') {
@@ -1794,6 +1980,7 @@
         const nextTab = target.dataset.tab;
         state.lastTab = state.tab;
         state.tabTransition = nextTab !== state.tab;
+        state.tabDirection = tabIndex(nextTab) < tabIndex(state.tab) ? 'left' : 'right';
         state.tab = nextTab;
         if (isMobileLayout()) {
           state.activePeer = null;
@@ -1889,12 +2076,14 @@
       if (action === 'open-notifications') {
         state.lastTab = state.tab;
         state.tabTransition = true;
+        state.tabDirection = 'right';
         state.tab = 'notifications';
         await refreshChatsOnly();
         renderApp();
       }
       if (action === 'back-from-notifications') {
         state.tabTransition = true;
+        state.tabDirection = 'left';
         state.tab = state.lastTab === 'notifications' ? 'chats' : (state.lastTab || 'chats');
         renderApp();
       }
@@ -1908,14 +2097,37 @@
       if (action === 'show-profile-link') {
         openActionSheet({ type: 'profile-link', link: target.dataset.link });
       }
+      if (action === 'open-profile-edit') {
+        state.profileEditOpen = true;
+        renderApp();
+      }
+      if (action === 'open-settings') {
+        state.settingsOpen = true;
+        renderApp();
+      }
+      if (action === 'close-modal') {
+        state.profileEditOpen = false;
+        state.settingsOpen = false;
+        renderApp();
+      }
+      if (action === 'toggle-recommendations') {
+        state.recommendationsOpen = !state.recommendationsOpen;
+        renderApp();
+      }
+      if (action === 'toggle-profile-privacy') {
+        await updateProfilePatch({ socialPublic: target.checked });
+        renderApp();
+      }
+      if (action === 'toggle-profile-searchable') {
+        await updateProfilePatch({ searchable: target.checked });
+        renderApp();
+      }
       if (action === 'open-social') {
         const nextSocial = target.dataset.social === 'following' ? 'following' : 'followers';
-        state.profileSocialTransition = nextSocial !== state.profileSocialView;
         state.profileSocialView = nextSocial;
         renderApp();
       }
       if (action === 'close-social') {
-        state.profileSocialTransition = Boolean(state.profileSocialView);
         state.profileSocialView = null;
         renderApp();
       }
@@ -1935,6 +2147,13 @@
         state.storyMenuOpen = false;
         renderApp();
         document.getElementById('avatar-input')?.click();
+      }
+      if (action === 'cancel-avatar-crop') {
+        state.avatarCrop = null;
+        renderApp();
+      }
+      if (action === 'confirm-avatar-crop') {
+        await confirmAvatarCrop();
       }
       if (action === 'save-story') {
         await saveStory(target.dataset.storyId);
@@ -2001,7 +2220,7 @@
       if (event.target.id === 'avatar-input') {
         const file = event.target.files[0];
         event.target.value = '';
-        if (file) await uploadAvatar(file);
+        if (file) await beginAvatarCrop(file);
       }
       if (event.target.id === 'story-input') {
         const file = event.target.files[0];
@@ -2077,6 +2296,28 @@
       state.edgeSwipe = { startX: event.clientX, startY: event.clientY };
     }
 
+    const cropStage = event.target.closest('#crop-stage');
+    if (state.avatarCrop && cropStage) {
+      event.preventDefault();
+      const rect = cropStage.getBoundingClientRect();
+      const crop = state.avatarCrop;
+      const localX = event.clientX - rect.left;
+      const localY = event.clientY - rect.top;
+      if (!event.target.closest('.crop-circle')) {
+        crop.x = clamp(localX - crop.size / 2, 0, rect.width - crop.size);
+        crop.y = clamp(localY - crop.size / 2, 0, rect.height - crop.size);
+      }
+      crop.drag = {
+        offsetX: localX - crop.x,
+        offsetY: localY - crop.y,
+        width: rect.width,
+        height: rect.height
+      };
+      cropStage.setPointerCapture?.(event.pointerId);
+      renderApp();
+      return;
+    }
+
     const recordButton = event.target.closest('[data-action="record-voice"]');
     if (recordButton) {
       event.preventDefault();
@@ -2116,6 +2357,18 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.avatarCrop?.drag) {
+      const crop = state.avatarCrop;
+      const rect = document.getElementById('crop-stage')?.getBoundingClientRect();
+      const width = rect?.width || crop.drag.width;
+      const height = rect?.height || crop.drag.height;
+      const left = rect ? event.clientX - rect.left : event.clientX;
+      const top = rect ? event.clientY - rect.top : event.clientY;
+      crop.x = clamp(left - crop.drag.offsetX, 0, width - crop.size);
+      crop.y = clamp(top - crop.drag.offsetY, 0, height - crop.size);
+      renderApp();
+      return;
+    }
     if (state.longPressTimer) {
       const pointer = state.drag || state.edgeSwipe;
       if (pointer && Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) > 10) {
@@ -2135,6 +2388,10 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.avatarCrop?.drag) {
+      state.avatarCrop.drag = null;
+      return;
+    }
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;
     const recordButton = event.target.closest('[data-action="record-voice"]') || document.querySelector('.recording');
@@ -2148,6 +2405,7 @@
         else if (state.lastTab && state.lastTab !== state.tab) {
           const current = state.tab;
           state.tabTransition = true;
+          state.tabDirection = tabIndex(state.lastTab) < tabIndex(state.tab) ? 'left' : 'right';
           state.tab = state.lastTab;
           state.lastTab = current;
         }
@@ -2180,6 +2438,7 @@
       state.drag.el.classList.remove('reveal-time');
       state.drag = null;
     }
+    if (state.avatarCrop?.drag) state.avatarCrop.drag = null;
     state.edgeSwipe = null;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;

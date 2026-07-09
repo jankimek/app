@@ -200,7 +200,8 @@ function basicPublicUser(user) {
     avatar: publicFile(avatar),
     stories: activeStoriesFor(user.id).map(publicStory),
     url: `/u/${encodeURIComponent(user.username)}`,
-    createdAt: user.createdAt
+    createdAt: user.createdAt,
+    searchable: user.profile?.searchable !== false
   };
 }
 
@@ -711,7 +712,8 @@ async function handleApi(req, res, pathname, query) {
         displayName: username,
         bio: '',
         avatarFileId: null,
-        socialPublic: true
+        socialPublic: true,
+        searchable: true
       },
       twoFactor: {
         enabled: false,
@@ -766,9 +768,22 @@ async function handleApi(req, res, pathname, query) {
     const user = await requireAuth(req, res);
     if (!user) return;
     const body = await readJsonBody(req);
-    user.profile.displayName = cleanText(body.displayName || user.username, 60) || user.username;
+    const username = cleanText(body.username || user.username, 24);
+    const usernameLower = normalizeUsername(username);
+    if (username !== user.username) {
+      if (!/^[a-zA-Z0-9_.]{3,24}$/.test(username)) {
+        return sendError(res, 400, 'Username must be 3-24 characters and use letters, numbers, underscores, or dots.');
+      }
+      if (Object.values(db.users).some((item) => item.id !== user.id && item.usernameLower === usernameLower)) {
+        return sendError(res, 409, 'That username is already taken.');
+      }
+      user.username = username;
+      user.usernameLower = usernameLower;
+    }
+    user.profile.displayName = cleanText(body.displayName || user.profile.displayName || user.username, 60) || user.username;
     user.profile.bio = cleanText(body.bio || '', 280);
     if (body.socialPublic !== undefined) user.profile.socialPublic = Boolean(body.socialPublic);
+    if (body.searchable !== undefined) user.profile.searchable = Boolean(body.searchable);
     if (body.avatar?.dataUrl) {
       if (!mimeFromDataUrl(body.avatar.dataUrl).startsWith('image/')) return sendError(res, 400, 'Profile picture must be an image.');
       const file = await saveUpload(body.avatar, user.id, 'avatar');
@@ -868,6 +883,7 @@ async function handleApi(req, res, pathname, query) {
     const q = String(query.get('q') || '').trim().toLowerCase();
     const users = Object.values(db.users)
       .filter((item) => item.id !== user.id)
+      .filter((item) => item.profile?.searchable !== false)
       .filter((item) => !q || item.usernameLower.includes(q) || (item.profile.displayName || '').toLowerCase().includes(q))
       .slice(0, 30)
       .map((item) => publicUser(item, user.id));
@@ -882,6 +898,7 @@ async function handleApi(req, res, pathname, query) {
     for (const friendId of direct) {
       for (const candidateId of db.contacts[friendId] || []) {
         if (candidateId === user.id || direct.has(candidateId) || hasBlocked(user.id, candidateId) || hasBlocked(candidateId, user.id)) continue;
+        if (db.users[candidateId]?.profile?.searchable === false) continue;
         candidates.set(candidateId, (candidates.get(candidateId) || 0) + 1);
       }
     }
