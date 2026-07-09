@@ -30,6 +30,7 @@
     activePeer: null,
     chatProfileOpen: false,
     messages: [],
+    composerDrafts: {},
     highlightMessageId: null,
     searchResults: [],
     conversationQuery: '',
@@ -342,6 +343,7 @@
     `;
     state.tabTransition = false;
     setTimeout(() => {
+      resizeComposerInput();
       if (state.highlightMessageId) scrollHighlightedMessage();
       else scrollMessagesToBottom();
       attachCallStreams();
@@ -677,8 +679,7 @@
           </div>
         </header>
         <section class="messages" id="messages">
-          ${state.messages.length ? state.messages.map(renderMessage).join('') : (state.typingPeerId === state.activePeer.id ? '' : '<div class="empty-state">No messages yet. Send the first one.</div>')}
-          ${renderTypingIndicator()}
+          ${renderMessagesList()}
         </section>
         <footer>
           ${state.stickerPanel ? renderStickerPanel() : ''}
@@ -692,7 +693,7 @@
             <div class="composer-row">
               <button class="icon-btn" title="Attach file" aria-label="Attach file" data-action="attach-open">${icon('file')}</button>
               <button class="icon-btn" title="Stickers" aria-label="Stickers" data-action="sticker-toggle">${icon('sticker')}</button>
-              <textarea id="composer-text" class="composer-input" rows="1" placeholder="Message ${esc(state.activePeer.displayName)}"></textarea>
+              <textarea id="composer-text" class="composer-input" rows="1" placeholder="Message ${esc(state.activePeer.displayName)}">${esc(state.composerDrafts[state.activePeer.id] || '')}</textarea>
               <button class="icon-btn" title="Hold to record voice" aria-label="Hold to record voice" data-action="record-voice">${icon('mic')}</button>
               <button class="primary send-btn" title="Send" aria-label="Send" data-action="send-text">${icon('send')}</button>
               <input id="file-input" type="file" hidden>
@@ -780,6 +781,12 @@
         <div class="typing-bubble">typing...</div>
       </article>
     `;
+  }
+
+  function renderMessagesList() {
+    if (state.messages.length) return `${state.messages.map(renderMessage).join('')}${renderTypingIndicator()}`;
+    if (state.activePeer && state.typingPeerId === state.activePeer.id) return renderTypingIndicator();
+    return '<div class="empty-state">No messages yet. Send the first one.</div>';
   }
 
   function renderRelationshipButton(user) {
@@ -1352,9 +1359,11 @@
 
   async function sendCurrentText() {
     const input = document.getElementById('composer-text');
-    const text = input?.value.trim();
+    const draft = state.activePeer ? state.composerDrafts[state.activePeer.id] : '';
+    const text = (input?.value ?? draft ?? '').trim();
     if (!text || !state.activePeer) return;
     input.value = '';
+    delete state.composerDrafts[state.activePeer.id];
     await sendMessage({ kind: 'text', text });
   }
 
@@ -1387,8 +1396,9 @@
     if (!file || !state.activePeer) return;
     const dataUrl = await fileToDataUrl(file);
     const input = document.getElementById('composer-text');
-    const caption = input?.value.trim() || '';
+    const caption = (input?.value ?? state.composerDrafts[state.activePeer.id] ?? '').trim();
     if (input) input.value = '';
+    delete state.composerDrafts[state.activePeer.id];
     const kind = forcedKind || classifyFile(file);
     await sendMessage({
       kind,
@@ -1617,7 +1627,7 @@
     if (event.type === 'typing') {
       if (event.from === state.activePeer?.id) {
         state.typingPeerId = event.isTyping ? event.from : null;
-        renderApp();
+        if (!updateMessagesList()) renderApp();
       }
     }
     if (event.type === 'signal') {
@@ -2015,6 +2025,22 @@
   function scrollMessagesToBottom() {
     const messages = document.getElementById('messages');
     if (messages) messages.scrollTop = messages.scrollHeight;
+  }
+
+  function resizeComposerInput() {
+    const input = document.getElementById('composer-text');
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
+  }
+
+  function updateMessagesList() {
+    const messages = document.getElementById('messages');
+    if (!messages || !state.activePeer || state.chatProfileOpen) return false;
+    const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
+    messages.innerHTML = renderMessagesList();
+    if (wasNearBottom) scrollMessagesToBottom();
+    return true;
   }
 
   function scrollHighlightedMessage() {
@@ -2428,8 +2454,8 @@
       }, 220);
     }
     if (event.target.id === 'composer-text') {
-      event.target.style.height = 'auto';
-      event.target.style.height = `${Math.min(event.target.scrollHeight, 120)}px`;
+      if (state.activePeer) state.composerDrafts[state.activePeer.id] = event.target.value;
+      resizeComposerInput();
       sendTypingSignal(true);
       clearTimeout(state.typingTimer);
       state.typingTimer = setTimeout(() => sendTypingSignal(false), 900);
