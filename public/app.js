@@ -602,8 +602,9 @@
   function renderPublicProfileCard(user) {
     const isMe = user.id === state.me?.id;
     let controls = '<button class="mini-btn" disabled>You</button>';
+    const reportControl = !isMe ? `<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>` : '';
     if (!isMe) {
-      if (user.isContact) controls = `<button class="mini-btn" disabled>Following</button><button class="mini-btn" data-action="open-chat" data-user-id="${esc(user.id)}">Message</button>`;
+      if (user.isContact) controls = `<button class="mini-btn" disabled>Following</button><button class="mini-btn" data-action="open-chat" data-user-id="${esc(user.id)}">Message</button><button class="mini-btn danger" data-action="remove-friend" data-user-id="${esc(user.id)}">Unfollow</button>`;
       else if (user.incomingRequest) controls = `<button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button><button class="mini-btn" data-action="decline-request" data-request-id="${esc(user.incomingRequest.id)}">Decline</button>`;
       else if (user.outgoingRequest) controls = '<button class="mini-btn" disabled>Requested</button>';
       else if (user.hasBlocked || user.blockedBy) controls = '<button class="mini-btn" disabled>Blocked</button>';
@@ -618,6 +619,7 @@
         </span>
         <span class="toolbar">
           ${controls}
+          ${reportControl}
         </span>
       </article>
     `;
@@ -723,7 +725,8 @@
             <h2>Controls</h2>
             <div class="profile-control-list">
               <button class="secondary" data-action="mute-menu" data-user-id="${esc(peer.id)}">${icon('mute')} Mute</button>
-              <button class="danger" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Remove friend</button>
+              <button class="danger" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Unfollow</button>
+              <button class="secondary" data-action="open-report" data-report-type="user" data-user-id="${esc(peer.id)}">Report user</button>
               ${peer.hasBlocked
                 ? `<button class="secondary" data-action="unblock-user" data-user-id="${esc(peer.id)}">Unblock</button>`
                 : `<button class="danger" data-action="block-user" data-user-id="${esc(peer.id)}">${icon('block')} Block</button>`}
@@ -743,7 +746,7 @@
     return `
       <main class="chat-pane profile-pane">
         <header class="chat-header">
-          <button class="icon-btn back-btn" title="Back" aria-label="Back" data-action="close-peer-social">${icon('back')}</button>
+          <button class="icon-btn" title="Back" aria-label="Back" data-action="close-peer-social">${icon('back')}</button>
           <div class="chat-title">
             <strong>${esc(view === 'followers' ? 'Followers' : 'Following')}</strong>
             <small>@${esc(peer.username)}</small>
@@ -800,9 +803,22 @@
     return '<div class="empty-state">No messages yet. Send the first one.</div>';
   }
 
+  function reportReasons() {
+    return [
+      'Spam or scam',
+      'Harassment or bullying',
+      'Hate or abuse',
+      'Sexual content',
+      'Violence or threat',
+      'Impersonation',
+      'Illegal or dangerous activity',
+      'Other'
+    ];
+  }
+
   function renderRelationshipButton(user) {
     if (!user || user.id === state.me?.id) return '<button class="mini-btn" disabled>You</button>';
-    if (user.isContact) return '<button class="mini-btn" disabled>Following</button>';
+    if (user.isContact) return `<button class="mini-btn" disabled>Following</button><button class="mini-btn danger" data-action="remove-friend" data-user-id="${esc(user.id)}">Unfollow</button><button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
     if (user.incomingRequest) {
       return `
         <button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button>
@@ -811,7 +827,7 @@
     }
     if (user.outgoingRequest) return '<button class="mini-btn" disabled>Requested</button>';
     if (user.hasBlocked || user.blockedBy) return '<button class="mini-btn" disabled>Blocked</button>';
-    return `<button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>`;
+    return `<button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button><button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
   }
 
   function renderMessageBody(message) {
@@ -920,7 +936,8 @@
     if (sheet.type === 'chat-user' && peer) {
       body = `
         <button data-action="mute-menu" data-user-id="${esc(peer.id)}">${icon('mute')} Mute</button>
-        <button class="danger-text" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Remove friend</button>
+        <button class="danger-text" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Unfollow</button>
+        <button data-action="open-report" data-report-type="user" data-user-id="${esc(peer.id)}">Report user</button>
         ${peer.hasBlocked
           ? `<button data-action="unblock-user" data-user-id="${esc(peer.id)}">Unblock</button>`
           : `<button class="danger-text" data-action="block-user" data-user-id="${esc(peer.id)}">${icon('block')} Block</button>`}
@@ -941,7 +958,21 @@
       body = `
         ${message.attachment ? `<button data-action="download-message-file" data-message-id="${esc(message.id)}">Download file</button><button data-action="download-meta" data-message-id="${esc(message.id)}">Download metadata</button>` : ''}
         ${message.attachment && message.kind === 'image' ? `<button data-action="download-file-meta" data-message-id="${esc(message.id)}">Download image + metadata</button>` : ''}
+        ${message.senderId !== state.me.id ? `<button data-action="open-report" data-report-type="message" data-message-id="${esc(message.id)}" data-user-id="${esc(message.senderId)}">Report message</button>` : ''}
         ${message.senderId === state.me.id && !message.deletedAt ? `<button class="danger-text" data-action="delete-message" data-message-id="${esc(message.id)}">${icon('trash')} Delete message</button>` : ''}
+      `;
+    }
+    if (sheet.type === 'report') {
+      const reported = sheet.userId ? userById(sheet.userId) : null;
+      const label = sheet.targetType === 'message' ? 'message' : `@${reported?.username || 'user'}`;
+      body = `
+        <div class="sheet-note">
+          <strong>Report ${esc(label)}</strong>
+          <small>Choose a reason. The report includes account and network details for review.</small>
+        </div>
+        ${reportReasons().map((reason) => `
+          <button data-action="submit-report" data-report-type="${esc(sheet.targetType)}" data-user-id="${esc(sheet.userId || '')}" data-message-id="${esc(sheet.messageId || '')}" data-reason="${esc(reason)}">${esc(reason)}</button>
+        `).join('')}
       `;
     }
     if (sheet.type === 'profile-link') {
@@ -1191,14 +1222,34 @@
   }
 
   async function removeFriend(userId) {
-    await api(`/api/contacts/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    const data = await api(`/api/contacts/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    const updateUser = (item) => item?.id === userId ? { ...item, ...(data.user || {}), isContact: false } : item;
+    state.searchResults = state.searchResults.map(updateUser);
+    state.recommendations = state.recommendations.map(updateUser);
+    if (state.publicProfile?.id === userId) state.publicProfile = updateUser(state.publicProfile);
     if (state.activePeer?.id === userId) {
       state.activePeer = null;
       state.chatProfileOpen = false;
+      state.chatProfileSocialView = null;
     }
     await loadContactsAndChats();
     state.actionSheet = null;
     renderApp();
+  }
+
+  async function submitReport({ targetType, userId, messageId, reason }) {
+    const data = await api('/api/reports', {
+      method: 'POST',
+      body: {
+        targetType,
+        reportedUserId: userId || null,
+        messageId: messageId || null,
+        reason
+      }
+    });
+    state.actionSheet = null;
+    renderApp();
+    alert(data.emailSent ? 'Report sent.' : 'Report saved. Email delivery needs server mail setup.');
   }
 
   async function blockUser(userId) {
@@ -2251,6 +2302,22 @@
         state.actionSheet = null;
         renderApp();
       }
+      if (action === 'open-report') {
+        openActionSheet({
+          type: 'report',
+          targetType: target.dataset.reportType === 'message' ? 'message' : 'user',
+          userId: target.dataset.userId || null,
+          messageId: target.dataset.messageId || null
+        });
+      }
+      if (action === 'submit-report') {
+        await submitReport({
+          targetType: target.dataset.reportType === 'message' ? 'message' : 'user',
+          userId: target.dataset.userId || null,
+          messageId: target.dataset.messageId || null,
+          reason: target.dataset.reason
+        });
+      }
       if (action === 'export-chat') {
         exportChat(target.dataset.format);
       }
@@ -2369,7 +2436,7 @@
         await setMuteFor(target.dataset.userId, target.dataset.minutes);
       }
       if (action === 'remove-friend') {
-        if (confirm('Remove this friend? The chat stays archived on the server and will return if you add each other again.')) await removeFriend(target.dataset.userId);
+        if (confirm('Unfollow this user? The chat stays archived on the server and will return if you add each other again.')) await removeFriend(target.dataset.userId);
       }
       if (action === 'block-user') {
         if (confirm('Block this user? Messaging will be blocked until you unblock them.')) await blockUser(target.dataset.userId);
@@ -2559,7 +2626,7 @@
     }
 
     const message = event.target.closest('.message');
-    if (!message || event.target.closest('button,a,input,textarea,video,audio')) return;
+    if (!message || event.target.closest('button,a,input,textarea')) return;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = setTimeout(() => {
       state.longPressTriggered = true;
@@ -2608,8 +2675,11 @@
     const dx = event.clientX - state.drag.startX;
     const dy = event.clientY - state.drag.startY;
     if (Math.abs(dx) > Math.abs(dy)) {
-      state.drag.el.classList.add('reveal-time');
-      const amount = dx < 0 ? Math.max(dx, -92) : Math.min(dx, 92);
+      const draggedMessage = state.messages.find((message) => message.id === state.drag.id);
+      const mine = draggedMessage?.senderId === state.me.id;
+      const allowedDx = mine ? Math.min(dx, 0) : Math.max(dx, 0);
+      const amount = allowedDx < 0 ? Math.max(allowedDx, -92) : Math.min(allowedDx, 92);
+      state.drag.el.classList.toggle('reveal-time', Math.abs(amount) > 4);
       state.drag.el.style.transform = `translateX(${amount}px)`;
       state.drag.el.style.transition = 'none';
     }
@@ -2652,16 +2722,11 @@
       const draggedMessage = state.messages.find((message) => message.id === state.drag.id);
       const mine = draggedMessage?.senderId === state.me.id;
       const replySwipe = mine ? dx < -70 : dx > 70;
-      const cancelSwipe = mine ? dx > 70 : dx < -70;
       state.drag.el.style.transform = '';
       state.drag.el.style.transition = '';
       state.drag.el.classList.remove('reveal-time');
       if (replySwipe) {
         state.replyTo = draggedMessage || null;
-        renderApp();
-      }
-      if (cancelSwipe && state.replyTo?.id === state.drag.id) {
-        state.replyTo = null;
         renderApp();
       }
       state.drag = null;

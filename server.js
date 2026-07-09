@@ -3,6 +3,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -12,6 +13,19 @@ const PORT = Number(process.env.PORT || 3000);
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 35 * 1024 * 1024);
 const COOKIE_NAME = 'chat_sid';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const REPORT_EMAIL = process.env.REPORT_EMAIL || 'newcomearound@gmail.com';
+const SENDMAIL_PATH = process.env.SENDMAIL_PATH || '/usr/sbin/sendmail';
+const REPORT_REASONS = [
+  'Spam or scam',
+  'Harassment or bullying',
+  'Hate or abuse',
+  'Sexual content',
+  'Violence or threat',
+  'Impersonation',
+  'Illegal or dangerous activity',
+  'Other'
+];
+const reportReasonsSet = new Set(REPORT_REASONS);
 
 for (const dir of [PUBLIC_DIR, DATA_DIR, UPLOAD_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -27,7 +41,9 @@ const db = {
   notifications: readJson('notifications.json', {}),
   blocks: readJson('blocks.json', {}),
   mutes: readJson('mutes.json', {}),
-  stories: readJson('stories.json', {})
+  stories: readJson('stories.json', {}),
+  reports: readJson('reports.json', []),
+  userMeta: readJson('userMeta.json', {})
 };
 
 const socketsByUser = new Map();
@@ -87,6 +103,14 @@ function saveStories() {
   return saveJson('stories.json', db.stories);
 }
 
+function saveReports() {
+  return saveJson('reports.json', db.reports);
+}
+
+function saveUserMeta() {
+  return saveJson('userMeta.json', db.userMeta);
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -133,6 +157,32 @@ function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
 }
 
+function requestNetworkInfo(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '');
+  const realIp = String(req.headers['x-real-ip'] || '');
+  const remoteAddress = req.socket?.remoteAddress || '';
+  const ip = (forwarded.split(',')[0] || realIp || remoteAddress || '').trim();
+  return {
+    ip,
+    remoteAddress,
+    xForwardedFor: forwarded,
+    xRealIp: realIp,
+    userAgent: String(req.headers['user-agent'] || ''),
+    host: String(req.headers.host || ''),
+    referer: String(req.headers.referer || req.headers.referrer || '')
+  };
+}
+
+function rememberUserRequest(userId, req) {
+  if (!userId || !req) return;
+  db.userMeta[userId] = {
+    ...(db.userMeta[userId] || {}),
+    lastSeenAt: nowIso(),
+    network: requestNetworkInfo(req)
+  };
+  saveUserMeta().catch(console.error);
+}
+
 function sessionFromRequest(req) {
   const token = parseCookies(req)[COOKIE_NAME];
   if (!token) return null;
@@ -142,6 +192,7 @@ function sessionFromRequest(req) {
   if (!user) return null;
   session.lastSeenAt = nowIso();
   saveSessions().catch(console.error);
+  rememberUserRequest(user.id, req);
   return { token, session, user };
 }
 
@@ -218,7 +269,11 @@ function publicUser(user, viewerId = null) {
 }
 
 function followStatsFor(user, viewerId = null) {
-  const accepted = Object.values(db.friendRequests).filter((request) => request.status === 'accepted');
+  const accepted = Object.values(db.friendRequests).filter((request) => (
+    request.status === 'accepted' &&
+    (db.contacts[request.fromId] || []).includes(request.toId) &&
+    (db.contacts[request.toId] || []).includes(request.fromId)
+  ));
   const contacts = db.contacts[user.id] || [];
   let followers = [
     ...accepted.filter((request) => request.toId === user.id).map((request) => request.fromId),
@@ -501,6 +556,96 @@ function sendError(res, status, message, extra = {}) {
   sendJson(res, status, { error: message, ...extra });
 }
 
+function mailHeader(value) {
+  return String(value || '').replace(/[\r\n]+/g, ' ').trim();
+}
+
+function reportUserSnapshot(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.profile?.displayName || user.username,
+    email: user.email || '',
+    phone: user.phone || '',
+    createdAt: user.createdAt,
+    lastNetwork: db.userMeta[user.id]?.network || null,
+    lastSeenAt: db.userMeta[user.id]?.lastSeenAt || null
+  };
+}
+
+function reportMessageSnapshot(message, chatId) {
+  if (!message) return null;
+  return {
+    id: message.id,
+    chatId,
+    kind: message.kind,
+    text: message.text || '',
+    createdAt: message.createdAt,
+    sender: reportUserSnapshot(db.users[message.senderId]),
+    recipient: reportUserSnapshot(db.users[message.recipientId]),
+    attachment: message.attachment ? {
+      id: message.attachment.id,
+      name: message.attachment.name,
+      mime: message.attachment.mime,
+      size: message.attachment.size
+    } : null
+  };
+}
+
+function reportEmailBody(report) {
+  return [
+    `Report ID: ${report.id}`,
+    `Created: ${report.createdAt}`,
+    `Reason: ${report.reason}`,
+    `Target type: ${report.targetType}`,
+    '',
+    'Reporter:',
+    JSON.stringify(report.reporter, null, 2),
+    '',
+    'Reported user:',
+    JSON.stringify(report.reportedUser, null, 2),
+    '',
+    'Message:',
+    JSON.stringify(report.message, null, 2),
+    '',
+    'Request network:',
+    JSON.stringify(report.requestNetwork, null, 2)
+  ].join('\n');
+}
+
+function sendMailViaSendmail(to, subject, text) {
+  return new Promise((resolve) => {
+    if (!to || !fs.existsSync(SENDMAIL_PATH)) {
+      resolve({ sent: false, reason: 'sendmail not configured' });
+      return;
+    }
+    const child = spawn(SENDMAIL_PATH, ['-t', '-oi']);
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', (error) => resolve({ sent: false, reason: error.message }));
+    child.on('close', (code) => {
+      resolve(code === 0
+        ? { sent: true }
+        : { sent: false, reason: stderr.trim() || `sendmail exited with ${code}` });
+    });
+    child.stdin.end([
+      `To: ${mailHeader(to)}`,
+      `Subject: ${mailHeader(subject)}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      text
+    ].join('\n'));
+  });
+}
+
+async function sendReportEmail(report) {
+  const subject = `[Chat report] ${report.reason} - ${report.reportedUser?.username || report.targetType}`;
+  return sendMailViaSendmail(REPORT_EMAIL, subject, reportEmailBody(report));
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -730,6 +875,7 @@ async function handleApi(req, res, pathname, query) {
     db.mutes[user.id] = {};
     await Promise.all([saveUsers(), saveContacts(), saveNotifications(), saveBlocks(), saveMutes()]);
     await createSession(res, user.id);
+    rememberUserRequest(user.id, req);
     return sendJson(res, 201, { user: publicUser(user, user.id) });
   }
 
@@ -743,6 +889,7 @@ async function handleApi(req, res, pathname, query) {
       return sendError(res, 401, 'Two-factor code required.', { requiresTwoFactor: true });
     }
     await createSession(res, user.id);
+    rememberUserRequest(user.id, req);
     return sendJson(res, 200, { user: publicUser(user, user.id) });
   }
 
@@ -974,7 +1121,7 @@ async function handleApi(req, res, pathname, query) {
     removeContact(user.id, peer.id);
     await saveContacts();
     pushToUsers([user.id, peer.id], { type: 'relationship:updated' });
-    return sendJson(res, 200, { ok: true });
+    return sendJson(res, 200, { ok: true, user: publicUser(peer, user.id) });
   }
 
   if (req.method === 'GET' && pathname === '/api/notifications') {
@@ -1222,6 +1369,65 @@ async function handleApi(req, res, pathname, query) {
       });
     }
     return sendJson(res, 201, { message: decorated });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/reports') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const targetType = body.targetType === 'message' ? 'message' : 'user';
+    const reason = cleanText(body.reason || '', 140);
+    if (!reportReasonsSet.has(reason)) return sendError(res, 400, 'Choose a valid report reason.');
+
+    let reportedUser = null;
+    let reportedMessage = null;
+    let reportedChatId = null;
+
+    if (targetType === 'message') {
+      const found = findMessage(cleanText(body.messageId || '', 120));
+      if (!found) return sendError(res, 404, 'Message not found.');
+      const { chatId, message } = found;
+      if (message.senderId !== user.id && message.recipientId !== user.id) return sendError(res, 404, 'Message not found.');
+      reportedChatId = chatId;
+      reportedMessage = message;
+      reportedUser = db.users[message.senderId === user.id ? message.recipientId : message.senderId];
+    } else {
+      reportedUser = db.users[cleanText(body.reportedUserId || '', 120)] || userByUsername(body.reportedUserId);
+      if (!reportedUser) return sendError(res, 404, 'User not found.');
+      if (reportedUser.id === user.id) return sendError(res, 400, 'You cannot report yourself.');
+    }
+
+    const report = {
+      id: id('report'),
+      targetType,
+      reason,
+      createdAt: nowIso(),
+      reporter: reportUserSnapshot(user),
+      reportedUser: reportUserSnapshot(reportedUser),
+      message: reportMessageSnapshot(reportedMessage, reportedChatId),
+      requestNetwork: requestNetworkInfo(req),
+      email: {
+        attemptedAt: null,
+        to: REPORT_EMAIL,
+        sent: false,
+        reason: 'not attempted'
+      }
+    };
+
+    if (!Array.isArray(db.reports)) db.reports = [];
+    db.reports.unshift(report);
+    db.reports = db.reports.slice(0, 1000);
+    await saveReports();
+
+    const emailResult = await sendReportEmail(report).catch((error) => ({ sent: false, reason: error.message }));
+    report.email = {
+      attemptedAt: nowIso(),
+      to: REPORT_EMAIL,
+      sent: Boolean(emailResult.sent),
+      reason: emailResult.reason || ''
+    };
+    await saveReports();
+    return sendJson(res, 201, { ok: true, reportId: report.id, emailSent: report.email.sent });
   }
 
   const deleteMessageMatch = /^\/api\/messages\/([^/]+)$/.exec(pathname);

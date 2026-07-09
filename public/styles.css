@@ -730,6 +730,8 @@ a {
   border-radius: 8px;
   object-fit: contain;
   background: rgba(0, 0, 0, 0.2);
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .media-video {
@@ -1505,6 +1507,18 @@ a {
   align-items: center;
   justify-content: center;
   gap: 8px;
+}
+
+.action-sheet .sheet-note {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px 10px;
+  color: var(--text);
+}
+
+.action-sheet .sheet-note small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .action-sheet .danger-text {
