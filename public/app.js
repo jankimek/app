@@ -689,38 +689,53 @@
       ['rise', 'Rise'],
       ['pop', 'Pop']
     ];
+    const allTextChips = [
+      ...fonts.map(([font, label]) => ({
+        label,
+        action: 'story-font',
+        key: 'data-font',
+        value: font,
+        active: editor.textFont === font
+      })),
+      ...effects.map(([effect, label]) => ({
+        label,
+        action: 'story-text-effect',
+        key: 'data-effect',
+        value: effect,
+        active: (editor.textEffect || 'shadow') === effect
+      })),
+      ...animations.map(([animation, label]) => ({
+        label,
+        action: 'story-text-animation',
+        key: 'data-animation',
+        value: animation,
+        active: (editor.textAnimation || 'none') === animation
+      }))
+    ];
     return `
-      <label class="field">Text
-        <input id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Add text">
-      </label>
-      <div class="story-control-row">
-        <button class="${editor.textAlign === 'left' ? 'active' : ''}" data-action="story-text-align" data-align="left">${icon('alignLeft')}</button>
-        <button class="${(editor.textAlign || 'center') === 'center' ? 'active' : ''}" data-action="story-text-align" data-align="center">${icon('alignCenter')}</button>
-        <button class="${editor.textAlign === 'right' ? 'active' : ''}" data-action="story-text-align" data-align="right">${icon('alignRight')}</button>
+      <input class="story-caption-input" id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Type something">
+      <div class="story-pill-row">
+        <button class="${editor.textAlign === 'left' ? 'active' : ''}" data-action="story-text-align" data-align="left" aria-label="Align left">${icon('alignLeft')}</button>
+        <button class="${(editor.textAlign || 'center') === 'center' ? 'active' : ''}" data-action="story-text-align" data-align="center" aria-label="Align center">${icon('alignCenter')}</button>
+        <button class="${editor.textAlign === 'right' ? 'active' : ''}" data-action="story-text-align" data-align="right" aria-label="Align right">${icon('alignRight')}</button>
         <button class="${editor.textBgEnabled ? 'active' : ''}" data-action="story-text-bg">BG</button>
         <button class="${editor.textFrame ? 'active' : ''}" data-action="story-text-frame">Frame</button>
       </div>
-      <div class="story-color-row">
+      <div class="story-swatch-row">
         ${colors.map((color) => `<button class="${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
       </div>
-      <div class="story-color-row">
+      ${editor.textBgEnabled ? `<div class="story-swatch-row">
         ${bgColors.map((color) => `<button class="${editor.textBgColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-bg-color" data-color="${color}" aria-label="Text background color"></button>`).join('')}
-      </div>
-      <div class="story-font-row">
-        ${fonts.map(([font, label]) => `<button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">${esc(label)}</button>`).join('')}
-      </div>
-      <div class="story-chip-row">
-        ${effects.map(([effect, label]) => `<button class="${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">${esc(label)}</button>`).join('')}
-      </div>
-      <div class="story-chip-row">
-        ${animations.map(([animation, label]) => `<button class="${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="story-text-animation" data-animation="${animation}">${esc(label)}</button>`).join('')}
+      </div>` : ''}
+      <div class="story-pill-row story-text-chip-strip">
+        ${allTextChips.map((chip) => `<button class="${chip.active ? 'active' : ''}" data-action="${chip.action}" ${chip.key}="${esc(chip.value)}">${esc(chip.label)}</button>`).join('')}
       </div>
     `;
   }
 
   function storyFilterToolPanel(editor) {
     return `
-      <div class="segmented story-filter-tabs">
+      <div class="story-pill-row">
         ${['normal', 'warm', 'cool', 'mono', 'noir'].map((filter) => `
           <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">${esc(filter)}</button>
         `).join('')}
@@ -730,15 +745,15 @@
 
   function storyCropToolPanel(editor) {
     return `
-      <label class="zoom-control">Crop zoom
+      <label class="story-range">Crop zoom
         <input id="story-editor-zoom" type="range" min="1" max="3" step="0.01" value="${esc(editor.zoom || 1)}">
       </label>
       ${editor.isVideo ? `
-        <div class="story-trim-row">
-          <label class="field">Start
+        <div class="story-mini-grid">
+          <label>Start
             <input id="story-trim-start" type="number" min="0" step="0.1" value="${esc(editor.trimStart || 0)}">
           </label>
-          <label class="field">End
+          <label>End
             <input id="story-trim-end" type="number" min="0" step="0.1" value="${esc(editor.trimEnd || 0)}">
           </label>
         </div>
@@ -748,8 +763,8 @@
 
   function storyStickerToolPanel(editor) {
     return `
-      <input class="search-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="80" placeholder="@user, #hashtag, place, question">
-      <div class="story-sticker-grid">
+      <input class="story-caption-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="80" placeholder="@user, #hashtag, place, question">
+      <div class="story-sticker-dock">
         <button data-action="add-story-sticker" data-sticker-type="emoji">Emoji</button>
         <button data-action="add-story-sticker" data-sticker-type="gif">GIF</button>
         <button data-action="add-story-sticker" data-sticker-type="question">Question</button>
@@ -763,10 +778,10 @@
   function storyDrawToolPanel(editor) {
     const colors = ['#ffffff', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffd166', '#111827'];
     return `
-      <div class="story-color-row">
+      <div class="story-swatch-row">
         ${colors.map((color) => `<button class="${editor.drawColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-draw-color" data-color="${color}" aria-label="Draw color"></button>`).join('')}
       </div>
-      <label class="zoom-control">Brush
+      <label class="story-range">Brush
         <input id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}">
       </label>
       <button class="secondary" data-action="undo-story-draw">Undo last stroke</button>
@@ -775,21 +790,21 @@
 
   function storyAudioToolPanel(editor) {
     return `
-      <button class="secondary" data-action="story-audio-open">${icon('music')} Choose audio</button>
+      <button class="story-audio-pick" data-action="story-audio-open">${icon('music')} Choose audio</button>
       <input id="story-audio-input" type="file" accept="audio/*" hidden>
       ${editor.audio ? `
         <div class="story-audio-edit">
           <audio src="${esc(editor.audio.dataUrl)}" controls></audio>
-          <div class="story-trim-row">
-            <label class="field">Start
+          <div class="story-mini-grid">
+            <label>Start
               <input id="story-audio-start" type="number" min="0" step="0.1" value="${esc(editor.audioStart || 0)}">
             </label>
-            <label class="field">End max 30s
+            <label>End max 30s
               <input id="story-audio-end" type="number" min="0" step="0.1" value="${esc(editor.audioEnd || 30)}">
             </label>
           </div>
         </div>
-      ` : '<p class="hint">Add audio, then trim it to 30 seconds or less.</p>'}
+      ` : ''}
     `;
   }
 
@@ -813,6 +828,36 @@
     if (editor.activeTool === 'audio') return storyAudioToolPanel(editor);
     if (editor.activeTool === 'crop') return storyCropToolPanel(editor);
     return storyTextToolPanel(editor);
+  }
+
+  function storyToolSymbol(tool, iconName) {
+    if (tool === 'text') return '<span class="story-aa">Aa</span>';
+    return icon(iconName);
+  }
+
+  function renderStoryTopToolbar(editor, tools) {
+    return `
+      <div class="story-top-bar" data-stop-close>
+        <button class="story-top-btn story-close-btn" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
+        <div class="story-top-tools">
+          <button class="story-top-btn" data-action="download-story-edit" aria-label="Download edit">${icon('download')}</button>
+          ${tools.map(([tool, label, iconName]) => `
+            <button class="story-top-btn ${editor.activeTool === tool ? 'active' : ''}" data-action="story-tool" data-tool="${tool}" title="${esc(label)}" aria-label="${esc(label)}">
+              ${storyToolSymbol(tool, iconName)}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderStoryFloatingTray(editor) {
+    const tray = storyToolPanel(editor);
+    return `
+      <div class="story-floating-tray story-${esc(editor.activeTool || 'text')}-tray" data-stop-close>
+        ${tray}
+      </div>
+    `;
   }
 
   function renderStoryMedia(story, compact = false) {
@@ -1509,19 +1554,11 @@
             ` : ''}
           </div>
         </div>
-        <button class="icon-btn story-editor-close" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
-        <button class="icon-btn story-editor-download" data-action="download-story-edit" aria-label="Download edit">${icon('download')}</button>
-        <aside class="story-tool-rail" data-stop-close>
-          ${tools.map(([tool, label, iconName]) => `
-            <button class="${editor.activeTool === tool ? 'active' : ''}" data-action="story-tool" data-tool="${tool}" title="${esc(label)}" aria-label="${esc(label)}">${icon(iconName)}</button>
-          `).join('')}
-        </aside>
+        ${renderStoryTopToolbar(editor, tools)}
         ${editor.activeTool === 'text' ? `
           <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" aria-label="Text size">
         ` : ''}
-        <section class="story-tool-panel" data-stop-close>
-          ${storyToolPanel(editor)}
-        </section>
+        ${renderStoryFloatingTray(editor)}
         <button class="primary story-post-btn" data-action="publish-story">Post story</button>
       </div>
     `;

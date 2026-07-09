@@ -1783,75 +1783,81 @@ a {
   outline: 0;
 }
 
-.story-editor-close {
+.story-top-bar {
   position: fixed;
-  right: max(12px, env(safe-area-inset-right));
-  top: max(14px, env(safe-area-inset-top));
-  z-index: 5;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.46);
-  backdrop-filter: blur(12px);
-}
-
-.story-editor-download {
-  position: fixed;
-  left: max(12px, env(safe-area-inset-left));
-  top: max(14px, env(safe-area-inset-top));
-  z-index: 5;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.46);
-  backdrop-filter: blur(12px);
-}
-
-.story-tool-rail {
-  position: fixed;
+  left: max(10px, env(safe-area-inset-left));
   right: max(10px, env(safe-area-inset-right));
-  top: calc(max(14px, env(safe-area-inset-top)) + 54px);
+  top: max(10px, env(safe-area-inset-top));
   z-index: 5;
-  display: grid;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 8px;
-  max-height: calc(var(--app-height) - 150px);
-  overflow-y: auto;
-  scrollbar-width: none;
 }
 
-.story-tool-rail::-webkit-scrollbar {
-  display: none;
+.story-top-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: min(330px, calc(100vw - 64px));
 }
 
-.story-tool-rail button {
-  width: 42px;
-  height: 42px;
+.story-top-btn {
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0;
   border-radius: 50%;
   display: grid;
   place-items: center;
   color: var(--text);
-  background: rgba(0, 0, 0, 0.42);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   backdrop-filter: blur(14px);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
-  transition: transform 0.16s ease, background 0.16s ease, color 0.16s ease;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
 }
 
-.story-tool-rail button.active {
-  background: rgba(255, 255, 255, 0.92);
-  color: #06080d;
-  transform: scale(1.07);
+.story-top-btn.active {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.44);
+  transform: translateY(-1px);
 }
 
-.story-tool-panel {
+.story-top-btn .ui-icon {
+  width: 19px;
+  height: 19px;
+}
+
+.story-top-btn .ui-icon svg {
+  stroke-width: 2.25;
+}
+
+.story-aa {
+  font-size: 17px;
+  font-weight: 850;
+  letter-spacing: 0;
+}
+
+.story-close-btn {
+  flex: 0 0 auto;
+}
+
+.story-floating-tray {
   position: fixed;
-  left: max(12px, env(safe-area-inset-left));
-  right: max(68px, env(safe-area-inset-right));
+  left: max(10px, env(safe-area-inset-left));
+  right: max(10px, env(safe-area-inset-right));
   bottom: calc(74px + env(safe-area-inset-bottom));
   z-index: 5;
   display: grid;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 18px;
-  background: rgba(5, 7, 11, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  backdrop-filter: blur(16px);
+  justify-items: center;
+  gap: 9px;
+  pointer-events: none;
+}
+
+.story-floating-tray > * {
+  pointer-events: auto;
 }
 
 .story-size-slider {
@@ -1867,49 +1873,35 @@ a {
 
 .story-post-btn {
   position: fixed;
-  left: max(12px, env(safe-area-inset-left));
   right: max(12px, env(safe-area-inset-right));
   bottom: max(14px, env(safe-area-inset-bottom));
   z-index: 5;
-  height: 46px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0 18px;
   border-radius: 999px;
   background: #f4f7fb;
   color: #05070b;
 }
 
-.story-filter-tabs {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-}
-
-.story-filter-tabs button {
-  min-height: 34px;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-}
-
-.story-filter-tabs button.active {
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--text);
-}
-
-.story-trim-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.story-color-row,
-.story-font-row,
-.story-chip-row,
-.story-control-row {
+.story-swatch-row,
+.story-pill-row,
+.story-sticker-dock {
   display: flex;
   gap: 8px;
   overflow-x: auto;
+  max-width: 100%;
+  padding: 1px 2px;
+  scrollbar-width: none;
 }
 
-.story-color-row button {
+.story-swatch-row::-webkit-scrollbar,
+.story-pill-row::-webkit-scrollbar,
+.story-sticker-dock::-webkit-scrollbar {
+  display: none;
+}
+
+.story-swatch-row button {
   width: 28px;
   height: 28px;
   min-height: 28px;
@@ -1919,33 +1911,22 @@ a {
   border: 2px solid rgba(255, 255, 255, 0.26);
 }
 
-.story-color-row button.active {
+.story-swatch-row button.active {
   box-shadow: 0 0 0 2px #fff;
 }
 
-.story-font-row button {
-  min-height: 32px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
-  border: 1px solid rgba(255, 255, 255, 0.11);
-}
-
-.story-font-row button.active {
-  background: #f4f7fb;
-  color: #05070b;
-}
-
-.story-chip-row button,
-.story-control-row button,
-.story-sticker-grid button {
+.story-pill-row button,
+.story-sticker-dock button,
+.story-audio-pick,
+.story-range,
+.story-mini-grid label {
   min-height: 34px;
   border-radius: 999px;
   padding: 0 12px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.42);
   color: var(--text);
-  border: 1px solid rgba(255, 255, 255, 0.11);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1953,21 +1934,54 @@ a {
   white-space: nowrap;
 }
 
-.story-chip-row button.active,
-.story-control-row button.active {
-  background: #f4f7fb;
+.story-pill-row button.active,
+.story-sticker-dock button.active {
+  background: rgba(255, 255, 255, 0.9);
   color: #05070b;
 }
 
-.story-control-row .ui-icon {
+.story-pill-row .ui-icon {
   width: 17px;
   height: 17px;
 }
 
-.story-sticker-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.story-caption-input {
+  width: min(420px, calc(100vw - 24px));
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 0 16px;
+  background: rgba(0, 0, 0, 0.42);
+  color: var(--text);
+  outline: none;
+  backdrop-filter: blur(14px);
+  text-align: center;
+}
+
+.story-caption-input:focus {
+  border-color: rgba(255, 255, 255, 0.46);
+}
+
+.story-range {
+  gap: 10px;
+}
+
+.story-range input {
+  width: 160px;
+  accent-color: #fff;
+}
+
+.story-mini-grid {
+  display: flex;
   gap: 8px;
+}
+
+.story-mini-grid input {
+  width: 76px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
 }
 
 .story-audio-edit {
