@@ -1208,9 +1208,17 @@ async function handleApi(req, res, pathname, query) {
       await saveFiles();
     }
     list.push(message);
-    await saveMessages();
     const decorated = decorateMessage(message);
+    const notification = addNotification(peer.id, 'message', user.id, null, `${user.username}: ${messageSnippet(message)}`);
+    await Promise.all([saveMessages(), saveNotifications()]);
     pushToUsers([user.id, peer.id], { type: 'message:new', chatId, message: decorated });
+    if (notification) {
+      pushToUser(peer.id, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(peer.id).length,
+        notification: publicNotification(notification, peer.id)
+      });
+    }
     return sendJson(res, 201, { message: decorated });
   }
 

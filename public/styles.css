@@ -1,5 +1,7 @@
 :root {
   color-scheme: dark;
+  --app-height: 100vh;
+  --viewport-top: 0px;
   --bg: #05070b;
   --bg-2: #090d14;
   --panel: #0d131d;
@@ -16,13 +18,26 @@
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.58);
 }
 
+html {
+  width: 100%;
+  height: var(--app-height);
+  overflow: hidden;
+  background: var(--bg);
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  min-height: 100vh;
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--viewport-top);
+  width: 100%;
+  height: var(--app-height);
+  min-height: var(--app-height);
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -51,7 +66,7 @@ a {
 
 .auth-screen,
 .public-screen {
-  min-height: 100vh;
+  min-height: var(--app-height);
   display: grid;
   place-items: center;
   padding: 24px;
@@ -280,8 +295,7 @@ a {
 }
 
 .app-shell {
-  height: 100vh;
-  height: 100dvh;
+  height: var(--app-height);
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   background: #020305;
@@ -389,7 +403,7 @@ a {
 .side-content {
   min-height: 0;
   overflow: auto;
-  padding: 14px 14px 18px;
+  padding: calc(14px + env(safe-area-inset-top)) 14px 18px;
 }
 
 .tab-content.animate-tab.from-right {
@@ -517,6 +531,26 @@ a {
   text-overflow: ellipsis;
 }
 
+.chat-meta {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  color: var(--muted);
+}
+
+.unread-badge {
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 6px;
+  background: #7c68ff;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .person {
   min-width: 0;
 }
@@ -534,13 +568,13 @@ a {
   min-width: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  height: 100vh;
-  height: 100dvh;
+  height: var(--app-height);
   background: #06080d;
 }
 
 .chat-header {
   background: rgba(5, 7, 11, 0.96);
+  padding-top: calc(12px + env(safe-area-inset-top));
 }
 
 .chat-profile-button,
@@ -1196,7 +1230,7 @@ a {
 .center-modal,
 .crop-modal {
   width: min(430px, 100%);
-  max-height: min(720px, calc(100dvh - 36px));
+  max-height: min(720px, calc(var(--app-height) - 36px));
   overflow: auto;
   border-radius: 18px;
   border: 1px solid var(--line);
@@ -1374,7 +1408,7 @@ a {
 
 .crop-stage {
   width: min(320px, calc(100vw - 58px));
-  height: min(360px, calc(100dvh - 240px));
+  height: min(360px, calc(var(--app-height) - 260px));
   min-height: 280px;
   margin: 12px auto;
   position: relative;
@@ -1388,6 +1422,7 @@ a {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transform-origin: center;
   user-select: none;
   pointer-events: none;
 }
@@ -1410,6 +1445,19 @@ a {
 
 .crop-confirm {
   width: 100%;
+}
+
+.zoom-control {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 8px 0 12px;
+}
+
+.zoom-control input {
+  width: 100%;
+  accent-color: #f4f7fb;
 }
 
 .action-sheet button {

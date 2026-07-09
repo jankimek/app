@@ -1,6 +1,20 @@
 (function () {
   const app = document.getElementById('app');
 
+  function setViewportHeight() {
+    const viewport = window.visualViewport;
+    const height = Math.round(viewport?.height || window.innerHeight);
+    const top = Math.max(0, Math.round(viewport?.offsetTop || 0));
+    document.documentElement.style.setProperty('--app-height', `${height}px`);
+    document.documentElement.style.setProperty('--viewport-top', `${top}px`);
+  }
+
+  setViewportHeight();
+  window.addEventListener('resize', setViewportHeight);
+  window.addEventListener('orientationchange', () => setTimeout(setViewportHeight, 120));
+  window.visualViewport?.addEventListener('resize', setViewportHeight);
+  window.visualViewport?.addEventListener('scroll', setViewportHeight);
+
   const state = {
     authMode: 'login',
     needsTwoFactor: false,
@@ -27,6 +41,8 @@
     pendingRequestCount: 0,
     notifications: [],
     requests: [],
+    unreadByPeer: {},
+    messageNotifications: localStorage.getItem('messageNotifications') === '1',
     actionSheet: null,
     storyMenuOpen: false,
     overlayClosing: false,
@@ -49,6 +65,8 @@
     longPressTriggered: false,
     call: freshCallState()
   };
+
+  const cropPointers = new Map();
 
   function freshCallState() {
     return {
@@ -346,16 +364,22 @@
 
   function renderChatsPanel() {
     const query = state.conversationQuery.trim();
-    const chatRows = state.chats.length ? state.chats.map((chat) => `
-      <button class="chat-item ${state.activePeer?.id === chat.peer.id ? 'active' : ''}" data-action="open-chat" data-user-id="${esc(chat.peer.id)}" data-peer-id="${esc(chat.peer.id)}">
-        ${avatarHtml(chat.peer)}
-        <span class="person">
-          <strong>${esc(chat.peer.displayName)}</strong>
-          <small>${chat.peer.hasBlocked ? 'Blocked' : chat.peer.muteUntil !== undefined && chat.peer.muteUntil !== null ? 'Muted - ' : ''}${esc(chat.latest ? describeMessage(chat.latest) : 'No messages yet')}</small>
-        </span>
-        <small>${chat.latest ? esc(shortTime(chat.latest.createdAt)) : ''}</small>
-      </button>
-    `).join('') : '<div class="empty-state">Search for a username and add someone to start chatting.</div>';
+    const chatRows = state.chats.length ? state.chats.map((chat) => {
+      const unread = state.unreadByPeer[chat.peer.id] || 0;
+      return `
+        <button class="chat-item ${state.activePeer?.id === chat.peer.id ? 'active' : ''}" data-action="open-chat" data-user-id="${esc(chat.peer.id)}" data-peer-id="${esc(chat.peer.id)}">
+          ${avatarHtml(chat.peer)}
+          <span class="person">
+            <strong>${esc(chat.peer.displayName)}</strong>
+            <small>${chat.peer.hasBlocked ? 'Blocked' : chat.peer.muteUntil !== undefined && chat.peer.muteUntil !== null ? 'Muted - ' : ''}${esc(chat.latest ? describeMessage(chat.latest) : 'No messages yet')}</small>
+          </span>
+          <span class="chat-meta">
+            <small>${chat.latest ? esc(shortTime(chat.latest.createdAt)) : ''}</small>
+            ${unread ? `<span class="unread-badge">${unread > 9 ? '9+' : unread}</span>` : ''}
+          </span>
+        </button>
+      `;
+    }).join('') : '<div class="empty-state">Search for a username and add someone to start chatting.</div>';
     const searchRows = state.conversationSearching
       ? '<div class="empty-state">Searching conversations...</div>'
       : state.conversationResults.length ? state.conversationResults.map((result) => {
@@ -950,6 +974,16 @@
               <input type="checkbox" data-action="toggle-profile-searchable" ${state.me.searchable !== false ? 'checked' : ''}>
             </label>
           </section>
+          <section class="settings-block">
+            <h3>${icon('bell')} Notifications</h3>
+            <label class="switch-row">
+              <span>
+                <strong>Message notifications</strong>
+                <small>Show a browser notification when someone texts you while this site is open. HTTPS is required outside localhost.</small>
+              </span>
+              <input type="checkbox" data-action="toggle-message-notifications" ${state.messageNotifications ? 'checked' : ''}>
+            </label>
+          </section>
           ${renderTwoFactorPanel()}
           <section class="settings-block danger-zone">
             <button class="danger logout-btn" data-action="logout">Log out</button>
@@ -969,10 +1003,13 @@
             <button class="icon-btn" data-action="cancel-avatar-crop" aria-label="Close">${icon('x')}</button>
           </header>
           <div class="crop-stage" id="crop-stage">
-            <img src="${esc(state.avatarCrop.dataUrl)}" alt="">
+            <img src="${esc(state.avatarCrop.dataUrl)}" alt="" style="transform:scale(${esc(state.avatarCrop.zoom || 1)})">
             <div class="crop-mask"></div>
             <div class="crop-circle" style="left:${state.avatarCrop.x}px; top:${state.avatarCrop.y}px; width:${state.avatarCrop.size}px; height:${state.avatarCrop.size}px"></div>
           </div>
+          <label class="zoom-control">Zoom
+            <input id="avatar-zoom" type="range" min="1" max="3" step="0.01" value="${esc(state.avatarCrop.zoom || 1)}">
+          </label>
           <button class="primary crop-confirm" data-action="confirm-avatar-crop">Confirm</button>
         </section>
       </div>
@@ -1036,6 +1073,7 @@
     state.replyTo = null;
     state.stickerPanel = false;
     state.highlightMessageId = highlightMessageId;
+    delete state.unreadByPeer[userId];
     const data = await api(`/api/chats/${encodeURIComponent(userId)}/messages`);
     state.messages = data.messages;
     renderApp();
@@ -1188,6 +1226,7 @@
       x: 42,
       y: 42,
       size: 220,
+      zoom: 1,
       drag: null
     };
     renderApp();
@@ -1206,13 +1245,33 @@
     });
   }
 
+  function pointerDistance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function updateCropUi() {
+    const crop = state.avatarCrop;
+    if (!crop) return;
+    const circle = document.querySelector('.crop-circle');
+    if (circle) {
+      circle.style.left = `${crop.x}px`;
+      circle.style.top = `${crop.y}px`;
+      circle.style.width = `${crop.size}px`;
+      circle.style.height = `${crop.size}px`;
+    }
+    const img = document.querySelector('#crop-stage img');
+    if (img) img.style.transform = `scale(${crop.zoom || 1})`;
+    const zoom = document.getElementById('avatar-zoom');
+    if (zoom) zoom.value = String(crop.zoom || 1);
+  }
+
   async function confirmAvatarCrop() {
     const crop = state.avatarCrop;
     const stage = document.getElementById('crop-stage');
     if (!crop || !stage) return;
     const rect = stage.getBoundingClientRect();
     const img = await loadImage(crop.dataUrl);
-    const scale = Math.max(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+    const scale = Math.max(rect.width / img.naturalWidth, rect.height / img.naturalHeight) * (crop.zoom || 1);
     const displayW = img.naturalWidth * scale;
     const displayH = img.naturalHeight * scale;
     const offsetX = (rect.width - displayW) / 2;
@@ -1415,6 +1474,52 @@
     }
   }
 
+  async function setMessageNotifications(enabled) {
+    if (!enabled) {
+      state.messageNotifications = false;
+      localStorage.removeItem('messageNotifications');
+      renderApp();
+      return;
+    }
+    if (!('Notification' in window)) {
+      state.messageNotifications = false;
+      alert('This browser does not support message notifications.');
+      renderApp();
+      return;
+    }
+    if (!window.isSecureContext) {
+      state.messageNotifications = false;
+      alert('Message notifications need HTTPS on iPhone and normal websites. We can enable this after the HTTPS step.');
+      renderApp();
+      return;
+    }
+    const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+    state.messageNotifications = permission === 'granted';
+    if (state.messageNotifications) localStorage.setItem('messageNotifications', '1');
+    else localStorage.removeItem('messageNotifications');
+    renderApp();
+  }
+
+  function showIncomingMessageNotification(message) {
+    if (!state.messageNotifications || !('Notification' in window) || Notification.permission !== 'granted') return;
+    const sender = userById(message.senderId);
+    const title = sender?.displayName || sender?.username || 'New message';
+    try {
+      const notification = new Notification(title, {
+        body: describeMessage(message),
+        icon: sender?.avatar?.url || undefined,
+        tag: `chat-${message.senderId}`
+      });
+      notification.onclick = () => {
+        window.focus();
+        openChat(message.senderId).catch((error) => alert(error.message));
+        notification.close();
+      };
+    } catch {
+      // Some mobile browsers expose Notification but still block constructor use.
+    }
+  }
+
   function connectWs() {
     if (state.ws && [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.ws.readyState)) return;
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1437,9 +1542,15 @@
   async function handleSocketEvent(event) {
     if (event.type === 'message:new') {
       const activeIds = [state.me.id, state.activePeer?.id].sort().join('__');
+      const incoming = event.message.recipientId === state.me.id;
+      const activelyViewing = event.chatId === activeIds && !document.hidden;
       if (event.chatId === activeIds) {
         upsertMessage(event.message);
         renderApp();
+      }
+      if (incoming && !activelyViewing) {
+        state.unreadByPeer[event.message.senderId] = (state.unreadByPeer[event.message.senderId] || 0) + 1;
+        showIncomingMessageNotification(event.message);
       }
       await refreshChatsOnly();
       if (state.tab === 'chats') renderApp();
@@ -2122,6 +2233,9 @@
         await updateProfilePatch({ searchable: target.checked });
         renderApp();
       }
+      if (action === 'toggle-message-notifications') {
+        await setMessageNotifications(target.checked);
+      }
       if (action === 'open-social') {
         const nextSocial = target.dataset.social === 'following' ? 'following' : 'followers';
         state.profileSocialView = nextSocial;
@@ -2264,6 +2378,12 @@
       }, 220);
       return;
     }
+    if (event.target.id === 'avatar-zoom' && state.avatarCrop) {
+      state.avatarCrop.zoom = Number(event.target.value || 1);
+      const img = document.querySelector('#crop-stage img');
+      if (img) img.style.transform = `scale(${state.avatarCrop.zoom})`;
+      return;
+    }
     if (event.target.id === 'user-search') {
       const query = event.target.value;
       clearTimeout(searchTimer);
@@ -2301,6 +2421,16 @@
       event.preventDefault();
       const rect = cropStage.getBoundingClientRect();
       const crop = state.avatarCrop;
+      cropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (cropPointers.size >= 2) {
+        const points = Array.from(cropPointers.values()).slice(0, 2);
+        crop.drag = null;
+        crop.pinch = {
+          distance: Math.max(1, pointerDistance(points[0], points[1])),
+          zoom: crop.zoom || 1
+        };
+        return;
+      }
       const localX = event.clientX - rect.left;
       const localY = event.clientY - rect.top;
       if (!event.target.closest('.crop-circle')) {
@@ -2314,7 +2444,7 @@
         height: rect.height
       };
       cropStage.setPointerCapture?.(event.pointerId);
-      renderApp();
+      updateCropUi();
       return;
     }
 
@@ -2357,6 +2487,17 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.avatarCrop && cropPointers.has(event.pointerId)) {
+      cropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const crop = state.avatarCrop;
+      if (crop.pinch && cropPointers.size >= 2) {
+        const points = Array.from(cropPointers.values()).slice(0, 2);
+        const distance = Math.max(1, pointerDistance(points[0], points[1]));
+        crop.zoom = clamp(crop.pinch.zoom * (distance / crop.pinch.distance), 1, 3);
+        updateCropUi();
+        return;
+      }
+    }
     if (state.avatarCrop?.drag) {
       const crop = state.avatarCrop;
       const rect = document.getElementById('crop-stage')?.getBoundingClientRect();
@@ -2366,7 +2507,7 @@
       const top = rect ? event.clientY - rect.top : event.clientY;
       crop.x = clamp(left - crop.drag.offsetX, 0, width - crop.size);
       crop.y = clamp(top - crop.drag.offsetY, 0, height - crop.size);
-      renderApp();
+      updateCropUi();
       return;
     }
     if (state.longPressTimer) {
@@ -2388,6 +2529,12 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.avatarCrop && cropPointers.has(event.pointerId)) {
+      cropPointers.delete(event.pointerId);
+      state.avatarCrop.drag = null;
+      if (cropPointers.size < 2) state.avatarCrop.pinch = null;
+      return;
+    }
     if (state.avatarCrop?.drag) {
       state.avatarCrop.drag = null;
       return;
@@ -2439,10 +2586,19 @@
       state.drag = null;
     }
     if (state.avatarCrop?.drag) state.avatarCrop.drag = null;
+    if (state.avatarCrop?.pinch) state.avatarCrop.pinch = null;
+    cropPointers.clear();
     state.edgeSwipe = null;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;
   });
+
+  document.addEventListener('wheel', (event) => {
+    if (!state.avatarCrop || !event.target.closest('#crop-stage')) return;
+    event.preventDefault();
+    state.avatarCrop.zoom = clamp((state.avatarCrop.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
+    updateCropUi();
+  }, { passive: false });
 
   window.addEventListener('popstate', () => {
     init().catch((error) => {
