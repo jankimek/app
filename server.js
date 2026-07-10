@@ -249,7 +249,9 @@ function basicPublicUser(user, viewerId = null) {
     displayName: user.profile.displayName || user.username,
     bio: user.profile.bio || '',
     avatar: publicFile(avatar),
-    stories: activeStoriesFor(user.id).map((story) => publicStory(story, viewerId)),
+    stories: canViewStories(user.id, viewerId)
+      ? activeStoriesFor(user.id).map((story) => publicStory(story, viewerId))
+      : [],
     url: `/u/${encodeURIComponent(user.username)}`,
     createdAt: user.createdAt,
     searchable: user.profile?.searchable !== false
@@ -434,6 +436,23 @@ function canViewChat(a, b) {
   );
 }
 
+function canViewStories(ownerId, viewerId = null) {
+  const owner = db.users[ownerId];
+  if (!owner) return false;
+  if (viewerId && viewerId !== ownerId && isBlockedBetween(ownerId, viewerId)) return false;
+  if (owner.profile?.socialPublic !== false) return true;
+  if (!viewerId) return false;
+  if (viewerId === ownerId) return true;
+  return (db.contacts[ownerId] || []).includes(viewerId) &&
+    (db.contacts[viewerId] || []).includes(ownerId);
+}
+
+function canViewStory(story, viewerId = null) {
+  if (!story || story.deletedAt) return false;
+  const active = story.saved || new Date(story.expiresAt).getTime() > Date.now();
+  return Boolean(active && canViewStories(story.ownerId, viewerId));
+}
+
 function activeStoriesFor(userId) {
   const now = Date.now();
   return Object.values(db.stories)
@@ -495,7 +514,7 @@ function cleanStoryDrawings(raw) {
 }
 
 function cleanStoryStickers(raw) {
-  const validTypes = new Set(['emoji', 'gif', 'question', 'hashtag', 'countdown', 'location']);
+  const validTypes = new Set(['emoji', 'gif', 'mention', 'question', 'hashtag', 'countdown', 'location']);
   if (!Array.isArray(raw)) return [];
   return raw.slice(0, 20).map((sticker) => ({
     id: cleanText(sticker?.id || id('sticker'), 80),
@@ -833,12 +852,11 @@ async function saveUpload({ dataUrl, name, lastModified }, ownerId, scope) {
 function canAccessFile(userId, file) {
   if (!file) return false;
   if (file.scope === 'avatar') return true;
-  if (file.scope === 'story') {
-    return Object.values(db.stories).some((story) => (
-      story.fileId === file.id &&
-      !story.deletedAt &&
-      (story.saved || new Date(story.expiresAt).getTime() > Date.now())
+  if (file.scope === 'story' || file.scope === 'story-audio') {
+    const story = Object.values(db.stories).find((item) => (
+      item.fileId === file.id || item.audioFileId === file.id
     ));
+    return canViewStory(story, userId);
   }
   if (!userId) return false;
   if (file.ownerId === userId) return true;
@@ -1043,6 +1061,7 @@ async function handleApi(req, res, pathname, query) {
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       saved: false,
       edits: {
+        compositionVersion: Number(body.edits?.compositionVersion) >= 2 ? 2 : 1,
         filter: ['normal', 'warm', 'cool', 'mono', 'noir'].includes(body.edits?.filter) ? body.edits.filter : 'normal',
         text: cleanText(body.edits?.text || '', 120),
         zoom: Math.max(1, Math.min(3, Number(body.edits?.zoom || 1))),
@@ -1101,7 +1120,7 @@ async function handleApi(req, res, pathname, query) {
     const user = await requireAuth(req, res);
     if (!user) return;
     const story = db.stories[decodeURIComponent(storyViewMatch[1])];
-    if (!story || story.deletedAt) return sendError(res, 404, 'Story not found.');
+    if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
     if (!Array.isArray(story.views)) story.views = [];
     if (story.ownerId !== user.id && !story.views.includes(user.id)) story.views.push(user.id);
     await saveStories();
@@ -1113,7 +1132,7 @@ async function handleApi(req, res, pathname, query) {
     const user = await requireAuth(req, res);
     if (!user) return;
     const story = db.stories[decodeURIComponent(storyLikeMatch[1])];
-    if (!story || story.deletedAt) return sendError(res, 404, 'Story not found.');
+    if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
     if (!Array.isArray(story.likes)) story.likes = [];
     if (story.likes.includes(user.id)) story.likes = story.likes.filter((id) => id !== user.id);
     else story.likes.push(user.id);
@@ -1126,7 +1145,7 @@ async function handleApi(req, res, pathname, query) {
     const user = await requireAuth(req, res);
     if (!user) return;
     const story = db.stories[decodeURIComponent(storyCommentMatch[1])];
-    if (!story || story.deletedAt) return sendError(res, 404, 'Story not found.');
+    if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
     const body = await readJsonBody(req);
     const text = cleanText(body.text || '', 280);
     if (!text) return sendError(res, 400, 'Write a comment first.');

@@ -8,10 +8,12 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 
 ## What Is Included
 
-- Email/phone/username plus password login.
+- Username plus password signup; login also accepts an attached email or phone number.
 - Optional authenticator-app 2FA.
 - Public user pages at `/u/username`.
-- Profile tab with profile picture, bio, 24-hour stories, and profile-link sharing.
+- Profile tab with profile picture, bio, 24-hour stories, saved highlights, and profile-link sharing.
+- Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, polls, mentions, audio clips, and downloads.
+- Full-screen story/highlight viewer with progress, navigation, likes, comments, and private-account access control.
 - Bottom navigation tabs for messages, search, and profile.
 - Username search, friend requests, and a notification center for accepting or declining requests.
 - Conversation search on the Messages tab that finds saved message references.
@@ -19,7 +21,7 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Friends-of-friends recommendations on the Profile tab.
 - Real-time direct messages through WebSockets.
 - Message sent date and time.
-- Swipe a message left to reply; swipe it back right to cancel the reply.
+- Swipe your own message left, or the other user's message right, to reply; reverse the gesture before releasing to cancel.
 - Only the sender can delete a message.
 - Remove, mute, and block controls from a user's chat profile.
 - Send images, videos, documents, and voice notes.
@@ -37,7 +39,7 @@ public/index.html   Browser entry point
 public/app.js       Chat interface and browser-side features
 public/styles.css   Mobile-friendly dark Instagram-like design
 deploy/oracle/      Templates for Oracle systemd, Caddy, env, and backups
-.github/workflows/  GitHub Actions syntax check
+.github/workflows/  GitHub Actions syntax and integration checks
 .env.example        Local environment variable example
 data/               Created when the app runs; stores users/messages/sessions
 uploads/            Created when files are uploaded
@@ -67,19 +69,25 @@ uploads/            Created when files are uploaded
    npm run check
    ```
 
-5. Start the app:
+5. Run the isolated integration tests:
+
+   ```powershell
+   npm test
+   ```
+
+6. Start the app:
 
    ```powershell
    npm start
    ```
 
-6. Open:
+7. Open:
 
    ```text
    http://localhost:3000
    ```
 
-7. Create two test accounts. To test chatting with yourself, open one account in your normal browser and the other in a private/incognito window.
+8. Create two test accounts. To test chatting with yourself, open one account in your normal browser and the other in a private/incognito window.
 
 ## Put The Code On GitHub First
 

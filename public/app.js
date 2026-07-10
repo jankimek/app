@@ -57,6 +57,7 @@
     recommendationsOpen: false,
     avatarCrop: null,
     storyEditor: null,
+    storyViewer: null,
     mediaViewer: null,
     stickerPanel: false,
     stickers: [],
@@ -71,6 +72,8 @@
     drag: null,
     storyTextDrag: null,
     storyTextGesture: null,
+    storyStickerDrag: null,
+    storyStickerGesture: null,
     storyDraw: null,
     edgeSwipe: null,
     longPressTimer: null,
@@ -80,6 +83,7 @@
 
   const cropPointers = new Map();
   const storyTextPointers = new Map();
+  const storyStickerPointers = new Map();
 
   function freshCallState() {
     return {
@@ -206,7 +210,9 @@
       alignCenter: '<svg viewBox="0 0 24 24"><path d="M5 6h14M8 10h8M5 14h14M9 18h6"/></svg>',
       alignRight: '<svg viewBox="0 0 24 24"><path d="M6 6h14M10 10h10M6 14h14M12 18h8"/></svg>',
       sparkle: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>',
-      location: '<svg viewBox="0 0 24 24"><path d="M12 22s7-5.3 7-12a7 7 0 0 0-14 0c0 6.7 7 12 7 12Z"/><circle cx="12" cy="10" r="2.5"/></svg>'
+      location: '<svg viewBox="0 0 24 24"><path d="M12 22s7-5.3 7-12a7 7 0 0 0-14 0c0 6.7 7 12 7 12Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+      more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
+      undo: '<svg viewBox="0 0 24 24"><path d="m9 8-5 4 5 4"/><path d="M20 18a7 7 0 0 0-7-7H4"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -290,19 +296,9 @@
   function renderAuth(error = '') {
     app.innerHTML = `
       <main class="auth-screen">
-        <section class="auth-box">
-          <div class="intro">
-            <div>
-              <h1>Private messages</h1>
-              <p>A dark, mobile-first chat space with username search, media, stickers, voice notes, exports, and profile pages.</p>
-            </div>
-            <div class="feature-strip">
-              <span>Username search and profile pages</span>
-              <span>Images, videos, documents, voice notes</span>
-              <span>Swipe replies, deletes, exports</span>
-            </div>
-          </div>
+        <section class="auth-box auth-box-single">
           <div class="auth-card">
+            <div class="auth-mark">${icon('messages')}</div>
             <div class="auth-tabs">
               <button type="button" class="${state.authMode === 'login' ? 'active' : ''}" data-action="auth-mode" data-mode="login">Log in</button>
               <button type="button" class="${state.authMode === 'register' ? 'active' : ''}" data-action="auth-mode" data-mode="register">Create</button>
@@ -327,7 +323,6 @@
               ` : ''}
               <button class="primary" type="submit">${state.authMode === 'login' ? 'Log in' : 'Create account'}</button>
               <div class="error">${esc(error)}</div>
-              <p class="hint">This starter app stores data on your server disk. Use HTTPS before real users join.</p>
             </form>
           </div>
         </section>
@@ -388,11 +383,17 @@
       ${renderSettingsModal()}
       ${renderAvatarCropper()}
       ${renderStoryEditor()}
+      ${renderStoryViewer()}
       ${renderMediaViewer()}
     `;
     state.tabTransition = false;
     setTimeout(() => {
       resizeComposerInput();
+      if (state.storyEditor?.textEditing) {
+        const storyText = document.getElementById('story-editor-text');
+        storyText?.focus();
+        storyText?.setSelectionRange?.(storyText.value.length, storyText.value.length);
+      }
       if (state.highlightMessageId) scrollHighlightedMessage();
       else if (scrollMode === 'bottom') scrollMessagesToBottom();
       else restoreMessagesScroll(scrollSnapshot);
@@ -670,74 +671,39 @@
 
   function storyTextToolPanel(editor) {
     const colors = ['#ffffff', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffd166', '#111827'];
-    const bgColors = ['#000000', '#1f2937', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffffff'];
     const fonts = [
-      ['system', 'Aa'],
-      ['serif', 'Serif'],
-      ['mono', 'Mono'],
-      ['script', 'Script']
+      ['system', 'Modern'],
+      ['serif', 'Classic'],
+      ['mono', 'Typewriter'],
+      ['script', 'Signature']
     ];
     const effects = [
+      ['none', 'Plain'],
       ['shadow', 'Shadow'],
       ['glow', 'Glow'],
-      ['neon', 'Neon'],
-      ['none', 'Plain']
-    ];
-    const animations = [
-      ['none', 'Still'],
-      ['fade', 'Fade'],
-      ['rise', 'Rise'],
-      ['pop', 'Pop']
-    ];
-    const allTextChips = [
-      ...fonts.map(([font, label]) => ({
-        label,
-        action: 'story-font',
-        key: 'data-font',
-        value: font,
-        active: editor.textFont === font
-      })),
-      ...effects.map(([effect, label]) => ({
-        label,
-        action: 'story-text-effect',
-        key: 'data-effect',
-        value: effect,
-        active: (editor.textEffect || 'shadow') === effect
-      })),
-      ...animations.map(([animation, label]) => ({
-        label,
-        action: 'story-text-animation',
-        key: 'data-animation',
-        value: animation,
-        active: (editor.textAnimation || 'none') === animation
-      }))
+      ['neon', 'Neon']
     ];
     return `
-      <input class="story-caption-input" id="story-editor-text" value="${esc(editor.text || '')}" maxlength="120" placeholder="Type something">
-      <div class="story-pill-row">
-        <button class="${editor.textAlign === 'left' ? 'active' : ''}" data-action="story-text-align" data-align="left" aria-label="Align left">${icon('alignLeft')}</button>
-        <button class="${(editor.textAlign || 'center') === 'center' ? 'active' : ''}" data-action="story-text-align" data-align="center" aria-label="Align center">${icon('alignCenter')}</button>
-        <button class="${editor.textAlign === 'right' ? 'active' : ''}" data-action="story-text-align" data-align="right" aria-label="Align right">${icon('alignRight')}</button>
-        <button class="${editor.textBgEnabled ? 'active' : ''}" data-action="story-text-bg">BG</button>
-        <button class="${editor.textFrame ? 'active' : ''}" data-action="story-text-frame">Frame</button>
-      </div>
-      <div class="story-swatch-row">
+      <div class="story-swatch-row story-text-colors" aria-label="Text color">
         ${colors.map((color) => `<button class="${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
       </div>
-      ${editor.textBgEnabled ? `<div class="story-swatch-row">
-        ${bgColors.map((color) => `<button class="${editor.textBgColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-bg-color" data-color="${color}" aria-label="Text background color"></button>`).join('')}
-      </div>` : ''}
-      <div class="story-pill-row story-text-chip-strip">
-        ${allTextChips.map((chip) => `<button class="${chip.active ? 'active' : ''}" data-action="${chip.action}" ${chip.key}="${esc(chip.value)}">${esc(chip.label)}</button>`).join('')}
+      <div class="story-option-strip story-font-strip">
+        ${fonts.map(([font, label]) => `<button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">${esc(label)}</button>`).join('')}
+      </div>
+      <div class="story-option-strip story-effect-strip">
+        ${effects.map(([effect, label]) => `<button class="${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">${esc(label)}</button>`).join('')}
       </div>
     `;
   }
 
   function storyFilterToolPanel(editor) {
     return `
-      <div class="story-pill-row">
+      <div class="story-filter-carousel" aria-label="Story filters">
         ${['normal', 'warm', 'cool', 'mono', 'noir'].map((filter) => `
-          <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">${esc(filter)}</button>
+          <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">
+            <span style="background-image:url('${esc(editor.dataUrl)}');filter:${esc(storyFilterCss(filter))}"></span>
+            <small>${esc(filter)}</small>
+          </button>
         `).join('')}
       </div>
     `;
@@ -762,16 +728,58 @@
   }
 
   function storyStickerToolPanel(editor) {
+    const composer = editor.stickerComposer || '';
+    if (composer === 'poll') {
+      return `
+        <section class="story-sticker-sheet" data-stop-close>
+          <div class="story-sheet-grabber"></div>
+          <header><button data-action="story-sticker-back" aria-label="Back">${icon('back')}</button><strong>Poll</strong><span></span></header>
+          <input class="story-sheet-input" id="story-poll-question" value="${esc(editor.pollQuestion || '')}" maxlength="80" placeholder="Ask a question">
+          <div class="story-poll-options">
+            <input id="story-poll-a" value="${esc(editor.pollOptionA || 'Yes')}" maxlength="40" aria-label="First poll option">
+            <input id="story-poll-b" value="${esc(editor.pollOptionB || 'No')}" maxlength="40" aria-label="Second poll option">
+          </div>
+          <button class="story-sheet-confirm" data-action="finish-story-poll">Add poll</button>
+        </section>
+      `;
+    }
+    if (composer) {
+      const labels = {
+        mention: 'Mention',
+        question: 'Question',
+        hashtag: 'Hashtag',
+        countdown: 'Countdown',
+        location: 'Location'
+      };
+      return `
+        <section class="story-sticker-sheet" data-stop-close>
+          <div class="story-sheet-grabber"></div>
+          <header><button data-action="story-sticker-back" aria-label="Back">${icon('back')}</button><strong>${esc(labels[composer] || 'Sticker')}</strong><span></span></header>
+          <input class="story-sheet-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="80" placeholder="${composer === 'mention' ? '@username' : 'Type here'}" autofocus>
+          <button class="story-sheet-confirm" data-action="commit-story-sticker" data-sticker-type="${esc(composer)}">Add sticker</button>
+        </section>
+      `;
+    }
     return `
-      <input class="story-caption-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="80" placeholder="@user, #hashtag, place, question">
-      <div class="story-sticker-dock">
-        <button data-action="add-story-sticker" data-sticker-type="emoji">Emoji</button>
-        <button data-action="add-story-sticker" data-sticker-type="gif">GIF</button>
-        <button data-action="add-story-sticker" data-sticker-type="question">Question</button>
-        <button data-action="add-story-sticker" data-sticker-type="hashtag">#Hashtag</button>
-        <button data-action="add-story-sticker" data-sticker-type="countdown">Countdown</button>
-        <button data-action="add-story-sticker" data-sticker-type="location">${icon('location')} Location</button>
-      </div>
+      <section class="story-sticker-sheet" data-stop-close>
+        <div class="story-sheet-grabber"></div>
+        <header><span></span><strong>Stickers</strong><button data-action="finish-story-tool" aria-label="Close stickers">${icon('x')}</button></header>
+        <label class="story-sticker-search">${icon('search')}<input id="story-sticker-search" value="${esc(editor.stickerSearch || '')}" placeholder="Search"></label>
+        <div class="story-sticker-grid">
+          <button data-search="mention tag user" data-action="choose-story-sticker" data-sticker-type="mention"><span class="mention-sticker">@MENTION</span></button>
+          <button data-search="location place map" data-action="choose-story-sticker" data-sticker-type="location"><span class="location-sticker">${icon('location')} LOCATION</span></button>
+          <button data-search="gif animated" data-action="add-story-sticker" data-sticker-type="gif" data-sticker-label="GIF"><span class="gif-sticker">GIF</span></button>
+          <button data-search="music audio song" data-action="story-tool" data-tool="audio"><span class="music-sticker">${icon('music')} MUSIC</span></button>
+          <button data-search="poll vote" data-action="choose-story-sticker" data-sticker-type="poll"><span class="poll-choice">POLL</span></button>
+          <button data-search="question ask" data-action="choose-story-sticker" data-sticker-type="question"><span class="question-sticker">QUESTIONS</span></button>
+          <button data-search="hashtag tag" data-action="choose-story-sticker" data-sticker-type="hashtag"><span class="hashtag-sticker">#HASHTAG</span></button>
+          <button data-search="countdown timer" data-action="choose-story-sticker" data-sticker-type="countdown"><span class="countdown-sticker">COUNTDOWN</span></button>
+          <button data-search="heart love emoji" data-action="add-story-sticker" data-sticker-type="emoji" data-sticker-label="&#x2764;&#xFE0F;"><span class="raw-emoji">&#x2764;&#xFE0F;</span></button>
+          <button data-search="laugh emoji" data-action="add-story-sticker" data-sticker-type="emoji" data-sticker-label="&#x1F602;"><span class="raw-emoji">&#x1F602;</span></button>
+          <button data-search="fire emoji" data-action="add-story-sticker" data-sticker-type="emoji" data-sticker-label="&#x1F525;"><span class="raw-emoji">&#x1F525;</span></button>
+          <button data-search="sparkle emoji" data-action="add-story-sticker" data-sticker-type="emoji" data-sticker-label="&#x2728;"><span class="raw-emoji">&#x2728;</span></button>
+        </div>
+      </section>
     `;
   }
 
@@ -781,30 +789,44 @@
       <div class="story-swatch-row">
         ${colors.map((color) => `<button class="${editor.drawColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-draw-color" data-color="${color}" aria-label="Draw color"></button>`).join('')}
       </div>
-      <label class="story-range">Brush
-        <input id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}">
-      </label>
-      <button class="secondary" data-action="undo-story-draw">Undo last stroke</button>
+      <button class="story-undo-btn" data-action="undo-story-draw" aria-label="Undo last stroke">${icon('undo')}</button>
     `;
   }
 
   function storyAudioToolPanel(editor) {
     return `
-      <button class="story-audio-pick" data-action="story-audio-open">${icon('music')} Choose audio</button>
-      <input id="story-audio-input" type="file" accept="audio/*" hidden>
-      ${editor.audio ? `
-        <div class="story-audio-edit">
-          <audio src="${esc(editor.audio.dataUrl)}" controls></audio>
-          <div class="story-mini-grid">
-            <label>Start
-              <input id="story-audio-start" type="number" min="0" step="0.1" value="${esc(editor.audioStart || 0)}">
-            </label>
-            <label>End max 30s
-              <input id="story-audio-end" type="number" min="0" step="0.1" value="${esc(editor.audioEnd || 30)}">
-            </label>
+      <section class="story-sticker-sheet story-audio-sheet" data-stop-close>
+        <div class="story-sheet-grabber"></div>
+        <header><span></span><strong>Music</strong><button data-action="finish-story-tool" aria-label="Close music">${icon('x')}</button></header>
+        <button class="story-audio-pick" data-action="story-audio-open">${icon('music')} Choose audio from device</button>
+        <input id="story-audio-input" type="file" accept="audio/*" hidden>
+        ${editor.audio ? `
+          <div class="story-audio-edit">
+            <strong>${esc(editor.audio.name || 'Audio')}</strong>
+            <audio src="${esc(editor.audio.dataUrl)}#t=${esc(editor.audioStart || 0)},${esc(editor.audioEnd || 30)}" controls></audio>
+            <div class="story-mini-grid">
+              <label>Start <input id="story-audio-start" type="number" min="0" step="0.1" value="${esc(editor.audioStart || 0)}"></label>
+              <label>End <input id="story-audio-end" type="number" min="0" step="0.1" value="${esc(editor.audioEnd || 30)}"></label>
+            </div>
+            <small>Choose a clip up to 30 seconds.</small>
           </div>
-        </div>
-      ` : ''}
+        ` : '<p class="story-sheet-empty">Choose a song or recording to add it to this story.</p>'}
+      </section>
+    `;
+  }
+
+  function storyMoreToolPanel(editor) {
+    return `
+      <section class="story-more-menu" data-stop-close>
+        <button data-action="download-story-edit">${icon('download')} Save</button>
+        <label>Zoom <input id="story-editor-zoom" type="range" min="1" max="3" step="0.01" value="${esc(editor.zoom || 1)}"></label>
+        ${editor.isVideo ? `
+          <div class="story-mini-grid">
+            <label>Start <input id="story-trim-start" type="number" min="0" step="0.1" value="${esc(editor.trimStart || 0)}"></label>
+            <label>End <input id="story-trim-end" type="number" min="0" step="0.1" value="${esc(editor.trimEnd || 0)}"></label>
+          </div>
+        ` : ''}
+      </section>
     `;
   }
 
@@ -812,22 +834,10 @@
     if (editor.activeTool === 'filter') return storyFilterToolPanel(editor);
     if (editor.activeTool === 'stickers') return storyStickerToolPanel(editor);
     if (editor.activeTool === 'draw') return storyDrawToolPanel(editor);
-    if (editor.activeTool === 'poll') return `
-      <label class="field">Poll question
-        <input id="story-poll-question" value="${esc(editor.pollQuestion || '')}" maxlength="80" placeholder="Ask a question">
-      </label>
-      <div class="story-trim-row">
-        <label class="field">Option 1
-          <input id="story-poll-a" value="${esc(editor.pollOptionA || 'Yes')}" maxlength="40">
-        </label>
-        <label class="field">Option 2
-          <input id="story-poll-b" value="${esc(editor.pollOptionB || 'No')}" maxlength="40">
-        </label>
-      </div>
-    `;
     if (editor.activeTool === 'audio') return storyAudioToolPanel(editor);
-    if (editor.activeTool === 'crop') return storyCropToolPanel(editor);
-    return storyTextToolPanel(editor);
+    if (editor.activeTool === 'more') return storyMoreToolPanel(editor);
+    if (editor.activeTool === 'text') return storyTextToolPanel(editor);
+    return '';
   }
 
   function storyToolSymbol(tool, iconName) {
@@ -836,11 +846,25 @@
   }
 
   function renderStoryTopToolbar(editor, tools) {
+    if (editor.textEditing) {
+      const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
+      return `
+        <div class="story-top-bar story-text-topbar" data-stop-close>
+          <button class="story-top-btn story-close-btn" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
+          <div class="story-top-tools">
+            <button class="story-top-btn" data-action="cycle-story-text-align" aria-label="Change alignment">${icon(alignIcon)}</button>
+            <button class="story-top-btn ${editor.textBgEnabled ? 'active' : ''}" data-action="story-text-bg" aria-label="Text background"><span class="story-aa">A</span></button>
+            <button class="story-top-btn ${editor.textFrame ? 'active' : ''}" data-action="story-text-frame" aria-label="Text frame"><span class="story-aa story-aa-frame">A</span></button>
+            <button class="story-top-btn ${editor.textAnimation !== 'none' ? 'active' : ''}" data-action="cycle-story-text-animation" aria-label="Text animation">${icon('sparkle')}</button>
+            <button class="story-done-btn" data-action="finish-story-tool">Done</button>
+          </div>
+        </div>
+      `;
+    }
     return `
       <div class="story-top-bar" data-stop-close>
         <button class="story-top-btn story-close-btn" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
         <div class="story-top-tools">
-          <button class="story-top-btn" data-action="download-story-edit" aria-label="Download edit">${icon('download')}</button>
           ${tools.map(([tool, label, iconName]) => `
             <button class="story-top-btn ${editor.activeTool === tool ? 'active' : ''}" data-action="story-tool" data-tool="${tool}" title="${esc(label)}" aria-label="${esc(label)}">
               ${storyToolSymbol(tool, iconName)}
@@ -853,6 +877,7 @@
 
   function renderStoryFloatingTray(editor) {
     const tray = storyToolPanel(editor);
+    if (!tray) return '';
     return `
       <div class="story-floating-tray story-${esc(editor.activeTool || 'text')}-tray" data-stop-close>
         ${tray}
@@ -860,9 +885,10 @@
     `;
   }
 
-  function renderStoryMedia(story, compact = false) {
+  function renderStoryMedia(story, compact = false, viewer = false) {
     const edits = story.edits || {};
     const isVideo = story.file?.mime?.startsWith('video/');
+    const renderOverlays = isVideo || Number(edits.compositionVersion || 0) >= 2;
     const style = `filter:${storyFilterCss(edits.filter)}; transform:scale(${Number(edits.zoom || 1)});`;
     const mediaUrl = isVideo && (edits.trimStart || edits.trimEnd)
       ? `${story.file.url}#t=${Number(edits.trimStart || 0)},${Number(edits.trimEnd || '') || ''}`
@@ -870,12 +896,12 @@
     return `
       <div class="story-preview ${compact ? 'compact' : ''}">
         ${isVideo
-          ? `<video src="${esc(mediaUrl)}" ${compact ? 'muted' : 'controls'} playsinline style="${esc(style)}"></video>`
+          ? `<video src="${esc(mediaUrl)}" ${compact ? 'muted' : viewer ? 'autoplay' : 'controls'} playsinline style="${esc(style)}"></video>`
           : `<img src="${esc(mediaUrl)}" alt="" style="${esc(style)}">`}
-        ${renderStoryDrawings(edits)}
-        ${renderStoryStickers(edits)}
-        ${edits.text ? `<span class="story-text-overlay ${esc(storyTextClass(edits))}" style="${esc(storyTextStyle(edits))}">${esc(edits.text)}</span>` : ''}
-        ${edits.pollQuestion ? renderPollSticker(edits, compact) : ''}
+        ${renderOverlays ? renderStoryDrawings(edits) : ''}
+        ${renderOverlays ? renderStoryStickers(edits) : ''}
+        ${renderOverlays && edits.text ? `<span class="story-text-overlay ${esc(storyTextClass(edits))}" style="${esc(storyTextStyle(edits))}">${esc(edits.text)}</span>` : ''}
+        ${renderOverlays && edits.pollQuestion ? renderPollSticker(edits, compact) : ''}
         ${story.audio && !compact ? renderStoryAudio(story) : ''}
       </div>
     `;
@@ -895,6 +921,15 @@
       <span class="story-sticker story-sticker-${esc(sticker.type || 'emoji')}" style="${esc(storyStickerStyle(sticker))}">
         ${esc(sticker.label || '')}
       </span>
+    `).join('');
+  }
+
+  function renderStoryEditorStickers(editor = {}) {
+    const stickers = Array.isArray(editor.stickers) ? editor.stickers : [];
+    return stickers.map((sticker) => `
+      <button class="story-sticker story-editor-sticker story-sticker-${esc(sticker.type || 'emoji')}" data-action="story-sticker-drag" data-sticker-id="${esc(sticker.id)}" style="${esc(storyStickerStyle(sticker))}" aria-label="Move ${esc(sticker.label || 'sticker')}">
+        ${esc(sticker.label || '')}
+      </button>
     `).join('');
   }
 
@@ -960,11 +995,12 @@
 
   function updateStoryTextUi() {
     const editor = state.storyEditor;
-    const overlay = document.querySelector('.story-draggable-text');
+    const overlay = document.querySelector('.story-draggable-text, .story-live-text');
     if (!editor || !overlay) return;
     overlay.style.cssText = storyTextStyle(editor);
-    overlay.className = `story-draggable-text ${editor.text ? '' : 'empty'} ${storyTextClass(editor)}`;
-    overlay.textContent = editor.text || 'Aa';
+    const live = overlay.classList.contains('story-live-text');
+    overlay.className = `${live ? 'story-live-text' : 'story-draggable-text'} ${storyTextClass(editor)}`;
+    if (!live) overlay.textContent = editor.text || '';
     const size = document.getElementById('story-text-size');
     if (size) size.value = String(editor.textSize || 44);
   }
@@ -981,7 +1017,14 @@
     const preview = document.querySelector('.story-editor-preview');
     if (!state.storyEditor || !preview) return;
     preview.querySelectorAll('.story-sticker').forEach((item) => item.remove());
-    preview.insertAdjacentHTML('beforeend', renderStoryStickers(state.storyEditor));
+    preview.insertAdjacentHTML('beforeend', renderStoryEditorStickers(state.storyEditor));
+  }
+
+  function updateStoryEditorStickerUi(stickerId) {
+    const sticker = (state.storyEditor?.stickers || []).find((item) => item.id === stickerId);
+    const element = Array.from(document.querySelectorAll('.story-editor-sticker'))
+      .find((item) => item.dataset.stickerId === stickerId);
+    if (sticker && element) element.style.cssText = storyStickerStyle(sticker);
   }
 
   function renderStoryEngagement(story, compact = false) {
@@ -1007,7 +1050,7 @@
         </div>
         <div class="highlight-row">
           ${own ? `
-            <button class="highlight-add" data-action="post-story" aria-label="Add highlight">
+            <button class="highlight-add" data-action="open-story-create" aria-label="Add highlight">
               <span>+</span>
               <small>New</small>
             </button>
@@ -1497,7 +1540,7 @@
       ` : '<p class="hint">Story not found.</p>';
     }
     return `
-      <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
+      <div class="overlay ${state.storyViewer ? 'over-story' : ''} ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
         <section class="action-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           ${body || '<p class="hint">No actions available.</p>'}
           <button data-action="close-overlays">Cancel</button>
@@ -1526,11 +1569,10 @@
     const tools = [
       ['text', 'Text', 'text'],
       ['stickers', 'Stickers', 'stickers'],
+      ['audio', 'Music', 'music'],
       ['draw', 'Draw', 'pen'],
-      ['filter', 'Filter', 'filter'],
-      ['poll', 'Poll', 'poll'],
-      ['audio', 'Audio', 'music'],
-      ['crop', editor.isVideo ? 'Trim' : 'Crop', 'rotate']
+      ['filter', 'Effects', 'sparkle'],
+      ['more', 'More', 'more']
     ];
     return `
       <div class="story-editor-page" data-action="close-story-editor">
@@ -1540,10 +1582,12 @@
               ? `<video src="${esc(editor.dataUrl)}" controls playsinline style="${esc(style)}"></video>`
               : `<img src="${esc(editor.dataUrl)}" alt="" style="${esc(style)}">`}
             ${renderStoryDrawings(editor)}
-            ${renderStoryStickers(editor)}
-            <button class="story-draggable-text ${editor.text ? '' : 'empty'} ${esc(storyTextClass(editor))}" data-action="story-text-drag" style="${esc(storyTextStyle(editor))}">
-              ${esc(editor.text || 'Aa')}
-            </button>
+            ${renderStoryEditorStickers(editor)}
+            ${editor.textEditing ? `
+              <textarea class="story-live-text ${esc(storyTextClass(editor))}" id="story-editor-text" maxlength="120" rows="1" placeholder="Type something" style="${esc(storyTextStyle(editor))}" autofocus>${esc(editor.text || '')}</textarea>
+            ` : editor.text ? `
+              <button class="story-draggable-text ${esc(storyTextClass(editor))}" data-action="story-text-drag" style="${esc(storyTextStyle(editor))}">${esc(editor.text)}</button>
+            ` : ''}
             ${editor.pollQuestion ? renderPollSticker(editor) : ''}
             ${editor.audio ? `
               <div class="story-audio-sticker">
@@ -1554,22 +1598,80 @@
             ` : ''}
           </div>
         </div>
+        <div class="story-object-trash" id="story-object-trash" aria-hidden="true">${icon('trash')}</div>
         ${renderStoryTopToolbar(editor, tools)}
-        ${editor.activeTool === 'text' ? `
+        ${editor.textEditing ? `
           <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" aria-label="Text size">
         ` : ''}
+        ${editor.activeTool === 'draw' ? `
+          <input class="story-size-slider story-brush-slider" id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}" aria-label="Brush size">
+        ` : ''}
         ${renderStoryFloatingTray(editor)}
-        <button class="primary story-post-btn" data-action="publish-story">Post story</button>
+        ${editor.textEditing || ['stickers', 'audio'].includes(editor.activeTool) ? '' : `
+          <div class="story-share-bar" data-stop-close>
+            <button class="story-share-pill" data-action="publish-story">
+              ${avatarHtml(state.me)}
+              <strong>Your story</strong>
+            </button>
+            <button class="story-share-send" data-action="publish-story" aria-label="Share story">${icon('send')}</button>
+          </div>
+        `}
       </div>
+    `;
+  }
+
+  function storyOwnerById(storyId) {
+    return storyUsers().find((user) => (user.stories || []).some((story) => story.id === storyId)) || null;
+  }
+
+  function renderStoryViewer() {
+    const storyId = state.storyViewer?.storyId;
+    if (!storyId) return '';
+    const story = storyById(storyId);
+    const owner = storyOwnerById(storyId);
+    if (!story || !owner) return '';
+    const stories = (owner.stories || []).filter((item) => item.file);
+    const index = Math.max(0, stories.findIndex((item) => item.id === story.id));
+    const isVideo = story.file?.mime?.startsWith('video/');
+    return `
+      <section class="story-viewer-page" style="--story-duration:${isVideo ? 12 : 7}s">
+        <div class="story-viewer-stage">
+          ${renderStoryMedia(story, false, true)}
+        </div>
+        <div class="story-viewer-top">
+          <div class="story-progress" aria-hidden="true">
+            ${stories.map((item, itemIndex) => `<span class="${itemIndex < index ? 'complete' : itemIndex === index ? 'active' : ''}"><i></i></span>`).join('')}
+          </div>
+          <div class="story-viewer-head">
+            <div class="story-viewer-owner">
+              <span class="avatar">${owner.avatar?.url ? `<img src="${esc(owner.avatar.url)}" alt="">` : esc(initials(owner))}</span>
+              <strong>${esc(owner.username)}</strong>
+              <small>${esc(shortTime(story.createdAt))}</small>
+            </div>
+            <button data-action="close-story-viewer" aria-label="Close story">${icon('x')}</button>
+          </div>
+        </div>
+        <button class="story-tap-zone story-tap-prev" data-action="story-viewer-prev" aria-label="Previous story"></button>
+        <button class="story-tap-zone story-tap-next" data-action="story-viewer-next" aria-label="Next story"></button>
+        <div class="story-viewer-actions">
+          <input id="story-viewer-comment" maxlength="280" placeholder="Add a comment...">
+          <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="Like story">${icon('heart')}</button>
+          <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}</button>
+          <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
+        </div>
+      </section>
     `;
   }
 
   function renderStoryMenu() {
     if (!state.storyMenuOpen) return '';
+    const currentStory = state.me?.stories?.[0];
     return `
       <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
         <section class="action-sheet story-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
-          <button data-action="post-story">${icon('story')} Post story</button>
+          ${currentStory ? `<button data-action="view-story" data-story-id="${esc(currentStory.id)}">${icon('play')} View story</button>` : ''}
+          <button data-action="create-story"><span class="story-aa">Aa</span> Create story</button>
+          <button data-action="post-story">${icon('story')} Photo or video</button>
           <button data-action="change-profile-picture">${icon('profile')} Change profile picture</button>
         </section>
       </div>
@@ -1994,15 +2096,15 @@
     await uploadAvatarData(canvas.toDataURL('image/png'), `cropped-${crop.name.replace(/\.[^.]+$/, '')}.png`, crop.lastModified);
   }
 
-  async function beginStoryEditor(file) {
-    if (!file) return;
-    state.storyEditor = {
-      dataUrl: await fileToDataUrl(file),
-      name: file.name || 'story',
-      type: file.type || 'application/octet-stream',
-      lastModified: file.lastModified || Date.now(),
-      isVideo: file.type.startsWith('video/'),
-      activeTool: 'text',
+  function createStoryEditorState({ dataUrl, name, type, lastModified, textEditing = false }) {
+    return {
+      dataUrl,
+      name: name || 'story',
+      type: type || 'image/png',
+      lastModified: lastModified || Date.now(),
+      isVideo: String(type || '').startsWith('video/'),
+      activeTool: textEditing ? 'text' : null,
+      textEditing,
       filter: 'normal',
       text: '',
       textX: 50,
@@ -2022,6 +2124,8 @@
       drawSize: 6,
       stickers: [],
       stickerDraft: '',
+      stickerSearch: '',
+      stickerComposer: null,
       pollQuestion: '',
       pollOptionA: 'Yes',
       pollOptionB: 'No',
@@ -2032,6 +2136,34 @@
       trimStart: 0,
       trimEnd: 0
     };
+  }
+
+  async function beginStoryEditor(file) {
+    if (!file) return;
+    state.storyEditor = createStoryEditorState({
+      dataUrl: await fileToDataUrl(file),
+      name: file.name || 'story',
+      type: file.type || 'application/octet-stream',
+      lastModified: file.lastModified || Date.now()
+    });
+    state.storyMenuOpen = false;
+    renderApp();
+  }
+
+  function beginBlankStoryEditor() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 1920;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#101722';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    state.storyEditor = createStoryEditorState({
+      dataUrl: canvas.toDataURL('image/png'),
+      name: 'story.png',
+      type: 'image/png',
+      lastModified: Date.now(),
+      textEditing: true
+    });
     state.storyMenuOpen = false;
     renderApp();
   }
@@ -2053,13 +2185,14 @@
     renderApp();
   }
 
-  function addStorySticker(type = 'emoji') {
+  function addStorySticker(type = 'emoji', suppliedLabel = '') {
     const editor = state.storyEditor;
     if (!editor) return;
-    const draft = (editor.stickerDraft || '').trim();
+    const draft = String(suppliedLabel || editor.stickerDraft || '').trim();
     const defaults = {
-      emoji: '✨',
+      emoji: '\u2728',
       gif: 'GIF',
+      mention: draft ? (draft.startsWith('@') ? draft : `@${draft}`) : '@username',
       question: draft || 'Ask me',
       hashtag: draft ? (draft.startsWith('#') ? draft : `#${draft.replace(/^@/, '')}`) : '#New',
       countdown: draft || 'Countdown',
@@ -2068,7 +2201,7 @@
     const sticker = {
       id: `story_sticker_${cryptoRandom()}`,
       type,
-      label: defaults[type] || draft || 'Sticker',
+      label: draft || defaults[type] || 'Sticker',
       x: 50,
       y: 42,
       rotation: 0,
@@ -2076,7 +2209,8 @@
     };
     editor.stickers = [...(editor.stickers || []), sticker].slice(-20);
     editor.stickerDraft = '';
-    updateStoryStickerPreview();
+    editor.stickerComposer = null;
+    editor.activeTool = null;
     renderApp();
   }
 
@@ -2100,6 +2234,7 @@
 
   function storyEditPayload(editor) {
     return {
+      compositionVersion: 2,
       filter: editor.filter,
       text: editor.text,
       zoom: editor.zoom,
@@ -2301,37 +2436,12 @@
       method: 'POST',
       body: {
         file: {
-          name: editor.isVideo ? editor.name : `edited-${editor.name.replace(/\.[^.]+$/, '')}.png`,
-          type: editor.isVideo ? editor.type : 'image/png',
-          dataUrl: await storyEditorOutput(),
+          name: editor.name,
+          type: editor.type,
+          dataUrl: editor.dataUrl,
           lastModified: editor.lastModified ? new Date(editor.lastModified).toISOString() : null
         },
-        edits: {
-          filter: editor.filter,
-          text: editor.text,
-          zoom: editor.zoom,
-          textX: editor.textX,
-          textY: editor.textY,
-          textRotation: editor.textRotation,
-          textColor: editor.textColor,
-          textFont: editor.textFont,
-          textSize: editor.textSize,
-          textAlign: editor.textAlign,
-          textEffect: editor.textEffect,
-          textAnimation: editor.textAnimation,
-          textBgEnabled: editor.textBgEnabled,
-          textBgColor: editor.textBgColor,
-          textFrame: editor.textFrame,
-          drawings: editor.drawings,
-          stickers: editor.stickers,
-          pollQuestion: editor.pollQuestion,
-          pollOptionA: editor.pollOptionA,
-          pollOptionB: editor.pollOptionB,
-          audioStart: editor.audioStart,
-          audioEnd: Math.min(Number(editor.audioEnd || 30), Number(editor.audioStart || 0) + 30),
-          trimStart: editor.trimStart,
-          trimEnd: editor.trimEnd
-        },
+        edits: storyEditPayload(editor),
         audio: editor.audio ? {
           name: editor.audio.name,
           type: editor.audio.type,
@@ -2395,24 +2505,37 @@
   async function viewStory(storyId) {
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/view`, { method: 'POST' });
     replaceStory(data.story);
-    if (data.story?.file) {
-      state.mediaViewer = {
-        src: data.story.file.url,
-        name: data.story.file.name || 'Story',
-        type: data.story.file.mime || ''
-      };
-    }
+    state.storyViewer = data.story?.file ? { storyId: data.story.id } : null;
+    state.storyMenuOpen = false;
+    state.mediaViewer = null;
     renderApp();
+    scheduleStoryAdvance(data.story);
+  }
+
+  async function navigateStory(direction) {
+    const storyId = state.storyViewer?.storyId;
+    const owner = storyOwnerById(storyId);
+    const stories = (owner?.stories || []).filter((story) => story.file);
+    const index = stories.findIndex((story) => story.id === storyId);
+    const next = stories[index + direction];
+    if (!next) {
+      clearStoryAdvance();
+      state.storyViewer = null;
+      renderApp();
+      return;
+    }
+    await viewStory(next.id);
   }
 
   async function toggleStoryLike(storyId) {
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/like`, { method: 'POST' });
     replaceStory(data.story);
     renderApp();
+    if (state.storyViewer?.storyId === storyId) scheduleStoryAdvance(data.story);
   }
 
   async function submitStoryComment(storyId) {
-    const input = document.getElementById('story-comment-input');
+    const input = document.getElementById('story-viewer-comment') || document.getElementById('story-comment-input');
     const text = (input?.value || '').trim();
     if (!text) return;
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments`, {
@@ -3082,6 +3205,21 @@
   }
 
   let overlayCloseTimer = null;
+  let storyAdvanceTimer = null;
+
+  function clearStoryAdvance() {
+    clearTimeout(storyAdvanceTimer);
+    storyAdvanceTimer = null;
+  }
+
+  function scheduleStoryAdvance(story) {
+    clearStoryAdvance();
+    if (!story || !state.storyViewer) return;
+    const delay = story.file?.mime?.startsWith('video/') ? 12000 : 7000;
+    storyAdvanceTimer = setTimeout(() => {
+      navigateStory(1).catch((error) => alert(error.message));
+    }, delay);
+  }
 
   function openActionSheet(sheet) {
     clearTimeout(overlayCloseTimer);
@@ -3101,6 +3239,7 @@
       state.storyMenuOpen = false;
       state.overlayClosing = false;
       renderApp();
+      if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
     }, 190);
   }
 
@@ -3316,6 +3455,8 @@
       }
       if (action === 'close-story-editor') {
         state.storyEditor = null;
+        storyTextPointers.clear();
+        storyStickerPointers.clear();
         renderApp();
       }
       if (action === 'story-filter') {
@@ -3323,12 +3464,46 @@
         renderApp();
       }
       if (action === 'story-tool') {
-        if (state.storyEditor) state.storyEditor.activeTool = target.dataset.tool || 'text';
+        if (state.storyEditor) {
+          const tool = target.dataset.tool || 'text';
+          if (tool === 'text') {
+            state.storyEditor.activeTool = 'text';
+            state.storyEditor.textEditing = true;
+          } else {
+            state.storyEditor.textEditing = false;
+            state.storyEditor.activeTool = state.storyEditor.activeTool === tool ? null : tool;
+          }
+          if (tool !== 'stickers') state.storyEditor.stickerComposer = null;
+        }
+        renderApp();
+      }
+      if (action === 'finish-story-tool') {
+        if (state.storyEditor) {
+          state.storyEditor.textEditing = false;
+          state.storyEditor.activeTool = null;
+          state.storyEditor.stickerComposer = null;
+        }
+        renderApp();
+      }
+      if (action === 'cycle-story-text-align') {
+        if (state.storyEditor) {
+          const alignments = ['left', 'center', 'right'];
+          const index = alignments.indexOf(state.storyEditor.textAlign || 'center');
+          state.storyEditor.textAlign = alignments[(index + 1) % alignments.length];
+        }
+        renderApp();
+      }
+      if (action === 'cycle-story-text-animation') {
+        if (state.storyEditor) {
+          const animations = ['none', 'fade', 'rise', 'pop'];
+          const index = animations.indexOf(state.storyEditor.textAnimation || 'none');
+          state.storyEditor.textAnimation = animations[(index + 1) % animations.length];
+        }
         renderApp();
       }
       if (action === 'story-color') {
         if (state.storyEditor) state.storyEditor.textColor = target.dataset.color || '#ffffff';
-        updateStoryTextUi();
+        renderApp();
       }
       if (action === 'story-bg-color') {
         if (state.storyEditor) {
@@ -3340,7 +3515,7 @@
       }
       if (action === 'story-font') {
         if (state.storyEditor) state.storyEditor.textFont = target.dataset.font || 'system';
-        updateStoryTextUi();
+        renderApp();
       }
       if (action === 'story-text-align') {
         if (state.storyEditor) state.storyEditor.textAlign = target.dataset.align || 'center';
@@ -3378,7 +3553,28 @@
         }
       }
       if (action === 'add-story-sticker') {
+        addStorySticker(target.dataset.stickerType, target.dataset.stickerLabel || '');
+      }
+      if (action === 'choose-story-sticker') {
+        if (state.storyEditor) {
+          state.storyEditor.stickerComposer = target.dataset.stickerType || null;
+          state.storyEditor.stickerDraft = '';
+        }
+        renderApp();
+      }
+      if (action === 'story-sticker-back') {
+        if (state.storyEditor) state.storyEditor.stickerComposer = null;
+        renderApp();
+      }
+      if (action === 'commit-story-sticker') {
         addStorySticker(target.dataset.stickerType);
+      }
+      if (action === 'finish-story-poll') {
+        if (state.storyEditor) {
+          state.storyEditor.stickerComposer = null;
+          state.storyEditor.activeTool = null;
+        }
+        renderApp();
       }
       if (action === 'story-audio-open') {
         document.getElementById('story-audio-input')?.click();
@@ -3392,10 +3588,22 @@
       if (action === 'view-story') {
         await viewStory(target.dataset.storyId);
       }
+      if (action === 'close-story-viewer') {
+        clearStoryAdvance();
+        state.storyViewer = null;
+        renderApp();
+      }
+      if (action === 'story-viewer-prev') {
+        await navigateStory(-1);
+      }
+      if (action === 'story-viewer-next') {
+        await navigateStory(1);
+      }
       if (action === 'like-story') {
         await toggleStoryLike(target.dataset.storyId);
       }
       if (action === 'open-story-comments') {
+        clearStoryAdvance();
         openActionSheet({ type: 'story-comments', storyId: target.dataset.storyId });
       }
       if (action === 'submit-story-comment') {
@@ -3560,6 +3768,16 @@
         state.overlayClosing = false;
         renderApp();
       }
+      if (action === 'open-story-create') {
+        clearTimeout(overlayCloseTimer);
+        state.actionSheet = null;
+        state.storyMenuOpen = true;
+        state.overlayClosing = false;
+        renderApp();
+      }
+      if (action === 'create-story') {
+        beginBlankStoryEditor();
+      }
       if (action === 'post-story') {
         state.storyMenuOpen = false;
         renderApp();
@@ -3699,11 +3917,16 @@
     }
     if (event.target.id === 'story-editor-text' && state.storyEditor) {
       state.storyEditor.text = event.target.value.slice(0, 120);
-      const overlay = document.querySelector('.story-draggable-text');
-      if (overlay) {
-        overlay.textContent = state.storyEditor.text || 'Aa';
-        overlay.classList.toggle('empty', !state.storyEditor.text);
-      }
+      event.target.style.height = 'auto';
+      event.target.style.height = `${Math.min(event.target.scrollHeight, window.innerHeight * 0.46)}px`;
+      return;
+    }
+    if (event.target.id === 'story-sticker-search' && state.storyEditor) {
+      state.storyEditor.stickerSearch = event.target.value.slice(0, 80);
+      const term = state.storyEditor.stickerSearch.trim().toLowerCase();
+      document.querySelectorAll('.story-sticker-grid > button').forEach((button) => {
+        button.hidden = Boolean(term && !String(button.dataset.search || '').includes(term));
+      });
       return;
     }
     if (event.target.id === 'story-editor-zoom' && state.storyEditor) {
@@ -3797,9 +4020,63 @@
     }
   });
 
+  document.addEventListener('focusin', (event) => {
+    if (event.target.closest('.story-viewer-actions')) clearStoryAdvance();
+  });
+
+  document.addEventListener('focusout', (event) => {
+    if (!event.target.closest('.story-viewer-actions')) return;
+    setTimeout(() => {
+      if (!state.storyViewer || document.activeElement?.closest('.story-viewer-actions')) return;
+      scheduleStoryAdvance(storyById(state.storyViewer.storyId));
+    }, 0);
+  });
+
   document.addEventListener('pointerdown', async (event) => {
     if (state.me && event.clientX < 24 && !event.target.closest('input,textarea,button,a')) {
       state.edgeSwipe = { startX: event.clientX, startY: event.clientY };
+    }
+
+    const storySticker = event.target.closest('[data-action="story-sticker-drag"]');
+    if (state.storyEditor && storySticker) {
+      event.preventDefault();
+      const preview = storySticker.closest('.story-editor-preview');
+      const rect = preview?.getBoundingClientRect();
+      const sticker = (state.storyEditor.stickers || []).find((item) => item.id === storySticker.dataset.stickerId);
+      if (rect && sticker) {
+        storyStickerPointers.set(event.pointerId, {
+          x: event.clientX,
+          y: event.clientY,
+          stickerId: sticker.id
+        });
+        const matching = Array.from(storyStickerPointers.entries())
+          .filter(([, point]) => point.stickerId === sticker.id);
+        if (matching.length >= 2) {
+          const points = matching.slice(0, 2).map(([, point]) => point);
+          state.storyStickerDrag = null;
+          state.storyStickerGesture = {
+            pointerIds: matching.slice(0, 2).map(([pointerId]) => pointerId),
+            stickerId: sticker.id,
+            angle: pointerAngle(points[0], points[1]),
+            distance: Math.max(1, pointerDistance(points[0], points[1])),
+            rotation: Number(sticker.rotation || 0),
+            size: Number(sticker.size || 1)
+          };
+        } else {
+          state.storyStickerDrag = {
+            pointerId: event.pointerId,
+            stickerId: sticker.id,
+            rect,
+            startX: event.clientX,
+            startY: event.clientY,
+            x: Number(sticker.x || 50),
+            y: Number(sticker.y || 42)
+          };
+        }
+        storySticker.setPointerCapture?.(event.pointerId);
+        document.getElementById('story-object-trash')?.classList.add('visible');
+      }
+      return;
     }
 
     const storyText = event.target.closest('[data-action="story-text-drag"]');
@@ -3823,6 +4100,7 @@
           state.storyTextDrag = { pointerId: event.pointerId, rect };
         }
         storyText.setPointerCapture?.(event.pointerId);
+        document.getElementById('story-object-trash')?.classList.add('visible');
       }
       return;
     }
@@ -3918,6 +4196,35 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.storyEditor && storyStickerPointers.has(event.pointerId)) {
+      const pointer = storyStickerPointers.get(event.pointerId);
+      storyStickerPointers.set(event.pointerId, { ...pointer, x: event.clientX, y: event.clientY });
+      if (state.storyStickerGesture) {
+        const points = state.storyStickerGesture.pointerIds
+          .map((pointerId) => storyStickerPointers.get(pointerId))
+          .filter(Boolean);
+        const sticker = (state.storyEditor.stickers || []).find((item) => item.id === state.storyStickerGesture.stickerId);
+        if (points.length >= 2 && sticker) {
+          const angleDelta = pointerAngle(points[0], points[1]) - state.storyStickerGesture.angle;
+          const distance = Math.max(1, pointerDistance(points[0], points[1]));
+          sticker.rotation = state.storyStickerGesture.rotation + (angleDelta * 180) / Math.PI;
+          sticker.size = clamp(state.storyStickerGesture.size * (distance / state.storyStickerGesture.distance), 0.7, 1.8);
+          updateStoryEditorStickerUi(sticker.id);
+        }
+        return;
+      }
+      if (state.storyStickerDrag?.pointerId === event.pointerId) {
+        const drag = state.storyStickerDrag;
+        const sticker = (state.storyEditor.stickers || []).find((item) => item.id === drag.stickerId);
+        if (sticker) {
+          sticker.x = clamp(drag.x + ((event.clientX - drag.startX) / drag.rect.width) * 100, 5, 95);
+          sticker.y = clamp(drag.y + ((event.clientY - drag.startY) / drag.rect.height) * 100, 5, 95);
+          updateStoryEditorStickerUi(sticker.id);
+        }
+        document.getElementById('story-object-trash')?.classList.toggle('active', event.clientY > drag.rect.bottom - 96);
+      }
+      return;
+    }
     if (state.storyEditor && storyTextPointers.has(event.pointerId)) {
       storyTextPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (state.storyTextGesture && storyTextPointers.size >= 2) {
@@ -3937,6 +4244,7 @@
         state.storyEditor.textX = clamp(((event.clientX - rect.left) / rect.width) * 100, 5, 95);
         state.storyEditor.textY = clamp(((event.clientY - rect.top) / rect.height) * 100, 5, 95);
         updateStoryTextUi();
+        document.getElementById('story-object-trash')?.classList.toggle('active', event.clientY > rect.bottom - 96);
       }
       return;
     }
@@ -3994,24 +4302,50 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (storyStickerPointers.has(event.pointerId)) {
+      const trash = document.getElementById('story-object-trash');
+      const removeSticker = Boolean(trash?.classList.contains('active'));
+      const stickerId = state.storyStickerDrag?.stickerId || state.storyStickerGesture?.stickerId;
+      storyStickerPointers.delete(event.pointerId);
+      if (state.storyStickerDrag?.pointerId === event.pointerId) state.storyStickerDrag = null;
+      if (storyStickerPointers.size < 2) state.storyStickerGesture = null;
+      trash?.classList.remove('visible', 'active');
+      if (removeSticker && stickerId && state.storyEditor) {
+        state.storyEditor.stickers = (state.storyEditor.stickers || []).filter((sticker) => sticker.id !== stickerId);
+        renderApp();
+      }
+      state.edgeSwipe = null;
+      return;
+    }
     if (storyTextPointers.has(event.pointerId)) {
+      const trash = document.getElementById('story-object-trash');
+      const removeText = Boolean(trash?.classList.contains('active'));
       storyTextPointers.delete(event.pointerId);
       if (state.storyTextDrag?.pointerId === event.pointerId) state.storyTextDrag = null;
       if (storyTextPointers.size < 2) state.storyTextGesture = null;
+      trash?.classList.remove('visible', 'active');
+      if (removeText && state.storyEditor) {
+        state.storyEditor.text = '';
+        renderApp();
+      }
+      state.edgeSwipe = null;
       return;
     }
     if (state.storyDraw?.pointerId === event.pointerId) {
       state.storyDraw = null;
+      state.edgeSwipe = null;
       return;
     }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
       cropPointers.delete(event.pointerId);
       state.avatarCrop.drag = null;
       if (cropPointers.size < 2) state.avatarCrop.pinch = null;
+      state.edgeSwipe = null;
       return;
     }
     if (state.avatarCrop?.drag) {
       state.avatarCrop.drag = null;
+      state.edgeSwipe = null;
       return;
     }
     clearTimeout(state.longPressTimer);
@@ -4022,7 +4356,11 @@
       const dx = event.clientX - state.edgeSwipe.startX;
       const dy = event.clientY - state.edgeSwipe.startY;
       if (dx > 90 && Math.abs(dx) > Math.abs(dy)) {
-        if (state.chatProfileOpen) state.chatProfileOpen = false;
+        if (state.storyViewer) {
+          clearStoryAdvance();
+          state.storyViewer = null;
+        } else if (state.storyEditor) state.storyEditor = null;
+        else if (state.chatProfileOpen) state.chatProfileOpen = false;
         else if (state.activePeer) state.activePeer = null;
         else if (state.lastTab && state.lastTab !== state.tab) {
           const current = state.tab;
@@ -4063,9 +4401,13 @@
     if (state.avatarCrop?.pinch) state.avatarCrop.pinch = null;
     state.storyTextDrag = null;
     state.storyTextGesture = null;
+    state.storyStickerDrag = null;
+    state.storyStickerGesture = null;
     state.storyDraw = null;
     storyTextPointers.clear();
+    storyStickerPointers.clear();
     cropPointers.clear();
+    document.getElementById('story-object-trash')?.classList.remove('visible', 'active');
     state.edgeSwipe = null;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;
