@@ -79,6 +79,8 @@
     drag: null,
     storyTextDrag: null,
     storyTextGesture: null,
+    storyMediaDrag: null,
+    storyMediaGesture: null,
     storyStickerDrag: null,
     storyStickerGesture: null,
     storyDraw: null,
@@ -90,8 +92,13 @@
 
   const cropPointers = new Map();
   const storyTextPointers = new Map();
+  const storyMediaPointers = new Map();
   const storyStickerPointers = new Map();
   const toastTimers = new Map();
+  let storyTextTransformFrame = 0;
+  let storyMediaTransformFrame = 0;
+  let storyDrawFrame = 0;
+  let pendingStoryStroke = null;
 
   function freshCallState() {
     return {
@@ -720,6 +727,13 @@
     return `${preset} ${adjustments}`.trim() || 'none';
   }
 
+  function storyMediaTransformCss(edits = {}) {
+    const offsetX = clamp(Number(edits.mediaOffsetX ?? 0), -40, 40);
+    const offsetY = clamp(Number(edits.mediaOffsetY ?? 0), -40, 40);
+    const zoom = clamp(Number(edits.zoom ?? 1), 1, 3);
+    return `translate(${offsetX}%,${offsetY}%) scale(${zoom})`;
+  }
+
   function storyTextFontCss(font) {
     return {
       serif: 'Georgia, serif',
@@ -749,6 +763,11 @@
     const effect = ['none', 'shadow', 'glow', 'neon', 'outline', 'lift', 'rainbow'].includes(edits.textEffect) ? edits.textEffect : 'shadow';
     const animation = ['none', 'fade', 'rise', 'pop', 'type', 'bounce', 'flicker', 'pulse'].includes(edits.textAnimation) ? edits.textAnimation : 'none';
     return `text-effect-${effect} text-anim-${animation}`;
+  }
+
+  function storyTextColumns(value = '') {
+    const longestLine = String(value).split(/\r?\n/).reduce((longest, line) => Math.max(longest, line.length), 0);
+    return clamp(longestLine || 12, 4, 28);
   }
 
   function hexToRgba(hex, alpha) {
@@ -795,14 +814,26 @@
           <input id="story-text-custom-color" type="color" value="${esc(editor.textColor || '#ffffff')}">
         </label>
       </div>
-      <div class="story-option-strip story-font-strip">
-        ${fonts.map(([font, label]) => `<button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">${esc(label)}</button>`).join('')}
+      <div class="story-option-strip story-text-style-strip story-font-strip">
+        ${fonts.map(([font, label]) => `
+          <button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">
+            <span class="story-text-option-preview" style="font-family:${esc(storyTextFontCss(font))}">Aa</span><small>${esc(label)}</small>
+          </button>
+        `).join('')}
       </div>
-      <div class="story-option-strip story-effect-strip">
-        ${effects.map(([effect, label]) => `<button class="${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">${esc(label)}</button>`).join('')}
+      <div class="story-option-strip story-text-style-strip story-effect-strip">
+        ${effects.map(([effect, label]) => `
+          <button class="${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">
+            <span class="story-text-option-preview text-effect-${effect}" style="color:${esc(editor.textColor || '#ffffff')}">Aa</span><small>${esc(label)}</small>
+          </button>
+        `).join('')}
       </div>
-      <div class="story-option-strip story-animation-strip">
-        ${animations.map(([animation, label]) => `<button class="${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="story-text-animation" data-animation="${animation}">${esc(label)}</button>`).join('')}
+      <div class="story-option-strip story-text-style-strip story-animation-strip">
+        ${animations.map(([animation, label]) => `
+          <button class="${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="story-text-animation" data-animation="${animation}">
+            <span class="story-text-option-preview story-animation-preview preview-${animation}">Aa</span><small>${esc(label)}</small>
+          </button>
+        `).join('')}
       </div>
     `;
   }
@@ -1060,23 +1091,6 @@
     return icon(iconName);
   }
 
-  function storyQuickToolPanel() {
-    const tools = [
-      ['text', 'Text', 'text'],
-      ['stickers', 'Stickers', 'stickers'],
-      ['filter', 'Effects', 'sparkle'],
-      ['draw', 'Draw', 'pen'],
-      ['audio', 'Music', 'music']
-    ];
-    return `
-      <div class="story-quick-dock">
-        ${tools.map(([tool, label, iconName]) => `
-          <button data-action="story-tool" data-tool="${tool}" title="${label}" aria-label="${label}">${storyToolSymbol(tool, iconName)}</button>
-        `).join('')}
-      </div>
-    `;
-  }
-
   function renderStoryTopToolbar(editor, tools) {
     if (editor.textEditing) {
       const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
@@ -1109,9 +1123,7 @@
 
   function renderStoryFloatingTray(editor) {
     const tray = storyToolPanel(editor);
-    if (!tray) {
-      return `<div class="story-floating-tray story-quick-tray" data-stop-close>${storyQuickToolPanel()}</div>`;
-    }
+    if (!tray) return '';
     return `
       <div class="story-floating-tray story-${esc(editor.activeTool || 'text')}-tray" data-stop-close>
         ${tray}
@@ -1123,7 +1135,7 @@
     const edits = story.edits || {};
     const isVideo = story.file?.mime?.startsWith('video/');
     const renderOverlays = isVideo || Number(edits.compositionVersion || 0) >= 2;
-    const style = `filter:${storyFilterCss(edits.filter, edits)}; transform:scale(${Number(edits.zoom || 1)});`;
+    const style = `filter:${storyFilterCss(edits.filter, edits)}; transform:${storyMediaTransformCss(edits)};`;
     const mediaUrl = isVideo && (edits.trimStart || edits.trimEnd)
       ? `${story.file.url}#t=${Number(edits.trimStart || 0)},${Number(edits.trimEnd || '') || ''}`
       : story.file.url;
@@ -1256,18 +1268,48 @@
     overlay.className = `${live ? 'story-live-text' : 'story-draggable-text'} ${storyTextClass(editor)}`;
     if (!live) overlay.textContent = editor.text || '';
     const size = document.getElementById('story-text-size');
-    if (size) size.value = String(editor.textSize || 44);
+    updateStoryRangeProgress(size, editor.textSize || 44);
   }
 
-  function updateStoryMediaUi() {
+  function updateStoryTextTransformUi() {
+    if (storyTextTransformFrame) return;
+    storyTextTransformFrame = requestAnimationFrame(() => {
+      storyTextTransformFrame = 0;
+      const editor = state.storyEditor;
+      const overlay = document.querySelector('.story-draggable-text, .story-live-text');
+      if (!editor || !overlay) return;
+      overlay.style.left = `${clamp(Number(editor.textX || 50), 5, 95)}%`;
+      overlay.style.top = `${clamp(Number(editor.textY || 50), 5, 95)}%`;
+      overlay.style.transform = `translate(-50%,-50%) rotate(${clamp(Number(editor.textRotation || 0), -180, 180)}deg)`;
+      overlay.style.fontSize = `${clamp(Number(editor.textSize || 44), 22, 96)}px`;
+      updateStoryRangeProgress(document.getElementById('story-text-size'), editor.textSize || 44);
+    });
+  }
+
+  function updateStoryMediaUi(refreshEffects = true) {
     const editor = state.storyEditor;
     const preview = document.querySelector('.story-editor-preview');
     const media = preview?.querySelector('img, video');
     if (!editor || !preview || !media) return;
     media.style.filter = storyFilterCss(editor.filter, editor);
-    media.style.transform = `scale(${Number(editor.zoom || 1)})`;
-    preview.querySelectorAll('.story-media-effect, .story-vignette').forEach((layer) => layer.remove());
-    media.insertAdjacentHTML('afterend', renderStoryEffectLayers(editor));
+    updateStoryMediaTransformUi();
+    if (refreshEffects) {
+      preview.querySelectorAll('.story-media-effect, .story-vignette').forEach((layer) => layer.remove());
+      media.insertAdjacentHTML('afterend', renderStoryEffectLayers(editor));
+    }
+  }
+
+  function updateStoryMediaTransformUi() {
+    if (storyMediaTransformFrame) return;
+    storyMediaTransformFrame = requestAnimationFrame(() => {
+      storyMediaTransformFrame = 0;
+      const editor = state.storyEditor;
+      const media = document.querySelector('.story-editor-preview img, .story-editor-preview video');
+      if (!editor || !media) return;
+      media.style.transform = storyMediaTransformCss(editor);
+      const zoom = document.getElementById('story-editor-zoom');
+      if (zoom) zoom.value = String(editor.zoom || 1);
+    });
   }
 
   function updateStoryDrawPreview() {
@@ -1276,6 +1318,28 @@
     preview.querySelector('.story-drawing-layer')?.remove();
     const html = renderStoryDrawings(state.storyEditor);
     if (html) preview.insertAdjacentHTML('afterbegin', html);
+  }
+
+  function updateActiveStoryStrokeUi(stroke) {
+    pendingStoryStroke = stroke;
+    if (storyDrawFrame) return;
+    storyDrawFrame = requestAnimationFrame(() => {
+      storyDrawFrame = 0;
+      const paths = document.querySelectorAll('.story-editor-preview .story-drawing-layer path');
+      const path = paths[paths.length - 1];
+      if (path && pendingStoryStroke) path.setAttribute('d', drawingPath(pendingStoryStroke.points || []));
+      pendingStoryStroke = null;
+    });
+  }
+
+  function updateStoryRangeProgress(input, value) {
+    if (!input) return;
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const current = clamp(Number(value || min), min, max);
+    const progress = max === min ? 0 : ((current - min) / (max - min)) * 100;
+    input.value = String(current);
+    input.style.setProperty('--range-progress', `${progress}%`);
   }
 
   function eraseStoryStrokeAt(point) {
@@ -1947,7 +2011,7 @@
   function renderStoryEditor() {
     const editor = state.storyEditor;
     if (!editor) return '';
-    const style = `filter:${storyFilterCss(editor.filter, editor)}; transform:scale(${Number(editor.zoom || 1)});`;
+    const style = `filter:${storyFilterCss(editor.filter, editor)}; transform:${storyMediaTransformCss(editor)};`;
     const tools = [
       ['text', 'Text', 'text'],
       ['stickers', 'Stickers', 'stickers'],
@@ -1967,7 +2031,7 @@
             ${renderStoryDrawings(editor)}
             ${renderStoryEditorStickers(editor)}
             ${editor.textEditing ? `
-              <textarea class="story-live-text ${esc(storyTextClass(editor))}" id="story-editor-text" maxlength="120" rows="1" placeholder="Type something" style="${esc(storyTextStyle(editor))}" autofocus>${esc(editor.text || '')}</textarea>
+              <textarea class="story-live-text ${esc(storyTextClass(editor))}" id="story-editor-text" data-action="story-text-drag" maxlength="120" rows="1" cols="${storyTextColumns(editor.text)}" placeholder="Type something" style="${esc(storyTextStyle(editor))}" autofocus>${esc(editor.text || '')}</textarea>
             ` : editor.text ? `
               <button class="story-draggable-text ${esc(storyTextClass(editor))}" data-action="story-text-drag" style="${esc(storyTextStyle(editor))}">${esc(editor.text)}</button>
             ` : ''}
@@ -1984,10 +2048,18 @@
         <div class="story-object-trash" id="story-object-trash" aria-hidden="true">${icon('trash')}</div>
         ${renderStoryTopToolbar(editor, tools)}
         ${editor.textEditing ? `
-          <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" aria-label="Text size" data-stop-close>
+          <div class="story-size-control story-text-size-control" data-stop-close>
+            <span class="story-size-large">A</span>
+            <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" style="--range-progress:${esc(((Number(editor.textSize || 44) - 22) / 74) * 100)}%" aria-label="Text size" data-stop-close>
+            <span class="story-size-small">A</span>
+          </div>
         ` : ''}
         ${editor.activeTool === 'draw' && editor.drawBrush !== 'eraser' ? `
-          <input class="story-size-slider story-brush-slider" id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}" aria-label="Brush size" data-stop-close>
+          <div class="story-size-control story-brush-size-control" data-stop-close>
+            <span class="story-brush-large"></span>
+            <input class="story-size-slider story-brush-slider" id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}" style="--range-progress:${esc(((Number(editor.drawSize || 6) - 2) / 18) * 100)}%" aria-label="Brush size" data-stop-close>
+            <span class="story-brush-small"></span>
+          </div>
         ` : ''}
         ${renderStoryFloatingTray(editor)}
         ${editor.textEditing || ['stickers', 'audio'].includes(editor.activeTool) ? '' : `
@@ -2441,6 +2513,51 @@
     return Math.atan2(b.y - a.y, b.x - a.x);
   }
 
+  function capturePointer(element, pointerId) {
+    try {
+      element?.setPointerCapture?.(pointerId);
+    } catch {
+      // The pointer may already have ended between touch events.
+    }
+  }
+
+  function continueStoryTextDrag() {
+    if (!state.storyEditor || storyTextPointers.size !== 1) return;
+    const [pointerId, point] = storyTextPointers.entries().next().value;
+    const element = document.querySelector('.story-draggable-text, .story-live-text');
+    const rect = element?.closest('.story-editor-preview')?.getBoundingClientRect();
+    if (!element || !rect) return;
+    state.storyTextDrag = {
+      pointerId,
+      rect,
+      startX: point.x,
+      startY: point.y,
+      x: Number(state.storyEditor.textX || 50),
+      y: Number(state.storyEditor.textY || 50),
+      pending: false,
+      element
+    };
+    capturePointer(element, pointerId);
+    document.getElementById('story-object-trash')?.classList.add('visible');
+  }
+
+  function continueStoryMediaDrag() {
+    if (!state.storyEditor || storyMediaPointers.size !== 1) return;
+    const [pointerId, point] = storyMediaPointers.entries().next().value;
+    const preview = document.querySelector('.story-editor-preview');
+    const rect = preview?.getBoundingClientRect();
+    if (!preview || !rect) return;
+    state.storyMediaDrag = {
+      pointerId,
+      startX: point.x,
+      startY: point.y,
+      offsetX: Number(state.storyEditor.mediaOffsetX || 0),
+      offsetY: Number(state.storyEditor.mediaOffsetY || 0),
+      rect
+    };
+    capturePointer(preview, pointerId);
+  }
+
   function updateCropUi() {
     const crop = state.avatarCrop;
     if (!crop) return;
@@ -2479,7 +2596,7 @@
     await uploadAvatarData(canvas.toDataURL('image/png'), `cropped-${crop.name.replace(/\.[^.]+$/, '')}.png`, crop.lastModified);
   }
 
-  function createStoryEditorState({ dataUrl, name, type, lastModified, textEditing = false, isBlankStory = false, initialTool = 'filter' }) {
+  function createStoryEditorState({ dataUrl, name, type, lastModified, textEditing = false, isBlankStory = false, initialTool = null }) {
     return {
       dataUrl,
       name: name || 'story',
@@ -2499,6 +2616,8 @@
       vignette: 0,
       blur: 0,
       backgroundPreset: isBlankStory ? 'midnight' : null,
+      mediaOffsetX: 0,
+      mediaOffsetY: 0,
       text: '',
       textX: 50,
       textY: 50,
@@ -2587,8 +2706,7 @@
       type: 'image/png',
       lastModified: Date.now(),
       textEditing: false,
-      isBlankStory: true,
-      initialTool: 'filter'
+      isBlankStory: true
     });
     state.storyMenuOpen = false;
     renderApp();
@@ -2695,6 +2813,8 @@
       vignette: editor.vignette,
       blur: editor.blur,
       backgroundPreset: editor.backgroundPreset,
+      mediaOffsetX: editor.mediaOffsetX,
+      mediaOffsetY: editor.mediaOffsetY,
       text: editor.text,
       zoom: editor.zoom,
       textX: editor.textX,
@@ -2735,7 +2855,9 @@
     const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight) * Number(editor.zoom || 1);
     const w = image.naturalWidth * scale;
     const h = image.naturalHeight * scale;
-    ctx.drawImage(image, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    const mediaOffsetX = (clamp(Number(editor.mediaOffsetX ?? 0), -40, 40) / 100) * canvas.width;
+    const mediaOffsetY = (clamp(Number(editor.mediaOffsetY ?? 0), -40, 40) / 100) * canvas.height;
+    ctx.drawImage(image, (canvas.width - w) / 2 + mediaOffsetX, (canvas.height - h) / 2 + mediaOffsetY, w, h);
     ctx.filter = 'none';
     drawStoryMediaEffectOnCanvas(ctx, editor, canvas.width, canvas.height);
     drawStoryDrawingsOnCanvas(ctx, editor, canvas.width, canvas.height);
@@ -4103,6 +4225,7 @@
       if (action === 'close-story-editor') {
         state.storyEditor = null;
         storyTextPointers.clear();
+        storyMediaPointers.clear();
         storyStickerPointers.clear();
         renderApp();
       }
@@ -4111,7 +4234,7 @@
         target.closest('.story-filter-carousel')?.querySelectorAll('[data-action="story-filter"]').forEach((button) => {
           button.classList.toggle('active', button === target);
         });
-        updateStoryMediaUi();
+        updateStoryMediaUi(false);
       }
       if (action === 'story-overlay-effect') {
         if (state.storyEditor) state.storyEditor.overlayEffect = target.dataset.effect || 'none';
@@ -4127,8 +4250,9 @@
         if (state.storyEditor) {
           const tool = target.dataset.tool || 'text';
           if (tool === 'text') {
-            state.storyEditor.activeTool = 'text';
-            state.storyEditor.textEditing = true;
+            const closingText = state.storyEditor.activeTool === 'text' || state.storyEditor.textEditing;
+            state.storyEditor.activeTool = closingText ? null : 'text';
+            state.storyEditor.textEditing = !closingText;
           } else {
             state.storyEditor.textEditing = false;
             state.storyEditor.activeTool = state.storyEditor.activeTool === tool ? null : tool;
@@ -4598,7 +4722,7 @@
         state.storyEditor[name] = Number(event.target.value || 0);
         const output = event.target.closest('label')?.querySelector('output');
         if (output) output.textContent = event.target.value;
-        updateStoryMediaUi();
+        updateStoryMediaUi(name === 'vignette');
       }
       return;
     }
@@ -4641,6 +4765,7 @@
     }
     if (event.target.id === 'story-editor-text' && state.storyEditor) {
       state.storyEditor.text = event.target.value.slice(0, 120);
+      event.target.cols = storyTextColumns(state.storyEditor.text);
       event.target.style.height = 'auto';
       event.target.style.height = `${Math.min(event.target.scrollHeight, window.innerHeight * 0.46)}px`;
       return;
@@ -4660,22 +4785,23 @@
     }
     if (event.target.id === 'story-editor-zoom' && state.storyEditor) {
       state.storyEditor.zoom = Number(event.target.value || 1);
-      const media = document.querySelector('.story-editor-preview img, .story-editor-preview video');
-      if (media) media.style.transform = `scale(${state.storyEditor.zoom})`;
+      updateStoryMediaTransformUi();
       return;
     }
     if (event.target.id === 'story-text-rotation' && state.storyEditor) {
       state.storyEditor.textRotation = Number(event.target.value || 0);
-      updateStoryTextUi();
+      updateStoryTextTransformUi();
       return;
     }
     if (event.target.id === 'story-text-size' && state.storyEditor) {
       state.storyEditor.textSize = Number(event.target.value || 44);
-      updateStoryTextUi();
+      updateStoryRangeProgress(event.target, state.storyEditor.textSize);
+      updateStoryTextTransformUi();
       return;
     }
     if (event.target.id === 'story-draw-size' && state.storyEditor) {
       state.storyEditor.drawSize = Number(event.target.value || 6);
+      updateStoryRangeProgress(event.target, state.storyEditor.drawSize);
       return;
     }
     if (event.target.id === 'story-trim-start' && state.storyEditor) {
@@ -4823,26 +4949,51 @@
 
     const storyText = event.target.closest('[data-action="story-text-drag"]');
     if (state.storyEditor && storyText) {
-      event.preventDefault();
       const canvas = storyText.closest('.story-editor-preview');
       const rect = canvas?.getBoundingClientRect();
       if (rect) {
+        const liveText = storyText.classList.contains('story-live-text');
         storyTextPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
         if (storyTextPointers.size >= 2) {
+          event.preventDefault();
           const points = Array.from(storyTextPointers.values()).slice(0, 2);
+          const pointerIds = Array.from(storyTextPointers.keys()).slice(0, 2);
+          const center = {
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2
+          };
           state.storyTextDrag = null;
           state.storyTextGesture = {
-            pointerIds: Array.from(storyTextPointers.keys()).slice(0, 2),
+            pointerIds,
             angle: pointerAngle(points[0], points[1]),
             distance: Math.max(1, pointerDistance(points[0], points[1])),
             rotation: Number(state.storyEditor.textRotation || 0),
-            size: Number(state.storyEditor.textSize || 44)
+            size: Number(state.storyEditor.textSize || 44),
+            center,
+            x: Number(state.storyEditor.textX || 50),
+            y: Number(state.storyEditor.textY || 50),
+            rect
           };
+          storyText.blur?.();
+          pointerIds.forEach((pointerId) => capturePointer(storyText, pointerId));
+          document.getElementById('story-object-trash')?.classList.remove('visible', 'active');
         } else {
-          state.storyTextDrag = { pointerId: event.pointerId, rect };
+          state.storyTextDrag = {
+            pointerId: event.pointerId,
+            rect,
+            startX: event.clientX,
+            startY: event.clientY,
+            x: Number(state.storyEditor.textX || 50),
+            y: Number(state.storyEditor.textY || 50),
+            pending: liveText,
+            element: storyText
+          };
+          if (!liveText) {
+            event.preventDefault();
+            capturePointer(storyText, event.pointerId);
+            document.getElementById('story-object-trash')?.classList.add('visible');
+          }
         }
-        storyText.setPointerCapture?.(event.pointerId);
-        document.getElementById('story-object-trash')?.classList.add('visible');
       }
       return;
     }
@@ -4871,6 +5022,41 @@
       state.storyDraw = { pointerId: event.pointerId, rect, stroke };
       storyPreview.setPointerCapture?.(event.pointerId);
       updateStoryDrawPreview();
+      return;
+    }
+
+    if (state.storyEditor && storyPreview && state.storyEditor.activeTool !== 'draw' && !event.target.closest('button,input,textarea,a,audio,video')) {
+      event.preventDefault();
+      const rect = storyPreview.getBoundingClientRect();
+      storyMediaPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (storyMediaPointers.size >= 2) {
+        const points = Array.from(storyMediaPointers.values()).slice(0, 2);
+        const pointerIds = Array.from(storyMediaPointers.keys()).slice(0, 2);
+        state.storyMediaDrag = null;
+        state.storyMediaGesture = {
+          pointerIds,
+          distance: Math.max(1, pointerDistance(points[0], points[1])),
+          center: {
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2
+          },
+          zoom: Number(state.storyEditor.zoom || 1),
+          offsetX: Number(state.storyEditor.mediaOffsetX || 0),
+          offsetY: Number(state.storyEditor.mediaOffsetY || 0),
+          rect
+        };
+        pointerIds.forEach((pointerId) => capturePointer(storyPreview, pointerId));
+      } else {
+        state.storyMediaDrag = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          offsetX: Number(state.storyEditor.mediaOffsetX || 0),
+          offsetY: Number(state.storyEditor.mediaOffsetY || 0),
+          rect
+        };
+      }
+      capturePointer(storyPreview, event.pointerId);
       return;
     }
 
@@ -4980,20 +5166,63 @@
         const ids = state.storyTextGesture.pointerIds;
         const points = ids.map((id) => storyTextPointers.get(id)).filter(Boolean);
         if (points.length >= 2) {
+          event.preventDefault();
           const angleDelta = pointerAngle(points[0], points[1]) - state.storyTextGesture.angle;
           const distance = Math.max(1, pointerDistance(points[0], points[1]));
-          state.storyEditor.textRotation = state.storyTextGesture.rotation + (angleDelta * 180) / Math.PI;
+          const center = {
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2
+          };
+          state.storyEditor.textRotation = clamp(state.storyTextGesture.rotation + (angleDelta * 180) / Math.PI, -180, 180);
           state.storyEditor.textSize = clamp(state.storyTextGesture.size * (distance / state.storyTextGesture.distance), 22, 96);
-          updateStoryTextUi();
+          state.storyEditor.textX = clamp(state.storyTextGesture.x + ((center.x - state.storyTextGesture.center.x) / state.storyTextGesture.rect.width) * 100, 5, 95);
+          state.storyEditor.textY = clamp(state.storyTextGesture.y + ((center.y - state.storyTextGesture.center.y) / state.storyTextGesture.rect.height) * 100, 5, 95);
+          updateStoryTextTransformUi();
         }
         return;
       }
       if (state.storyTextDrag?.pointerId === event.pointerId) {
-        const rect = state.storyTextDrag.rect;
-        state.storyEditor.textX = clamp(((event.clientX - rect.left) / rect.width) * 100, 5, 95);
-        state.storyEditor.textY = clamp(((event.clientY - rect.top) / rect.height) * 100, 5, 95);
-        updateStoryTextUi();
-        document.getElementById('story-object-trash')?.classList.toggle('active', event.clientY > rect.bottom - 96);
+        const drag = state.storyTextDrag;
+        const dx = event.clientX - drag.startX;
+        const dy = event.clientY - drag.startY;
+        if (drag.pending && Math.hypot(dx, dy) < 7) return;
+        if (drag.pending) {
+          drag.pending = false;
+          drag.element?.blur?.();
+          capturePointer(drag.element, event.pointerId);
+          document.getElementById('story-object-trash')?.classList.add('visible');
+        }
+        event.preventDefault();
+        state.storyEditor.textX = clamp(drag.x + (dx / drag.rect.width) * 100, 5, 95);
+        state.storyEditor.textY = clamp(drag.y + (dy / drag.rect.height) * 100, 5, 95);
+        updateStoryTextTransformUi();
+        document.getElementById('story-object-trash')?.classList.toggle('active', event.clientY > drag.rect.bottom - 96);
+      }
+      return;
+    }
+    if (state.storyEditor && storyMediaPointers.has(event.pointerId)) {
+      storyMediaPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (state.storyMediaGesture && storyMediaPointers.size >= 2) {
+        const points = state.storyMediaGesture.pointerIds.map((pointerId) => storyMediaPointers.get(pointerId)).filter(Boolean);
+        if (points.length >= 2) {
+          event.preventDefault();
+          const center = {
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2
+          };
+          state.storyEditor.zoom = clamp(state.storyMediaGesture.zoom * (pointerDistance(points[0], points[1]) / state.storyMediaGesture.distance), 1, 3);
+          state.storyEditor.mediaOffsetX = clamp(state.storyMediaGesture.offsetX + ((center.x - state.storyMediaGesture.center.x) / state.storyMediaGesture.rect.width) * 100, -40, 40);
+          state.storyEditor.mediaOffsetY = clamp(state.storyMediaGesture.offsetY + ((center.y - state.storyMediaGesture.center.y) / state.storyMediaGesture.rect.height) * 100, -40, 40);
+          updateStoryMediaTransformUi();
+        }
+        return;
+      }
+      if (state.storyMediaDrag?.pointerId === event.pointerId) {
+        event.preventDefault();
+        const drag = state.storyMediaDrag;
+        state.storyEditor.mediaOffsetX = clamp(drag.offsetX + ((event.clientX - drag.startX) / drag.rect.width) * 100, -40, 40);
+        state.storyEditor.mediaOffsetY = clamp(drag.offsetY + ((event.clientY - drag.startY) / drag.rect.height) * 100, -40, 40);
+        updateStoryMediaTransformUi();
       }
       return;
     }
@@ -5010,7 +5239,7 @@
         x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
         y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100)
       });
-      updateStoryDrawPreview();
+      updateActiveStoryStrokeUi(state.storyDraw.stroke);
       return;
     }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
@@ -5076,14 +5305,25 @@
     if (storyTextPointers.has(event.pointerId)) {
       const trash = document.getElementById('story-object-trash');
       const removeText = Boolean(trash?.classList.contains('active'));
+      const wasGesture = Boolean(state.storyTextGesture);
       storyTextPointers.delete(event.pointerId);
       if (state.storyTextDrag?.pointerId === event.pointerId) state.storyTextDrag = null;
       if (storyTextPointers.size < 2) state.storyTextGesture = null;
       trash?.classList.remove('visible', 'active');
       if (removeText && state.storyEditor) {
         state.storyEditor.text = '';
+        storyTextPointers.clear();
         renderApp();
-      }
+      } else if (wasGesture) continueStoryTextDrag();
+      state.edgeSwipe = null;
+      return;
+    }
+    if (storyMediaPointers.has(event.pointerId)) {
+      const wasGesture = Boolean(state.storyMediaGesture);
+      storyMediaPointers.delete(event.pointerId);
+      if (state.storyMediaDrag?.pointerId === event.pointerId) state.storyMediaDrag = null;
+      if (storyMediaPointers.size < 2) state.storyMediaGesture = null;
+      if (wasGesture) continueStoryMediaDrag();
       state.edgeSwipe = null;
       return;
     }
@@ -5157,10 +5397,13 @@
     if (state.avatarCrop?.pinch) state.avatarCrop.pinch = null;
     state.storyTextDrag = null;
     state.storyTextGesture = null;
+    state.storyMediaDrag = null;
+    state.storyMediaGesture = null;
     state.storyStickerDrag = null;
     state.storyStickerGesture = null;
     state.storyDraw = null;
     storyTextPointers.clear();
+    storyMediaPointers.clear();
     storyStickerPointers.clear();
     cropPointers.clear();
     document.getElementById('story-object-trash')?.classList.remove('visible', 'active');
@@ -5170,10 +5413,17 @@
   });
 
   document.addEventListener('wheel', (event) => {
-    if (!state.avatarCrop || !event.target.closest('#crop-stage')) return;
-    event.preventDefault();
-    state.avatarCrop.zoom = clamp((state.avatarCrop.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
-    updateCropUi();
+    if (state.avatarCrop && event.target.closest('#crop-stage')) {
+      event.preventDefault();
+      state.avatarCrop.zoom = clamp((state.avatarCrop.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
+      updateCropUi();
+      return;
+    }
+    if (state.storyEditor && state.storyEditor.activeTool !== 'draw' && event.target.closest('.story-editor-preview') && !event.target.closest('textarea,input,button,a,video,audio')) {
+      event.preventDefault();
+      state.storyEditor.zoom = clamp((state.storyEditor.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
+      updateStoryMediaTransformUi();
+    }
   }, { passive: false });
 
   window.addEventListener('popstate', () => {

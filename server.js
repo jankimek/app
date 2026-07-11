@@ -1099,6 +1099,8 @@ async function handleApi(req, res, pathname, query) {
         backgroundPreset: [
           'midnight', 'dusk', 'ocean', 'aurora', 'sunset', 'violet', 'graphite', 'paper', 'rose', 'electric'
         ].includes(body.edits?.backgroundPreset) ? body.edits.backgroundPreset : '',
+        mediaOffsetX: storyNumber(body.edits?.mediaOffsetX, -40, 40, 0),
+        mediaOffsetY: storyNumber(body.edits?.mediaOffsetY, -40, 40, 0),
         text: cleanText(body.edits?.text || '', 120),
         zoom: Math.max(1, Math.min(3, Number(body.edits?.zoom || 1))),
         textX: Math.max(5, Math.min(95, Number(body.edits?.textX || 50))),

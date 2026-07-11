@@ -108,8 +108,12 @@ test('story size controls stay inside the editor gesture boundary', () => {
   const clientSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
+  assert.match(clientSource, /class="story-size-control story-text-size-control"/);
+  assert.match(clientSource, /id="story-editor-text" data-action="story-text-drag"/);
+  assert.match(clientSource, /const storyMediaPointers = new Map\(\)/);
+  assert.match(clientSource, /requestAnimationFrame\(\(\) =>/);
   assert.match(clientSource, /state\.me && !state\.storyEditor && event\.clientX < 24/);
-  assert.match(clientSource, /initialTool = 'filter'/);
+  assert.match(clientSource, /initialTool = null/);
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
   assert.match(clientSource, /class="story-effects-panel"/);
 });
@@ -337,6 +341,8 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
         vignette: 28,
         blur: 2,
         backgroundPreset: 'dusk',
+        mediaOffsetX: 12,
+        mediaOffsetY: -8,
         text: 'Hello @bob_test',
         textX: 52,
         textY: 44,
@@ -363,6 +369,8 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(storyResponse.data.story.edits.filter, 'oslo');
   assert.equal(storyResponse.data.story.edits.overlayEffect, 'grain');
   assert.equal(storyResponse.data.story.edits.brightness, 112);
+  assert.equal(storyResponse.data.story.edits.mediaOffsetX, 12);
+  assert.equal(storyResponse.data.story.edits.mediaOffsetY, -8);
   assert.equal(storyResponse.data.story.edits.textFont, 'strong');
   assert.equal(storyResponse.data.story.edits.textEffect, 'outline');
   assert.equal(storyResponse.data.story.edits.textAnimation, 'bounce');

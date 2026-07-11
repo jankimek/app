@@ -1661,6 +1661,15 @@ a {
   inset: 0;
   z-index: 1;
   pointer-events: none;
+  contain: strict;
+}
+
+.story-editor-page .story-media-effect-grain {
+  animation-duration: 0.7s;
+}
+
+.story-editor-page .story-media-effect-sparkle {
+  animation-duration: 2s;
 }
 
 .story-media-effect-grain {
@@ -2203,6 +2212,7 @@ a {
   z-index: 80;
   background: #020305;
   overflow: hidden;
+  overscroll-behavior: none;
   color: var(--text);
 }
 
@@ -2232,6 +2242,9 @@ a {
   height: 100%;
   object-fit: cover;
   transform-origin: center;
+  will-change: transform;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .story-draggable-text {
@@ -2342,17 +2355,111 @@ a {
   pointer-events: auto;
 }
 
-.story-size-slider {
+.story-size-control {
   position: fixed;
-  left: max(10px, env(safe-area-inset-left));
-  bottom: calc(96px + env(safe-area-inset-bottom));
-  z-index: 6;
-  width: 180px;
-  transform-origin: left bottom;
-  transform: rotate(-90deg);
-  accent-color: #f4f7fb;
+  left: calc(14px + env(safe-area-inset-left));
+  top: 50%;
+  z-index: 8;
+  width: 46px;
+  height: 220px;
+  padding: 9px 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  display: grid;
+  grid-template-rows: 28px 1fr 28px;
+  place-items: center;
+  color: #fff;
+  background: rgba(5, 7, 11, 0.48);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.3), inset 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(1.15);
+  transform: translateY(-50%);
+}
+
+.story-size-control .story-size-slider {
+  --range-progress: 30%;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 142px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  filter: none;
   touch-action: none;
   user-select: none;
+}
+
+.story-size-control .story-size-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #fff 0 var(--range-progress), rgba(255, 255, 255, 0.28) var(--range-progress) 100%);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
+}
+
+.story-size-control .story-size-slider::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+  margin-top: -8.5px;
+  border: 4px solid rgba(17, 20, 27, 0.94);
+  border-radius: 50%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.52), 0 4px 14px rgba(0, 0, 0, 0.46);
+}
+
+.story-size-control .story-size-slider::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #fff 0 var(--range-progress), rgba(255, 255, 255, 0.28) var(--range-progress) 100%);
+}
+
+.story-size-control .story-size-slider::-moz-range-thumb {
+  width: 17px;
+  height: 17px;
+  border: 4px solid rgba(17, 20, 27, 0.94);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.52), 0 4px 14px rgba(0, 0, 0, 0.46);
+}
+
+.story-size-control > span {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.story-size-large {
+  font-size: 19px;
+  font-weight: 850;
+}
+
+.story-size-small {
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.story-brush-large,
+.story-brush-small {
+  border-radius: 50%;
+  background: #fff;
+}
+
+.story-brush-large {
+  width: 14px;
+  height: 14px;
+}
+
+.story-brush-small {
+  width: 5px;
+  height: 5px;
 }
 
 .story-post-btn {
@@ -2520,6 +2627,7 @@ a {
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
+  will-change: left, top, transform, font-size;
 }
 
 .story-draggable-text {
@@ -2528,7 +2636,8 @@ a {
 }
 
 .story-live-text {
-  width: min(82vw, 680px);
+  width: auto;
+  min-width: 4ch;
   max-height: 46vh;
   resize: none;
   overflow: hidden;
@@ -2712,25 +2821,6 @@ a {
   transform: translateX(-50%);
 }
 
-.story-quick-tray {
-  left: 50%;
-  right: auto;
-  bottom: calc(68px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-}
-
-.story-quick-dock {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px;
-  border-radius: 999px;
-  background: rgba(7, 8, 11, 0.62);
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(18px);
-}
-
-.story-quick-dock button,
 .story-brush-row button {
   width: 38px;
   height: 38px;
@@ -2743,7 +2833,6 @@ a {
   background: rgba(255, 255, 255, 0.11);
 }
 
-.story-quick-dock .ui-icon,
 .story-brush-row .ui-icon {
   width: 19px;
   height: 19px;
@@ -2757,14 +2846,6 @@ a {
 .story-more-tray {
   top: calc(54px + env(safe-area-inset-top));
   right: max(10px, env(safe-area-inset-right));
-}
-
-.story-size-slider {
-  left: calc(14px + env(safe-area-inset-left));
-  bottom: calc(122px + env(safe-area-inset-bottom));
-  width: min(42vh, 250px);
-  height: 24px;
-  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.5));
 }
 
 .story-share-bar {
@@ -2884,6 +2965,65 @@ a {
   color: #08090b;
   background: #fff;
 }
+
+.story-text-style-strip {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 2px 4px;
+}
+
+.story-text-style-strip button {
+  flex: 0 0 66px;
+  min-height: 66px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.story-text-style-strip button.active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.66);
+}
+
+.story-text-option-preview {
+  min-width: 48px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.story-text-style-strip small {
+  max-width: 60px;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-animation-strip button:is(:hover, :focus-visible) .preview-fade,
+.story-animation-strip button.active .preview-fade { animation: storyTextFade 0.55s ease both; }
+.story-animation-strip button:is(:hover, :focus-visible) .preview-rise,
+.story-animation-strip button.active .preview-rise { animation: storyTextRise 0.58s ease both; }
+.story-animation-strip button:is(:hover, :focus-visible) .preview-pop,
+.story-animation-strip button.active .preview-pop { animation: storyTextPop 0.42s ease both; }
+.story-animation-strip button:is(:hover, :focus-visible) .preview-type,
+.story-animation-strip button.active .preview-type { animation: storyTextType 0.9s steps(12, end) both; }
+.story-animation-strip button:is(:hover, :focus-visible) .preview-bounce,
+.story-animation-strip button.active .preview-bounce { animation: storyTextBounce 0.72s ease both; }
+.story-animation-strip button:is(:hover, :focus-visible) .preview-flicker,
+.story-animation-strip button.active .preview-flicker { animation: storyTextFlicker 1.35s linear both; }
+.story-animation-strip button:is(:hover, :focus-visible) .preview-pulse,
+.story-animation-strip button.active .preview-pulse { animation: storyTextPulse 0.8s ease-in-out 2 alternate; }
 
 .story-filter-carousel {
   width: 100%;
@@ -3621,7 +3761,7 @@ a {
     padding: 0 12px;
   }
 
-  .story-editor-page .story-size-slider {
+  .story-editor-page .story-size-control {
     left: calc(50% - min(50vw, calc(var(--app-height) * 0.28125)) + 14px);
   }
 
