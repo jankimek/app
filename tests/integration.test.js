@@ -109,6 +109,9 @@ test('story size controls stay inside the editor gesture boundary', () => {
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
   assert.match(clientSource, /state\.me && !state\.storyEditor && event\.clientX < 24/);
+  assert.match(clientSource, /initialTool = 'filter'/);
+  assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
+  assert.match(clientSource, /class="story-effects-panel"/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -323,25 +326,49 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
       file: { name: 'story.png', type: 'image/png', dataUrl: PNG_DATA },
       audio: { name: 'sound.wav', type: 'audio/wav', dataUrl: AUDIO_DATA },
       edits: {
-        compositionVersion: 2,
-        filter: 'cool',
+        compositionVersion: 3,
+        filter: 'oslo',
+        overlayEffect: 'grain',
+        brightness: 112,
+        contrast: 106,
+        saturation: 124,
+        warmth: 18,
+        fade: 12,
+        vignette: 28,
+        blur: 2,
+        backgroundPreset: 'dusk',
         text: 'Hello @bob_test',
         textX: 52,
         textY: 44,
         textColor: '#ffffff',
-        textFont: 'system',
+        textFont: 'strong',
         textSize: 48,
         textAlign: 'center',
-        textEffect: 'glow',
-        textAnimation: 'fade',
-        stickers: [{ type: 'mention', label: '@bob_test', x: 50, y: 62, rotation: 0, size: 1 }],
+        textEffect: 'outline',
+        textAnimation: 'bounce',
+        drawings: [{ brush: 'neon', color: '#ff4fa3', size: 8, points: [{ x: 10, y: 10 }, { x: 30, y: 40 }] }],
+        stickers: [
+          { type: 'mention', label: '@bob_test', x: 50, y: 62, rotation: 0, size: 1 },
+          { type: 'link', label: 'example.com', href: 'https://example.com/path', x: 48, y: 72, rotation: 0, size: 1 },
+          { type: 'link', label: 'Unsafe', href: 'javascript:alert(1)', x: 50, y: 78, rotation: 0, size: 1 },
+          { type: 'add_yours', label: 'Show your setup', x: 52, y: 32, rotation: 0, size: 1 }
+        ],
         audioStart: 0,
         audioEnd: 30
       }
     }
   });
   assert.equal(storyResponse.status, 201);
-  assert.equal(storyResponse.data.story.edits.compositionVersion, 2);
+  assert.equal(storyResponse.data.story.edits.compositionVersion, 3);
+  assert.equal(storyResponse.data.story.edits.filter, 'oslo');
+  assert.equal(storyResponse.data.story.edits.overlayEffect, 'grain');
+  assert.equal(storyResponse.data.story.edits.brightness, 112);
+  assert.equal(storyResponse.data.story.edits.textFont, 'strong');
+  assert.equal(storyResponse.data.story.edits.textEffect, 'outline');
+  assert.equal(storyResponse.data.story.edits.textAnimation, 'bounce');
+  assert.equal(storyResponse.data.story.edits.drawings[0].brush, 'neon');
+  assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.type === 'link').href, 'https://example.com/path');
+  assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.label === 'Unsafe').href, '');
   const story = storyResponse.data.story;
 
   const privatePublicView = await anonymous.request('/api/users/alice_test');
@@ -353,7 +380,10 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal((await charlie.request(story.file.url)).status, 404);
 
   const followerView = await bob.request('/api/users/alice_test');
-  assert.ok(followerView.data.user.stories.some((item) => item.id === story.id));
+  const followerStory = followerView.data.user.stories.find((item) => item.id === story.id);
+  assert.ok(followerStory);
+  assert.equal(followerStory.edits.overlayEffect, 'grain');
+  assert.equal(followerStory.edits.drawings[0].brush, 'neon');
   assert.equal((await bob.request(`/api/stories/${story.id}/view`, { method: 'POST' })).status, 200);
   assert.equal((await bob.request(`/api/stories/${story.id}/like`, { method: 'POST' })).data.story.likedByMe, true);
   const comment = await bob.request(`/api/stories/${story.id}/comments`, {
@@ -372,6 +402,7 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(savedStory.status, 200);
   assert.equal(savedStory.data.story.saved, true);
   assert.equal(savedStory.data.story.expiresAt, null);
+  assert.equal(savedStory.data.story.edits.textAnimation, 'bounce');
   assert.equal((await alice.request(`/api/stories/${story.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await bob.request(`/api/stories/${story.id}/view`, { method: 'POST' })).status, 404);
 

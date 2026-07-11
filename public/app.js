@@ -211,6 +211,7 @@
       rotate: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>',
       smile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>',
       pen: '<svg viewBox="0 0 24 24"><path d="M16 4l4 4L8 20H4v-4L16 4Z"/><path d="m14 6 4 4"/></svg>',
+      eraser: '<svg viewBox="0 0 24 24"><path d="m7 21-4-4 11-11a3 3 0 0 1 4 0l1 1a3 3 0 0 1 0 4L9 21H7Z"/><path d="m11 9 5 5M7 21h13"/></svg>',
       music: '<svg viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>',
       download: '<svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>',
       stickers: '<svg viewBox="0 0 24 24"><path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5"/><path d="M14 20c0-3.3 2.7-6 6-6"/><path d="M9 10h.01M15 10h.01M8.5 14a5 5 0 0 0 7 0"/></svg>',
@@ -682,13 +683,41 @@
     return state.recommendations.filter((user) => !hidden.has(user.id));
   }
 
-  function storyFilterCss(filter) {
-    return {
+  function storyFilterCss(filter, edits = {}) {
+    const preset = {
+      normal: '',
+      oslo: 'brightness(1.06) contrast(0.96) saturate(0.88) sepia(0.06)',
+      paris: 'brightness(1.08) contrast(0.9) saturate(0.78) sepia(0.08)',
+      lagos: 'brightness(1.04) contrast(1.04) saturate(1.24) sepia(0.16) hue-rotate(-7deg)',
+      melbourne: 'brightness(1.02) contrast(1.08) saturate(0.84) sepia(0.1)',
+      jakarta: 'brightness(1.02) contrast(1.02) saturate(1.3) sepia(0.12) hue-rotate(-9deg)',
+      abu_dhabi: 'brightness(0.98) contrast(1.12) saturate(0.92) sepia(0.2)',
+      buenos_aires: 'brightness(1.05) contrast(0.96) saturate(1.18)',
+      new_york: 'brightness(0.94) contrast(1.2) saturate(0.72)',
+      jaipur: 'brightness(1.03) contrast(1.06) saturate(1.36) sepia(0.22) hue-rotate(-10deg)',
+      cairo: 'brightness(1.08) contrast(0.94) saturate(0.82) sepia(0.17)',
+      tokyo: 'brightness(1.02) contrast(1.08) saturate(0.9) hue-rotate(7deg)',
+      rio: 'brightness(1.02) contrast(1.08) saturate(1.48)',
       warm: 'sepia(0.22) saturate(1.22) hue-rotate(-8deg)',
       cool: 'saturate(1.15) hue-rotate(12deg)',
       mono: 'grayscale(1)',
       noir: 'grayscale(1) contrast(1.28) brightness(0.82)'
-    }[filter] || 'none';
+    }[filter] || '';
+    const brightness = clamp(Number(edits.brightness ?? 100), 60, 140) / 100;
+    const contrast = clamp(Number(edits.contrast ?? 100), 60, 140) / 100;
+    const saturation = clamp(Number(edits.saturation ?? 100), 0, 180) / 100;
+    const warmth = clamp(Number(edits.warmth ?? 0), -50, 50);
+    const fade = clamp(Number(edits.fade ?? 0), 0, 60);
+    const blur = clamp(Number(edits.blur ?? 0), 0, 8);
+    const adjustments = [
+      `brightness(${brightness})`,
+      `contrast(${contrast * (1 - fade / 180)})`,
+      `saturate(${saturation})`,
+      warmth ? `sepia(${Math.abs(warmth) / 240}) hue-rotate(${warmth * -0.28}deg)` : '',
+      fade ? `opacity(${1 - fade / 240})` : '',
+      blur ? `blur(${blur}px)` : ''
+    ].filter(Boolean).join(' ');
+    return `${preset} ${adjustments}`.trim() || 'none';
   }
 
   function storyTextFontCss(font) {
@@ -696,6 +725,9 @@
       serif: 'Georgia, serif',
       mono: '"SFMono-Regular", Consolas, monospace',
       script: '"Brush Script MT", "Segoe Script", cursive',
+      strong: 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif',
+      rounded: '"Arial Rounded MT Bold", "Trebuchet MS", sans-serif',
+      condensed: '"Arial Narrow", "Roboto Condensed", sans-serif',
       system: 'Inter, system-ui, sans-serif'
     }[font] || 'Inter, system-ui, sans-serif';
   }
@@ -714,8 +746,8 @@
   }
 
   function storyTextClass(edits = {}) {
-    const effect = ['none', 'shadow', 'glow', 'neon'].includes(edits.textEffect) ? edits.textEffect : 'shadow';
-    const animation = ['none', 'fade', 'rise', 'pop'].includes(edits.textAnimation) ? edits.textAnimation : 'none';
+    const effect = ['none', 'shadow', 'glow', 'neon', 'outline', 'lift', 'rainbow'].includes(edits.textEffect) ? edits.textEffect : 'shadow';
+    const animation = ['none', 'fade', 'rise', 'pop', 'type', 'bounce', 'flicker', 'pulse'].includes(edits.textAnimation) ? edits.textAnimation : 'none';
     return `text-effect-${effect} text-anim-${animation}`;
   }
 
@@ -727,22 +759,41 @@
   }
 
   function storyTextToolPanel(editor) {
-    const colors = ['#ffffff', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffd166', '#111827'];
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
     const fonts = [
       ['system', 'Modern'],
       ['serif', 'Classic'],
       ['mono', 'Typewriter'],
-      ['script', 'Signature']
+      ['script', 'Signature'],
+      ['strong', 'Strong'],
+      ['rounded', 'Rounded'],
+      ['condensed', 'Condensed']
     ];
     const effects = [
       ['none', 'Plain'],
       ['shadow', 'Shadow'],
       ['glow', 'Glow'],
-      ['neon', 'Neon']
+      ['neon', 'Neon'],
+      ['outline', 'Outline'],
+      ['lift', 'Lift'],
+      ['rainbow', 'Color']
+    ];
+    const animations = [
+      ['none', 'Still'],
+      ['fade', 'Fade'],
+      ['rise', 'Rise'],
+      ['pop', 'Pop'],
+      ['type', 'Type'],
+      ['bounce', 'Bounce'],
+      ['flicker', 'Flicker'],
+      ['pulse', 'Pulse']
     ];
     return `
       <div class="story-swatch-row story-text-colors" aria-label="Text color">
         ${colors.map((color) => `<button class="${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
+        <label class="story-custom-color" title="Custom color" aria-label="Custom text color">
+          <input id="story-text-custom-color" type="color" value="${esc(editor.textColor || '#ffffff')}">
+        </label>
       </div>
       <div class="story-option-strip story-font-strip">
         ${fonts.map(([font, label]) => `<button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">${esc(label)}</button>`).join('')}
@@ -750,19 +801,92 @@
       <div class="story-option-strip story-effect-strip">
         ${effects.map(([effect, label]) => `<button class="${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">${esc(label)}</button>`).join('')}
       </div>
+      <div class="story-option-strip story-animation-strip">
+        ${animations.map(([animation, label]) => `<button class="${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="story-text-animation" data-animation="${animation}">${esc(label)}</button>`).join('')}
+      </div>
+    `;
+  }
+
+  function storyBackgroundPresets() {
+    return [
+      ['midnight', 'Midnight', '#0b1020', '#111827'],
+      ['dusk', 'Dusk', '#54205f', '#f05a7e'],
+      ['ocean', 'Ocean', '#063970', '#0fa3b1'],
+      ['aurora', 'Aurora', '#064e3b', '#38bdf8'],
+      ['sunset', 'Sunset', '#9f1239', '#f59e0b'],
+      ['violet', 'Violet', '#312e81', '#a855f7'],
+      ['graphite', 'Graphite', '#111111', '#4b5563'],
+      ['paper', 'Paper', '#d8d4cb', '#f8fafc'],
+      ['rose', 'Rose', '#831843', '#fb7185'],
+      ['electric', 'Electric', '#1d4ed8', '#ec4899']
+    ];
+  }
+
+  function storyBackgroundToolPanel(editor) {
+    if (!editor.isBlankStory) return '';
+    return `
+      <div class="story-editor-section-label">Background</div>
+      <div class="story-background-carousel" aria-label="Story background">
+        ${storyBackgroundPresets().map(([preset, label, from, to]) => `
+          <button class="${editor.backgroundPreset === preset ? 'active' : ''}" style="--bg-from:${from};--bg-to:${to}" data-action="story-background" data-background="${preset}" aria-label="${esc(label)}">
+            <span></span><small>${esc(label)}</small>
+          </button>
+        `).join('')}
+      </div>
     `;
   }
 
   function storyFilterToolPanel(editor) {
+    const filters = [
+      ['normal', 'Normal'], ['oslo', 'Oslo'], ['paris', 'Paris'], ['lagos', 'Lagos'],
+      ['melbourne', 'Melbourne'], ['jakarta', 'Jakarta'], ['abu_dhabi', 'Abu Dhabi'],
+      ['buenos_aires', 'Buenos Aires'], ['new_york', 'New York'], ['jaipur', 'Jaipur'],
+      ['cairo', 'Cairo'], ['tokyo', 'Tokyo'], ['rio', 'Rio'], ['mono', 'Mono'], ['noir', 'Noir']
+    ];
+    const overlayEffects = [
+      ['none', 'None'], ['grain', 'Grain'], ['dream', 'Dream'], ['vhs', 'VHS'],
+      ['spotlight', 'Light'], ['sparkle', 'Sparkle'], ['chroma', 'Chroma']
+    ];
+    const adjustments = [
+      ['brightness', 'Brightness', 60, 140, 100],
+      ['contrast', 'Contrast', 60, 140, 100],
+      ['saturation', 'Saturation', 0, 180, 100],
+      ['warmth', 'Warmth', -50, 50, 0],
+      ['fade', 'Fade', 0, 60, 0],
+      ['vignette', 'Vignette', 0, 80, 0],
+      ['blur', 'Blur', 0, 8, 0]
+    ];
     return `
-      <div class="story-filter-carousel" aria-label="Story filters">
-        ${['normal', 'warm', 'cool', 'mono', 'noir'].map((filter) => `
-          <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">
-            <span style="background-image:url('${esc(editor.dataUrl)}');filter:${esc(storyFilterCss(filter))}"></span>
-            <small>${esc(filter)}</small>
-          </button>
-        `).join('')}
-      </div>
+      <section class="story-effects-panel">
+        ${storyBackgroundToolPanel(editor)}
+        <div class="story-editor-section-label">Filters</div>
+        <div class="story-filter-carousel" aria-label="Story filters">
+          ${filters.map(([filter, label]) => `
+            <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">
+              <span style="background-image:url('${esc(editor.dataUrl)}');filter:${esc(storyFilterCss(filter))}"></span>
+              <small>${esc(label)}</small>
+            </button>
+          `).join('')}
+        </div>
+        <div class="story-editor-section-label">Effects</div>
+        <div class="story-overlay-effects" aria-label="Story effects">
+          ${overlayEffects.map(([effect, label]) => `
+            <button class="${(editor.overlayEffect || 'none') === effect ? 'active' : ''}" data-action="story-overlay-effect" data-effect="${effect}">
+              <span class="effect-preview effect-${effect}">${icon(effect === 'none' ? 'x' : 'sparkle')}</span>
+              <small>${esc(label)}</small>
+            </button>
+          `).join('')}
+        </div>
+        <div class="story-editor-section-label">Adjust</div>
+        <div class="story-adjustments" aria-label="Image adjustments">
+          ${adjustments.map(([name, label, min, max, fallback]) => `
+            <label>
+              <span>${esc(label)} <output>${esc(editor[name] ?? fallback)}</output></span>
+              <input type="range" min="${min}" max="${max}" step="1" value="${esc(editor[name] ?? fallback)}" data-story-adjust="${name}">
+            </label>
+          `).join('')}
+        </div>
+      </section>
     `;
   }
 
@@ -806,13 +930,28 @@
         question: 'Question',
         hashtag: 'Hashtag',
         countdown: 'Countdown',
-        location: 'Location'
+        location: 'Location',
+        link: 'Link',
+        add_yours: 'Add Yours',
+        quiz: 'Quiz',
+        emoji_slider: 'Emoji slider',
+        weather: 'Weather',
+        captions: 'Captions'
+      };
+      const placeholders = {
+        mention: '@username',
+        link: 'https://example.com',
+        add_yours: 'Share a prompt',
+        quiz: 'Ask a quiz question',
+        emoji_slider: 'How do you feel?',
+        weather: 'Weather and temperature',
+        captions: 'Add a caption'
       };
       return `
         <section class="story-sticker-sheet" data-stop-close>
           <div class="story-sheet-grabber"></div>
           <header><button data-action="story-sticker-back" aria-label="Back">${icon('back')}</button><strong>${esc(labels[composer] || 'Sticker')}</strong><span></span></header>
-          <input class="story-sheet-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="80" placeholder="${composer === 'mention' ? '@username' : 'Type here'}" autofocus>
+          <input class="story-sheet-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="160" placeholder="${esc(placeholders[composer] || 'Type here')}" ${composer === 'link' ? 'inputmode="url"' : ''} autofocus>
           <button class="story-sheet-confirm" data-action="commit-story-sticker" data-sticker-type="${esc(composer)}">Add sticker</button>
         </section>
       `;
@@ -823,14 +962,21 @@
         <header><span></span><strong>Stickers</strong><button data-action="finish-story-tool" aria-label="Close stickers">${icon('x')}</button></header>
         <label class="story-sticker-search">${icon('search')}<input id="story-sticker-search" value="${esc(editor.stickerSearch || '')}" placeholder="Search"></label>
         <div class="story-sticker-grid">
+          <button data-search="add yours prompt chain" data-action="choose-story-sticker" data-sticker-type="add_yours"><span class="add-yours-sticker">ADD YOURS</span></button>
           <button data-search="mention tag user" data-action="choose-story-sticker" data-sticker-type="mention"><span class="mention-sticker">@MENTION</span></button>
           <button data-search="location place map" data-action="choose-story-sticker" data-sticker-type="location"><span class="location-sticker">${icon('location')} LOCATION</span></button>
+          <button data-search="link website url" data-action="choose-story-sticker" data-sticker-type="link"><span class="link-sticker">${icon('link')} LINK</span></button>
           <button data-search="gif animated" data-action="add-story-sticker" data-sticker-type="gif" data-sticker-label="GIF"><span class="gif-sticker">GIF</span></button>
           <button data-search="music audio song" data-action="story-tool" data-tool="audio"><span class="music-sticker">${icon('music')} MUSIC</span></button>
           <button data-search="poll vote" data-action="choose-story-sticker" data-sticker-type="poll"><span class="poll-choice">POLL</span></button>
+          <button data-search="emoji slider reaction" data-action="choose-story-sticker" data-sticker-type="emoji_slider"><span class="emoji-slider-sticker">&#x1F60D; SLIDER</span></button>
           <button data-search="question ask" data-action="choose-story-sticker" data-sticker-type="question"><span class="question-sticker">QUESTIONS</span></button>
+          <button data-search="quiz trivia answer" data-action="choose-story-sticker" data-sticker-type="quiz"><span class="quiz-sticker">QUIZ</span></button>
           <button data-search="hashtag tag" data-action="choose-story-sticker" data-sticker-type="hashtag"><span class="hashtag-sticker">#HASHTAG</span></button>
           <button data-search="countdown timer" data-action="choose-story-sticker" data-sticker-type="countdown"><span class="countdown-sticker">COUNTDOWN</span></button>
+          <button data-search="time clock current" data-action="add-story-sticker" data-sticker-type="time" data-sticker-label="${esc(new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date()))}"><span class="time-sticker">${esc(new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date()))}</span></button>
+          <button data-search="weather temperature" data-action="choose-story-sticker" data-sticker-type="weather"><span class="weather-sticker">&#x2600;&#xFE0F; WEATHER</span></button>
+          <button data-search="captions subtitle words" data-action="choose-story-sticker" data-sticker-type="captions"><span class="captions-sticker">CC CAPTIONS</span></button>
           <button data-search="heart love emoji" data-action="add-story-sticker" data-sticker-type="emoji" data-sticker-label="&#x2764;&#xFE0F;"><span class="raw-emoji">&#x2764;&#xFE0F;</span></button>
           <button data-search="laugh emoji" data-action="add-story-sticker" data-sticker-type="emoji" data-sticker-label="&#x1F602;"><span class="raw-emoji">&#x1F602;</span></button>
           <button data-search="fire emoji" data-action="add-story-sticker" data-sticker-type="emoji" data-sticker-label="&#x1F525;"><span class="raw-emoji">&#x1F525;</span></button>
@@ -841,8 +987,20 @@
   }
 
   function storyDrawToolPanel(editor) {
-    const colors = ['#ffffff', '#ff4fa3', '#9f7cff', '#4fd2c2', '#ffd166', '#111827'];
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff'];
+    const brushes = [
+      ['pen', 'Pen', 'pen'],
+      ['marker', 'Marker', 'text'],
+      ['neon', 'Neon', 'sparkle'],
+      ['chalk', 'Chalk', 'edit'],
+      ['eraser', 'Eraser', 'eraser']
+    ];
     return `
+      <div class="story-brush-row" aria-label="Drawing brush">
+        ${brushes.map(([brush, label, iconName]) => `
+          <button class="${(editor.drawBrush || 'pen') === brush ? 'active' : ''}" data-action="story-draw-brush" data-brush="${brush}" title="${label}" aria-label="${label}">${icon(iconName)}</button>
+        `).join('')}
+      </div>
       <div class="story-swatch-row">
         ${colors.map((color) => `<button class="${editor.drawColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-draw-color" data-color="${color}" aria-label="Draw color"></button>`).join('')}
       </div>
@@ -902,6 +1060,23 @@
     return icon(iconName);
   }
 
+  function storyQuickToolPanel() {
+    const tools = [
+      ['text', 'Text', 'text'],
+      ['stickers', 'Stickers', 'stickers'],
+      ['filter', 'Effects', 'sparkle'],
+      ['draw', 'Draw', 'pen'],
+      ['audio', 'Music', 'music']
+    ];
+    return `
+      <div class="story-quick-dock">
+        ${tools.map(([tool, label, iconName]) => `
+          <button data-action="story-tool" data-tool="${tool}" title="${label}" aria-label="${label}">${storyToolSymbol(tool, iconName)}</button>
+        `).join('')}
+      </div>
+    `;
+  }
+
   function renderStoryTopToolbar(editor, tools) {
     if (editor.textEditing) {
       const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
@@ -934,7 +1109,9 @@
 
   function renderStoryFloatingTray(editor) {
     const tray = storyToolPanel(editor);
-    if (!tray) return '';
+    if (!tray) {
+      return `<div class="story-floating-tray story-quick-tray" data-stop-close>${storyQuickToolPanel()}</div>`;
+    }
     return `
       <div class="story-floating-tray story-${esc(editor.activeTool || 'text')}-tray" data-stop-close>
         ${tray}
@@ -946,7 +1123,7 @@
     const edits = story.edits || {};
     const isVideo = story.file?.mime?.startsWith('video/');
     const renderOverlays = isVideo || Number(edits.compositionVersion || 0) >= 2;
-    const style = `filter:${storyFilterCss(edits.filter)}; transform:scale(${Number(edits.zoom || 1)});`;
+    const style = `filter:${storyFilterCss(edits.filter, edits)}; transform:scale(${Number(edits.zoom || 1)});`;
     const mediaUrl = isVideo && (edits.trimStart || edits.trimEnd)
       ? `${story.file.url}#t=${Number(edits.trimStart || 0)},${Number(edits.trimEnd || '') || ''}`
       : story.file.url;
@@ -955,12 +1132,22 @@
         ${isVideo
           ? `<video src="${esc(mediaUrl)}" ${compact ? 'muted' : viewer ? 'autoplay' : 'controls'} playsinline style="${esc(style)}"></video>`
           : `<img src="${esc(mediaUrl)}" alt="" style="${esc(style)}">`}
+        ${renderStoryEffectLayers(edits, compact)}
         ${renderOverlays ? renderStoryDrawings(edits) : ''}
         ${renderOverlays ? renderStoryStickers(edits) : ''}
         ${renderOverlays && edits.text ? `<span class="story-text-overlay ${esc(storyTextClass(edits))}" style="${esc(storyTextStyle(edits))}">${esc(edits.text)}</span>` : ''}
         ${renderOverlays && edits.pollQuestion ? renderPollSticker(edits, compact) : ''}
         ${story.audio && !compact ? renderStoryAudio(story) : ''}
       </div>
+    `;
+  }
+
+  function renderStoryEffectLayers(edits = {}, compact = false) {
+    const effect = ['grain', 'dream', 'vhs', 'spotlight', 'sparkle', 'chroma'].includes(edits.overlayEffect) ? edits.overlayEffect : 'none';
+    const vignette = clamp(Number(edits.vignette ?? 0), 0, 80) / 100;
+    return `
+      ${effect !== 'none' ? `<span class="story-media-effect story-media-effect-${effect} ${compact ? 'compact' : ''}"></span>` : ''}
+      ${vignette ? `<span class="story-vignette ${compact ? 'compact' : ''}" style="opacity:${vignette}"></span>` : ''}
     `;
   }
 
@@ -974,11 +1161,17 @@
 
   function renderStoryStickers(edits = {}) {
     const stickers = Array.isArray(edits.stickers) ? edits.stickers : [];
-    return stickers.map((sticker) => `
-      <span class="story-sticker story-sticker-${esc(sticker.type || 'emoji')}" style="${esc(storyStickerStyle(sticker))}">
-        ${esc(sticker.label || '')}
-      </span>
-    `).join('');
+    return stickers.map((sticker) => {
+      const href = sticker.type === 'link' ? normalizeStoryLink(sticker.href) : '';
+      if (href) {
+        return `<a class="story-sticker story-sticker-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" style="${esc(storyStickerStyle(sticker))}">${icon('link')}${esc(sticker.label || 'Link')}</a>`;
+      }
+      return `
+        <span class="story-sticker story-sticker-${esc(sticker.type || 'emoji')}" style="${esc(storyStickerStyle(sticker))}">
+          ${esc(sticker.label || '')}
+        </span>
+      `;
+    }).join('');
   }
 
   function renderStoryEditorStickers(editor = {}) {
@@ -999,7 +1192,11 @@
     if (!drawings.length) return '';
     return `
       <svg class="story-drawing-layer" viewBox="0 0 100 100" preserveAspectRatio="none">
-        ${drawings.map((stroke) => `<path d="${esc(drawingPath(stroke.points || []))}" stroke="${esc(stroke.color || '#ffffff')}" stroke-width="${Number(stroke.size || 5) / 10}" />`).join('')}
+        ${drawings.map((stroke) => {
+          const brush = ['pen', 'marker', 'neon', 'chalk'].includes(stroke.brush) ? stroke.brush : 'pen';
+          const widthMultiplier = brush === 'marker' ? 2.2 : brush === 'chalk' ? 1.35 : 1;
+          return `<path class="story-brush-${brush}" d="${esc(drawingPath(stroke.points || []))}" stroke="${esc(stroke.color || '#ffffff')}" stroke-width="${(Number(stroke.size || 5) / 10) * widthMultiplier}" />`;
+        }).join('')}
       </svg>
     `;
   }
@@ -1062,12 +1259,39 @@
     if (size) size.value = String(editor.textSize || 44);
   }
 
+  function updateStoryMediaUi() {
+    const editor = state.storyEditor;
+    const preview = document.querySelector('.story-editor-preview');
+    const media = preview?.querySelector('img, video');
+    if (!editor || !preview || !media) return;
+    media.style.filter = storyFilterCss(editor.filter, editor);
+    media.style.transform = `scale(${Number(editor.zoom || 1)})`;
+    preview.querySelectorAll('.story-media-effect, .story-vignette').forEach((layer) => layer.remove());
+    media.insertAdjacentHTML('afterend', renderStoryEffectLayers(editor));
+  }
+
   function updateStoryDrawPreview() {
     const preview = document.querySelector('.story-editor-preview');
     if (!state.storyEditor || !preview) return;
     preview.querySelector('.story-drawing-layer')?.remove();
     const html = renderStoryDrawings(state.storyEditor);
     if (html) preview.insertAdjacentHTML('afterbegin', html);
+  }
+
+  function eraseStoryStrokeAt(point) {
+    const editor = state.storyEditor;
+    if (!editor) return;
+    const drawings = editor.drawings || [];
+    let removeIndex = -1;
+    for (let index = drawings.length - 1; index >= 0; index -= 1) {
+      if ((drawings[index].points || []).some((candidate) => Math.hypot(Number(candidate.x) - point.x, Number(candidate.y) - point.y) < 4.5)) {
+        removeIndex = index;
+        break;
+      }
+    }
+    if (removeIndex < 0) return;
+    editor.drawings = drawings.filter((_, index) => index !== removeIndex);
+    updateStoryDrawPreview();
   }
 
   function updateStoryStickerPreview() {
@@ -1723,7 +1947,7 @@
   function renderStoryEditor() {
     const editor = state.storyEditor;
     if (!editor) return '';
-    const style = `filter:${storyFilterCss(editor.filter)}; transform:scale(${Number(editor.zoom || 1)});`;
+    const style = `filter:${storyFilterCss(editor.filter, editor)}; transform:scale(${Number(editor.zoom || 1)});`;
     const tools = [
       ['text', 'Text', 'text'],
       ['stickers', 'Stickers', 'stickers'],
@@ -1739,6 +1963,7 @@
             ${editor.isVideo
               ? `<video src="${esc(editor.dataUrl)}" controls playsinline style="${esc(style)}"></video>`
               : `<img src="${esc(editor.dataUrl)}" alt="" style="${esc(style)}">`}
+            ${renderStoryEffectLayers(editor)}
             ${renderStoryDrawings(editor)}
             ${renderStoryEditorStickers(editor)}
             ${editor.textEditing ? `
@@ -1761,7 +1986,7 @@
         ${editor.textEditing ? `
           <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" aria-label="Text size" data-stop-close>
         ` : ''}
-        ${editor.activeTool === 'draw' ? `
+        ${editor.activeTool === 'draw' && editor.drawBrush !== 'eraser' ? `
           <input class="story-size-slider story-brush-slider" id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}" aria-label="Brush size" data-stop-close>
         ` : ''}
         ${renderStoryFloatingTray(editor)}
@@ -2254,16 +2479,26 @@
     await uploadAvatarData(canvas.toDataURL('image/png'), `cropped-${crop.name.replace(/\.[^.]+$/, '')}.png`, crop.lastModified);
   }
 
-  function createStoryEditorState({ dataUrl, name, type, lastModified, textEditing = false }) {
+  function createStoryEditorState({ dataUrl, name, type, lastModified, textEditing = false, isBlankStory = false, initialTool = 'filter' }) {
     return {
       dataUrl,
       name: name || 'story',
       type: type || 'image/png',
       lastModified: lastModified || Date.now(),
       isVideo: String(type || '').startsWith('video/'),
-      activeTool: textEditing ? 'text' : null,
+      isBlankStory,
+      activeTool: textEditing ? 'text' : initialTool,
       textEditing,
       filter: 'normal',
+      overlayEffect: 'none',
+      brightness: 100,
+      contrast: 100,
+      saturation: 100,
+      warmth: 0,
+      fade: 0,
+      vignette: 0,
+      blur: 0,
+      backgroundPreset: isBlankStory ? 'midnight' : null,
       text: '',
       textX: 50,
       textY: 50,
@@ -2280,6 +2515,7 @@
       drawings: [],
       drawColor: '#ffffff',
       drawSize: 6,
+      drawBrush: 'pen',
       stickers: [],
       stickerDraft: '',
       stickerSearch: '',
@@ -2296,6 +2532,42 @@
     };
   }
 
+  function createStoryBackgroundDataUrl(preset = 'midnight') {
+    const selected = storyBackgroundPresets().find(([id]) => id === preset) || storyBackgroundPresets()[0];
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 1920;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    gradient.addColorStop(0, selected[2]);
+    gradient.addColorStop(1, selected[3]);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const light = ctx.createRadialGradient(canvas.width * 0.72, canvas.height * 0.18, 0, canvas.width * 0.72, canvas.height * 0.18, canvas.width * 0.85);
+    light.addColorStop(0, 'rgba(255,255,255,0.16)');
+    light.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = light;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/png');
+  }
+
+  function applyStoryBackground(preset) {
+    const editor = state.storyEditor;
+    if (!editor?.isBlankStory) return;
+    const valid = storyBackgroundPresets().some(([id]) => id === preset) ? preset : 'midnight';
+    editor.backgroundPreset = valid;
+    editor.dataUrl = createStoryBackgroundDataUrl(valid);
+    const media = document.querySelector('.story-editor-preview img');
+    if (media) media.src = editor.dataUrl;
+    document.querySelectorAll('[data-action="story-background"]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.background === valid);
+    });
+    document.querySelectorAll('.story-filter-carousel button > span').forEach((preview) => {
+      preview.style.backgroundImage = `url("${editor.dataUrl}")`;
+    });
+    updateStoryMediaUi();
+  }
+
   async function beginStoryEditor(file) {
     if (!file) return;
     state.storyEditor = createStoryEditorState({
@@ -2309,18 +2581,14 @@
   }
 
   function beginBlankStoryEditor() {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1080;
-    canvas.height = 1920;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#101722';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
     state.storyEditor = createStoryEditorState({
-      dataUrl: canvas.toDataURL('image/png'),
+      dataUrl: createStoryBackgroundDataUrl('midnight'),
       name: 'story.png',
       type: 'image/png',
       lastModified: Date.now(),
-      textEditing: true
+      textEditing: false,
+      isBlankStory: true,
+      initialTool: 'filter'
     });
     state.storyMenuOpen = false;
     renderApp();
@@ -2343,10 +2611,26 @@
     renderApp();
   }
 
+  function normalizeStoryLink(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+      return ['http:', 'https:'].includes(parsed.protocol) ? parsed.toString() : '';
+    } catch {
+      return '';
+    }
+  }
+
   function addStorySticker(type = 'emoji', suppliedLabel = '') {
     const editor = state.storyEditor;
     if (!editor) return;
     const draft = String(suppliedLabel || editor.stickerDraft || '').trim();
+    const href = type === 'link' ? normalizeStoryLink(draft) : '';
+    if (type === 'link' && !href) {
+      alert('Enter a valid website link.');
+      return;
+    }
     const defaults = {
       emoji: '\u2728',
       gif: 'GIF',
@@ -2354,12 +2638,20 @@
       question: draft || 'Ask me',
       hashtag: draft ? (draft.startsWith('#') ? draft : `#${draft.replace(/^@/, '')}`) : '#New',
       countdown: draft || 'Countdown',
-      location: draft || 'Location'
+      location: draft || 'Location',
+      link: href ? new URL(href).hostname.replace(/^www\./, '') : 'Link',
+      add_yours: draft || 'Add yours',
+      quiz: draft || 'Quiz time',
+      emoji_slider: draft || 'How do you feel?',
+      time: draft || new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date()),
+      weather: draft || 'Weather',
+      captions: draft || 'Captions'
     };
     const sticker = {
       id: `story_sticker_${cryptoRandom()}`,
       type,
-      label: draft || defaults[type] || 'Sticker',
+      label: type === 'link' ? defaults.link : (draft || defaults[type] || 'Sticker'),
+      href,
       x: 50,
       y: 42,
       rotation: 0,
@@ -2392,8 +2684,17 @@
 
   function storyEditPayload(editor) {
     return {
-      compositionVersion: 2,
+      compositionVersion: 3,
       filter: editor.filter,
+      overlayEffect: editor.overlayEffect,
+      brightness: editor.brightness,
+      contrast: editor.contrast,
+      saturation: editor.saturation,
+      warmth: editor.warmth,
+      fade: editor.fade,
+      vignette: editor.vignette,
+      blur: editor.blur,
+      backgroundPreset: editor.backgroundPreset,
       text: editor.text,
       zoom: editor.zoom,
       textX: editor.textX,
@@ -2430,12 +2731,13 @@
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#05070b';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.filter = storyFilterCss(editor.filter);
+    ctx.filter = storyFilterCss(editor.filter, editor);
     const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight) * Number(editor.zoom || 1);
     const w = image.naturalWidth * scale;
     const h = image.naturalHeight * scale;
     ctx.drawImage(image, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
     ctx.filter = 'none';
+    drawStoryMediaEffectOnCanvas(ctx, editor, canvas.width, canvas.height);
     drawStoryDrawingsOnCanvas(ctx, editor, canvas.width, canvas.height);
     drawStoryStickersOnCanvas(ctx, editor, canvas.width, canvas.height);
     if (editor.text) {
@@ -2448,8 +2750,13 @@
       ctx.save();
       ctx.translate(canvas.width * (clamp(Number(editor.textX || 50), 5, 95) / 100), canvas.height * (clamp(Number(editor.textY || 50), 5, 95) / 100));
       ctx.rotate((clamp(Number(editor.textRotation || 0), -180, 180) * Math.PI) / 180);
+      if (editor.textEffect === 'rainbow') {
+        const rainbow = ctx.createLinearGradient(-430, 0, 430, 0);
+        ['#ff304f', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#9f7cff'].forEach((color, index, colors) => rainbow.addColorStop(index / (colors.length - 1), color));
+        ctx.fillStyle = rainbow;
+      }
       if (editor.textBgEnabled || editor.textFrame) drawCanvasTextBox(ctx, editor.text, textSize, editor);
-      wrapCanvasText(ctx, editor.text, 0, 0, canvas.width - 150, textSize * 1.15);
+      wrapCanvasText(ctx, editor.text, 0, 0, canvas.width - 150, textSize * 1.15, { stroke: editor.textEffect === 'outline' });
       ctx.restore();
     }
     if (editor.pollQuestion) {
@@ -2482,6 +2789,68 @@
     return canvas.toDataURL('image/png');
   }
 
+  function drawStoryMediaEffectOnCanvas(ctx, editor, width, height) {
+    const effect = editor.overlayEffect || 'none';
+    ctx.save();
+    if (effect === 'grain') {
+      ctx.fillStyle = 'rgba(255,255,255,0.075)';
+      for (let index = 0; index < 900; index += 1) {
+        const x = (index * 73) % width;
+        const y = (index * 151) % height;
+        ctx.fillRect(x, y, 2 + (index % 3), 2 + (index % 2));
+      }
+    }
+    if (effect === 'dream') {
+      const glow = ctx.createRadialGradient(width * 0.5, height * 0.4, 0, width * 0.5, height * 0.4, width * 0.78);
+      glow.addColorStop(0, 'rgba(255,255,255,0.2)');
+      glow.addColorStop(0.55, 'rgba(237,196,255,0.09)');
+      glow.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, width, height);
+    }
+    if (effect === 'vhs') {
+      for (let y = 0; y < height; y += 10) {
+        ctx.fillStyle = y % 20 ? 'rgba(0,0,0,0.065)' : 'rgba(255,255,255,0.025)';
+        ctx.fillRect(0, y, width, 3);
+      }
+    }
+    if (effect === 'spotlight') {
+      const light = ctx.createRadialGradient(width * 0.5, height * 0.42, width * 0.06, width * 0.5, height * 0.42, width * 0.68);
+      light.addColorStop(0, 'rgba(255,255,255,0.22)');
+      light.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = light;
+      ctx.fillRect(0, 0, width, height);
+    }
+    if (effect === 'sparkle') {
+      ctx.fillStyle = 'rgba(255,255,255,0.86)';
+      for (let index = 0; index < 42; index += 1) {
+        const x = ((index * 211) % 997) / 997 * width;
+        const y = ((index * 307) % 991) / 991 * height;
+        const radius = 2 + (index % 5);
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (effect === 'chroma') {
+      const red = ctx.createLinearGradient(0, 0, width, 0);
+      red.addColorStop(0, 'rgba(255,20,90,0.18)');
+      red.addColorStop(0.45, 'rgba(255,20,90,0)');
+      red.addColorStop(1, 'rgba(0,220,255,0.16)');
+      ctx.fillStyle = red;
+      ctx.fillRect(0, 0, width, height);
+    }
+    const vignette = clamp(Number(editor.vignette ?? 0), 0, 80) / 100;
+    if (vignette) {
+      const shade = ctx.createRadialGradient(width / 2, height / 2, width * 0.18, width / 2, height / 2, width * 0.78);
+      shade.addColorStop(0, 'rgba(0,0,0,0)');
+      shade.addColorStop(1, `rgba(0,0,0,${vignette * 0.82})`);
+      ctx.fillStyle = shade;
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.restore();
+  }
+
   function applyCanvasTextEffect(ctx, editor) {
     if (editor.textEffect === 'glow') {
       ctx.shadowColor = editor.textColor || '#ffffff';
@@ -2491,6 +2860,26 @@
     if (editor.textEffect === 'neon') {
       ctx.shadowColor = '#ff4fa3';
       ctx.shadowBlur = 30;
+      return;
+    }
+    if (editor.textEffect === 'lift') {
+      ctx.shadowColor = 'rgba(0,0,0,.72)';
+      ctx.shadowBlur = 2;
+      ctx.shadowOffsetX = 7;
+      ctx.shadowOffsetY = 9;
+      return;
+    }
+    if (editor.textEffect === 'outline') {
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(0,0,0,.88)';
+      ctx.lineWidth = 8;
+      ctx.lineJoin = 'round';
+      return;
+    }
+    if (editor.textEffect === 'rainbow') {
+      ctx.shadowColor = 'rgba(0,0,0,.35)';
+      ctx.shadowBlur = 10;
       return;
     }
     if (editor.textEffect === 'none') {
@@ -2542,10 +2931,20 @@
       const points = stroke.points || [];
       if (points.length < 2) continue;
       ctx.save();
+      const brush = ['pen', 'marker', 'neon', 'chalk'].includes(stroke.brush) ? stroke.brush : 'pen';
       ctx.strokeStyle = stroke.color || '#ffffff';
-      ctx.lineWidth = Math.max(2, Number(stroke.size || 6) * 2.4);
+      ctx.lineWidth = Math.max(2, Number(stroke.size || 6) * 2.4 * (brush === 'marker' ? 2.2 : brush === 'chalk' ? 1.35 : 1));
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
+      if (brush === 'marker') ctx.globalAlpha = 0.42;
+      if (brush === 'neon') {
+        ctx.shadowColor = stroke.color || '#ffffff';
+        ctx.shadowBlur = 24;
+      }
+      if (brush === 'chalk') {
+        ctx.globalAlpha = 0.78;
+        ctx.setLineDash([3, 4]);
+      }
       ctx.beginPath();
       points.forEach((point, index) => {
         const x = (Number(point.x || 0) / 100) * width;
@@ -3239,7 +3638,7 @@
     ctx.closePath();
   }
 
-  function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+  function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight, options = {}) {
     const words = text.split(/\s+/);
     const lines = [];
     let line = '';
@@ -3254,7 +3653,11 @@
     }
     if (line) lines.push(line);
     const startY = y - ((lines.length - 1) * lineHeight) / 2;
-    lines.slice(0, 5).forEach((item, index) => ctx.fillText(item, x, startY + index * lineHeight));
+    lines.slice(0, 5).forEach((item, index) => {
+      const lineY = startY + index * lineHeight;
+      if (options.stroke) ctx.strokeText(item, x, lineY);
+      ctx.fillText(item, x, lineY);
+    });
   }
 
   function loadImage(src) {
@@ -3705,7 +4108,20 @@
       }
       if (action === 'story-filter') {
         if (state.storyEditor) state.storyEditor.filter = target.dataset.filter || 'normal';
-        renderApp();
+        target.closest('.story-filter-carousel')?.querySelectorAll('[data-action="story-filter"]').forEach((button) => {
+          button.classList.toggle('active', button === target);
+        });
+        updateStoryMediaUi();
+      }
+      if (action === 'story-overlay-effect') {
+        if (state.storyEditor) state.storyEditor.overlayEffect = target.dataset.effect || 'none';
+        target.closest('.story-overlay-effects')?.querySelectorAll('[data-action="story-overlay-effect"]').forEach((button) => {
+          button.classList.toggle('active', button === target);
+        });
+        updateStoryMediaUi();
+      }
+      if (action === 'story-background') {
+        applyStoryBackground(target.dataset.background);
       }
       if (action === 'story-tool') {
         if (state.storyEditor) {
@@ -3739,7 +4155,7 @@
       }
       if (action === 'cycle-story-text-animation') {
         if (state.storyEditor) {
-          const animations = ['none', 'fade', 'rise', 'pop'];
+          const animations = ['none', 'fade', 'rise', 'pop', 'type', 'bounce', 'flicker', 'pulse'];
           const index = animations.indexOf(state.storyEditor.textAnimation || 'none');
           state.storyEditor.textAnimation = animations[(index + 1) % animations.length];
         }
@@ -3788,6 +4204,10 @@
       }
       if (action === 'story-draw-color') {
         if (state.storyEditor) state.storyEditor.drawColor = target.dataset.color || '#ffffff';
+        renderApp();
+      }
+      if (action === 'story-draw-brush') {
+        if (state.storyEditor) state.storyEditor.drawBrush = target.dataset.brush || 'pen';
         renderApp();
       }
       if (action === 'undo-story-draw') {
@@ -4172,6 +4592,16 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.dataset.storyAdjust && state.storyEditor) {
+      const name = event.target.dataset.storyAdjust;
+      if (['brightness', 'contrast', 'saturation', 'warmth', 'fade', 'vignette', 'blur'].includes(name)) {
+        state.storyEditor[name] = Number(event.target.value || 0);
+        const output = event.target.closest('label')?.querySelector('output');
+        if (output) output.textContent = event.target.value;
+        updateStoryMediaUi();
+      }
+      return;
+    }
     if (event.target.id === 'conversation-search') {
       state.conversationQuery = event.target.value;
       clearTimeout(conversationTimer);
@@ -4213,6 +4643,11 @@
       state.storyEditor.text = event.target.value.slice(0, 120);
       event.target.style.height = 'auto';
       event.target.style.height = `${Math.min(event.target.scrollHeight, window.innerHeight * 0.46)}px`;
+      return;
+    }
+    if (event.target.id === 'story-text-custom-color' && state.storyEditor) {
+      state.storyEditor.textColor = event.target.value || '#ffffff';
+      updateStoryTextUi();
       return;
     }
     if (event.target.id === 'story-sticker-search' && state.storyEditor) {
@@ -4267,7 +4702,7 @@
       return;
     }
     if (event.target.id === 'story-sticker-text' && state.storyEditor) {
-      state.storyEditor.stickerDraft = event.target.value.slice(0, 80);
+      state.storyEditor.stickerDraft = event.target.value.slice(0, 160);
       return;
     }
     if (event.target.id === 'story-audio-start' && state.storyEditor) {
@@ -4420,9 +4855,16 @@
         x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
         y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100)
       };
+      if (state.storyEditor.drawBrush === 'eraser') {
+        eraseStoryStrokeAt(point);
+        state.storyDraw = { pointerId: event.pointerId, rect, eraser: true };
+        storyPreview.setPointerCapture?.(event.pointerId);
+        return;
+      }
       const stroke = {
         color: state.storyEditor.drawColor || '#ffffff',
         size: Number(state.storyEditor.drawSize || 6),
+        brush: state.storyEditor.drawBrush || 'pen',
         points: [point]
       };
       state.storyEditor.drawings = [...(state.storyEditor.drawings || []), stroke].slice(-80);
@@ -4557,6 +4999,13 @@
     }
     if (state.storyDraw?.pointerId === event.pointerId) {
       const rect = state.storyDraw.rect;
+      if (state.storyDraw.eraser) {
+        eraseStoryStrokeAt({
+          x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
+          y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100)
+        });
+        return;
+      }
       state.storyDraw.stroke.points.push({
         x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
         y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100)

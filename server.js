@@ -504,6 +504,7 @@ function cleanStoryDrawings(raw) {
   return raw.slice(0, 80).map((stroke) => ({
     color: /^#[0-9a-f]{6}$/i.test(String(stroke?.color || '')) ? stroke.color : '#ffffff',
     size: Math.max(2, Math.min(20, Number(stroke?.size || 6))),
+    brush: ['pen', 'marker', 'neon', 'chalk'].includes(stroke?.brush) ? stroke.brush : 'pen',
     points: Array.isArray(stroke?.points)
       ? stroke.points.slice(0, 350).map((point) => ({
         x: Math.max(0, Math.min(100, Number(point?.x || 0))),
@@ -513,13 +514,33 @@ function cleanStoryDrawings(raw) {
   })).filter((stroke) => stroke.points.length);
 }
 
+function storyNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+}
+
+function cleanStoryLink(value) {
+  const raw = cleanText(value || '', 500);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return ['http:', 'https:'].includes(parsed.protocol) ? parsed.toString().slice(0, 500) : '';
+  } catch {
+    return '';
+  }
+}
+
 function cleanStoryStickers(raw) {
-  const validTypes = new Set(['emoji', 'gif', 'mention', 'question', 'hashtag', 'countdown', 'location']);
+  const validTypes = new Set([
+    'emoji', 'gif', 'mention', 'question', 'hashtag', 'countdown', 'location',
+    'link', 'add_yours', 'quiz', 'emoji_slider', 'time', 'weather', 'captions'
+  ]);
   if (!Array.isArray(raw)) return [];
   return raw.slice(0, 20).map((sticker) => ({
     id: cleanText(sticker?.id || id('sticker'), 80),
     type: validTypes.has(sticker?.type) ? sticker.type : 'emoji',
     label: cleanText(sticker?.label || '', 80),
+    href: sticker?.type === 'link' ? cleanStoryLink(sticker?.href) : '',
     x: Math.max(5, Math.min(95, Number(sticker?.x || 50))),
     y: Math.max(5, Math.min(95, Number(sticker?.y || 42))),
     rotation: Math.max(-180, Math.min(180, Number(sticker?.rotation || 0))),
@@ -1061,19 +1082,34 @@ async function handleApi(req, res, pathname, query) {
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       saved: false,
       edits: {
-        compositionVersion: Number(body.edits?.compositionVersion) >= 2 ? 2 : 1,
-        filter: ['normal', 'warm', 'cool', 'mono', 'noir'].includes(body.edits?.filter) ? body.edits.filter : 'normal',
+        compositionVersion: Number(body.edits?.compositionVersion) >= 3 ? 3 : Number(body.edits?.compositionVersion) >= 2 ? 2 : 1,
+        filter: [
+          'normal', 'oslo', 'paris', 'lagos', 'melbourne', 'jakarta', 'abu_dhabi',
+          'buenos_aires', 'new_york', 'jaipur', 'cairo', 'tokyo', 'rio',
+          'warm', 'cool', 'mono', 'noir'
+        ].includes(body.edits?.filter) ? body.edits.filter : 'normal',
+        overlayEffect: ['none', 'grain', 'dream', 'vhs', 'spotlight', 'sparkle', 'chroma'].includes(body.edits?.overlayEffect) ? body.edits.overlayEffect : 'none',
+        brightness: storyNumber(body.edits?.brightness, 60, 140, 100),
+        contrast: storyNumber(body.edits?.contrast, 60, 140, 100),
+        saturation: storyNumber(body.edits?.saturation, 0, 180, 100),
+        warmth: storyNumber(body.edits?.warmth, -50, 50, 0),
+        fade: storyNumber(body.edits?.fade, 0, 60, 0),
+        vignette: storyNumber(body.edits?.vignette, 0, 80, 0),
+        blur: storyNumber(body.edits?.blur, 0, 8, 0),
+        backgroundPreset: [
+          'midnight', 'dusk', 'ocean', 'aurora', 'sunset', 'violet', 'graphite', 'paper', 'rose', 'electric'
+        ].includes(body.edits?.backgroundPreset) ? body.edits.backgroundPreset : '',
         text: cleanText(body.edits?.text || '', 120),
         zoom: Math.max(1, Math.min(3, Number(body.edits?.zoom || 1))),
         textX: Math.max(5, Math.min(95, Number(body.edits?.textX || 50))),
         textY: Math.max(5, Math.min(95, Number(body.edits?.textY || 50))),
         textRotation: Math.max(-180, Math.min(180, Number(body.edits?.textRotation || 0))),
         textColor: /^#[0-9a-f]{6}$/i.test(String(body.edits?.textColor || '')) ? body.edits.textColor : '#ffffff',
-        textFont: ['system', 'serif', 'mono', 'script'].includes(body.edits?.textFont) ? body.edits.textFont : 'system',
+        textFont: ['system', 'serif', 'mono', 'script', 'strong', 'rounded', 'condensed'].includes(body.edits?.textFont) ? body.edits.textFont : 'system',
         textSize: Math.max(22, Math.min(96, Number(body.edits?.textSize || 44))),
         textAlign: ['left', 'center', 'right'].includes(body.edits?.textAlign) ? body.edits.textAlign : 'center',
-        textEffect: ['none', 'shadow', 'glow', 'neon'].includes(body.edits?.textEffect) ? body.edits.textEffect : 'shadow',
-        textAnimation: ['none', 'fade', 'rise', 'pop'].includes(body.edits?.textAnimation) ? body.edits.textAnimation : 'none',
+        textEffect: ['none', 'shadow', 'glow', 'neon', 'outline', 'lift', 'rainbow'].includes(body.edits?.textEffect) ? body.edits.textEffect : 'shadow',
+        textAnimation: ['none', 'fade', 'rise', 'pop', 'type', 'bounce', 'flicker', 'pulse'].includes(body.edits?.textAnimation) ? body.edits.textAnimation : 'none',
         textBgEnabled: Boolean(body.edits?.textBgEnabled),
         textBgColor: /^#[0-9a-f]{6}$/i.test(String(body.edits?.textBgColor || '')) ? body.edits.textBgColor : '#000000',
         textFrame: Boolean(body.edits?.textFrame),
