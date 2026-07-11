@@ -104,6 +104,13 @@ async function sendMessage(client, peerId, body) {
   });
 }
 
+test('story size controls stay inside the editor gesture boundary', () => {
+  const clientSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
+  assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
+  assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
+  assert.match(clientSource, /state\.me && !state\.storyEditor && event\.clientX < 24/);
+});
+
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-app-test-'));
   const dataDir = path.join(runtime, 'data');
@@ -176,6 +183,13 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.ok(avatarUpdate.data.user.avatar.url);
   assert.equal((await anonymous.request(avatarUpdate.data.user.avatar.url)).status, 200);
 
+  const shortUserSearch = await alice.request('/api/users/search?q=d');
+  assert.equal(shortUserSearch.status, 200);
+  assert.deepEqual(shortUserSearch.data.users, []);
+  const exactUserSearch = await alice.request('/api/users/search?q=dora_test');
+  assert.equal(exactUserSearch.status, 200);
+  assert.equal(exactUserSearch.data.users[0].id, doraUser.id);
+
   const request = await alice.request('/api/contacts/bob_test', { method: 'POST' });
   assert.equal(request.status, 201);
   assert.equal(request.data.pending, true);
@@ -191,6 +205,10 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   const accepted = await bob.request(`/api/requests/${request.data.request.id}/accept`, { method: 'POST' });
   assert.equal(accepted.status, 200);
   assert.equal(accepted.data.pendingRequestCount, 0);
+  const aliceNotifications = await alice.request('/api/notifications');
+  assert.ok(aliceNotifications.data.notifications.some((notification) => (
+    notification.type === 'request_accepted' && notification.actor.id === bobUser.id
+  )));
 
   const charlieRequest = await charlie.request('/api/contacts/bob_test', { method: 'POST' });
   assert.equal(charlieRequest.status, 201);
@@ -268,6 +286,8 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.ok(deletedList.data.messages.find((message) => message.id === textMessage.data.message.id).deletedAt);
 
   assert.equal((await bob.request(`/api/blocks/${aliceUser.id}`, { method: 'POST' })).status, 200);
+  const blockedUserSearch = await bob.request('/api/users/search?q=alice_test');
+  assert.ok(!blockedUserSearch.data.users.some((user) => user.id === aliceUser.id));
   assert.equal((await sendMessage(alice, bobUser.id, { kind: 'text', text: 'blocked message' })).status, 403);
   assert.equal((await bob.request(`/api/blocks/${aliceUser.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await sendMessage(alice, bobUser.id, { kind: 'text', text: 'unblocked message' })).status, 201);

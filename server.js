@@ -1215,13 +1215,28 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'GET' && pathname === '/api/users/search') {
     const user = await requireAuth(req, res);
     if (!user) return;
-    const q = String(query.get('q') || '').trim().toLowerCase();
+    const q = cleanText(query.get('q') || '', 80).trim().toLowerCase();
+    if (q.length < 2) return sendJson(res, 200, { users: [] });
     const users = Object.values(db.users)
       .filter((item) => item.id !== user.id)
       .filter((item) => item.profile?.searchable !== false)
-      .filter((item) => !q || item.usernameLower.includes(q) || (item.profile.displayName || '').toLowerCase().includes(q))
-      .slice(0, 30)
-      .map((item) => publicUser(item, user.id));
+      .filter((item) => !isBlockedBetween(user.id, item.id))
+      .map((item) => {
+        const username = item.usernameLower;
+        const displayName = (item.profile.displayName || '').toLowerCase();
+        let rank = 99;
+        if (username === q) rank = 0;
+        else if (displayName === q) rank = 1;
+        else if (username.startsWith(q)) rank = 2;
+        else if (displayName.startsWith(q)) rank = 3;
+        else if (username.includes(q)) rank = 4;
+        else if (displayName.includes(q)) rank = 5;
+        return { item, rank };
+      })
+      .filter(({ rank }) => rank < 99)
+      .sort((a, b) => a.rank - b.rank || a.item.usernameLower.localeCompare(b.item.usernameLower))
+      .slice(0, 12)
+      .map(({ item }) => publicUser(item, user.id));
     return sendJson(res, 200, { users });
   }
 
@@ -1237,8 +1252,14 @@ async function handleApi(req, res, pathname, query) {
         candidates.set(candidateId, (candidates.get(candidateId) || 0) + 1);
       }
     }
+    for (const candidate of Object.values(db.users)) {
+      if (candidates.size >= 12) break;
+      if (candidate.id === user.id || direct.has(candidate.id) || isBlockedBetween(user.id, candidate.id)) continue;
+      if (candidate.profile?.searchable === false) continue;
+      candidates.set(candidate.id, candidates.get(candidate.id) || 0);
+    }
     const users = Array.from(candidates.entries())
-      .sort((a, b) => b[1] - a[1])
+      .sort((a, b) => b[1] - a[1] || db.users[a[0]].usernameLower.localeCompare(db.users[b[0]].usernameLower))
       .slice(0, 12)
       .map(([candidateId, mutualCount]) => {
         const candidate = publicUser(db.users[candidateId], user.id);
@@ -1271,8 +1292,15 @@ async function handleApi(req, res, pathname, query) {
       reverse.status = 'accepted';
       reverse.respondedAt = nowIso();
       addContact(user.id, other.id);
-      addNotification(other.id, 'request_accepted', user.id, reverse.id, `${user.username} accepted your request.`);
+      const notification = addNotification(other.id, 'request_accepted', user.id, reverse.id, `${user.username} accepted your request.`);
       await Promise.all([saveFriendRequests(), saveContacts(), saveNotifications()]);
+      if (notification) {
+        pushToUser(other.id, {
+          type: 'notification:new',
+          pendingRequestCount: pendingIncomingRequests(other.id).length,
+          notification: publicNotification(notification, other.id)
+        });
+      }
       pushToUsers([user.id, other.id], { type: 'relationship:updated', pendingRequestCount: pendingIncomingRequests(other.id).length });
       return sendJson(res, 200, { user: publicUser(other, user.id), request: publicRequest(reverse, user.id), accepted: true });
     }
@@ -1333,13 +1361,21 @@ async function handleApi(req, res, pathname, query) {
     const action = requestActionMatch[2];
     request.status = action === 'accept' ? 'accepted' : 'declined';
     request.respondedAt = nowIso();
+    let responseNotification = null;
     if (action === 'accept') {
       addContact(request.fromId, request.toId);
-      addNotification(request.fromId, 'request_accepted', user.id, request.id, `${user.username} accepted your request.`);
+      responseNotification = addNotification(request.fromId, 'request_accepted', user.id, request.id, `${user.username} accepted your request.`);
       await Promise.all([saveFriendRequests(), saveContacts(), saveNotifications()]);
     } else {
       addNotification(request.fromId, 'request_declined', user.id, request.id, `${user.username} declined your request.`);
       await Promise.all([saveFriendRequests(), saveNotifications()]);
+    }
+    if (responseNotification) {
+      pushToUser(request.fromId, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(request.fromId).length,
+        notification: publicNotification(responseNotification, request.fromId)
+      });
     }
     pushToUsers([request.fromId, request.toId], {
       type: 'relationship:updated',

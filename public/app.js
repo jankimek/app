@@ -36,6 +36,10 @@
     composerDrafts: {},
     highlightMessageId: null,
     searchResults: [],
+    userQuery: '',
+    userSearching: false,
+    searchProfileOpen: false,
+    searchProfileSocialView: null,
     conversationQuery: '',
     conversationResults: [],
     conversationSearching: false,
@@ -48,7 +52,10 @@
     requests: [],
     hiddenRecommendations: JSON.parse(localStorage.getItem('hiddenRecommendations') || '[]'),
     unreadByPeer: {},
-    messageNotifications: localStorage.getItem('messageNotifications') === '1',
+    messageNotifications: localStorage.getItem('messageNotifications') !== '0' &&
+      'Notification' in window && Notification.permission !== 'denied',
+    notificationPromptDismissed: sessionStorage.getItem('notificationPromptDismissed') === '1',
+    toasts: [],
     actionSheet: null,
     storyMenuOpen: false,
     overlayClosing: false,
@@ -84,6 +91,7 @@
   const cropPointers = new Map();
   const storyTextPointers = new Map();
   const storyStickerPointers = new Map();
+  const toastTimers = new Map();
 
   function freshCallState() {
     return {
@@ -279,6 +287,7 @@
     if (publicName) {
       state.tab = 'search';
       await loadPublicProfile(publicName);
+      state.searchProfileOpen = Boolean(state.publicProfile);
     }
     renderApp();
     connectWs();
@@ -377,6 +386,7 @@
         ${renderChatPane()}
       </div>
       <div id="call-dock-slot">${renderCallDock()}</div>
+      <div id="toast-slot">${renderToastStack()}</div>
       ${renderActionSheet()}
       ${renderStoryMenu()}
       ${renderProfileEditModal()}
@@ -461,6 +471,7 @@
           </button>
         </div>
       </section>
+      ${renderNotificationPermissionPrompt()}
       <section class="panel-heading">
         <h2>Messages</h2>
       </section>
@@ -471,46 +482,92 @@
   }
 
   function renderSearchPanel() {
+    if (state.searchProfileOpen && state.publicProfile) {
+      return state.searchProfileSocialView
+        ? renderSearchProfileSocialPage(state.publicProfile)
+        : renderSearchProfilePage(state.publicProfile);
+    }
     const recommendations = visibleRecommendations();
+    const query = state.userQuery.trim();
     return `
-      <section class="search-page-head">
-        <input class="search-input" id="user-search" placeholder="Search users" autocomplete="off">
+      <section class="search-page">
+        <header class="search-page-head">
+          <span class="search-field-icon">${icon('search')}</span>
+          <input class="search-input" id="user-search" placeholder="Search" autocomplete="off" value="${esc(state.userQuery)}">
+          ${state.userQuery ? `<button class="search-clear" data-action="clear-user-search" aria-label="Clear search">${icon('x')}</button>` : ''}
+        </header>
+        ${query ? `
+          <section class="search-results-section">
+            <div class="section-heading"><h2>Accounts</h2></div>
+            <div class="result-list" id="search-results">${renderSearchResults()}</div>
+          </section>
+        ` : `
+          <section class="search-discover">
+            <div class="section-heading">
+              <h2>Suggested for you</h2>
+              <small>People you may know</small>
+            </div>
+            <div class="suggested-user-list">
+              ${recommendations.length
+                ? recommendations.slice(0, 10).map((user) => renderAccountRow(user, { dismissible: true })).join('')
+                : `<div class="search-empty">${icon('profile')}<strong>No suggestions yet</strong><small>Try searching for a username.</small></div>`}
+            </div>
+          </section>
+        `}
       </section>
-      <section class="panel-card">
-        <div class="result-list" id="search-results">
-          ${renderSearchResults()}
-        </div>
-      </section>
-      <section class="search-discover">
-        <h2>Discover</h2>
-        <div class="discover-grid">
-          <article>
-            ${icon('search')}
-            <strong>Search usernames</strong>
-            <small>Find people by username or display name.</small>
-          </article>
-          <article>
-            ${icon('messages')}
-            <strong>Start a chat</strong>
-            <small>Add someone first, then message from the Messages tab.</small>
-          </article>
-        </div>
-        ${recommendations.length ? `
-          <h2>People you may know</h2>
-          <div class="recommendation-row expanded">
-            ${recommendations.slice(0, 8).map((user) => `
-              <article class="recommend-card">
-                <button class="recommend-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>
-                ${avatarHtml(user)}
-                <strong>${esc(user.displayName)}</strong>
-                <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
-                <button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>
-              </article>
-            `).join('')}
+    `;
+  }
+
+  function renderSearchProfilePage(user) {
+    const story = user.stories?.[0];
+    return `
+      <section class="search-profile-page">
+        <header class="page-header search-profile-header">
+          <button class="icon-btn" data-action="close-search-profile" aria-label="Back">${icon('back')}</button>
+          <h2>@${esc(user.username)}</h2>
+          <button class="icon-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}" aria-label="Report user">${icon('more')}</button>
+        </header>
+        <section class="search-profile-hero">
+          ${story ? `
+            <button class="avatar big-avatar story-avatar-btn" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View story">
+              ${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}
+              <span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>
+            </button>
+          ` : `<span class="avatar big-avatar">${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}</span>`}
+          <div class="search-profile-copy">
+            <strong>${esc(user.displayName)}</strong>
+            <span>@${esc(user.username)}</span>
+            <div class="social-stats">
+              ${user.followersVisible
+                ? `<button type="button" class="social-stat-btn" data-action="open-search-social" data-social="followers"><strong>${user.followerCount ?? 0}</strong> followers</button><button type="button" class="social-stat-btn" data-action="open-search-social" data-social="following"><strong>${user.followingCount ?? 0}</strong> following</button>`
+                : '<span>Followers private</span>'}
+            </div>
+            ${user.bio ? `<p>${esc(user.bio)}</p>` : ''}
           </div>
-        ` : ''}
+        </section>
+        <div class="search-profile-actions">${renderSearchProfileActions(user)}</div>
+        ${renderHighlights(user, false)}
       </section>
-      ${state.publicProfile ? renderPublicProfileCard(state.publicProfile) : ''}
+    `;
+  }
+
+  function renderSearchProfileSocialPage(user) {
+    const view = state.searchProfileSocialView === 'following' ? 'following' : 'followers';
+    const users = view === 'followers' ? (user.followers || []) : (user.following || []);
+    return `
+      <section class="social-page">
+        <header class="page-header">
+          <button class="icon-btn" data-action="close-search-social" aria-label="Back">${icon('back')}</button>
+          <h2>${view === 'followers' ? 'Followers' : 'Following'}</h2>
+        </header>
+        <div class="segmented social-switch is-${view}">
+          <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-search-social" data-social="followers">Followers</button>
+          <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-search-social" data-social="following">Following</button>
+        </div>
+        <div class="social-user-list">
+          ${users.length ? users.map((item) => renderAccountRow(item)).join('') : `<div class="empty-state">No ${view} yet.</div>`}
+        </div>
+      </section>
     `;
   }
 
@@ -1101,8 +1158,69 @@
   }
 
   function renderSearchResults() {
-    if (!state.searchResults.length) return '<p class="hint">Type a username to search.</p>';
-    return state.searchResults.map(renderPublicProfileCard).join('');
+    const query = state.userQuery.trim();
+    if (query.length < 2) {
+      return `<div class="search-empty compact">${icon('search')}<strong>Keep typing</strong><small>Use at least 2 characters.</small></div>`;
+    }
+    if (state.userSearching) {
+      return Array.from({ length: 4 }, () => `
+        <div class="account-row account-row-skeleton" aria-hidden="true">
+          <span class="skeleton-avatar"></span><span class="skeleton-copy"></span><span class="skeleton-action"></span>
+        </div>
+      `).join('');
+    }
+    if (!state.searchResults.length) {
+      return `<div class="search-empty">${icon('search')}<strong>No accounts found</strong><small>Check the spelling or try another name.</small></div>`;
+    }
+    return state.searchResults.map((user) => renderAccountRow(user)).join('');
+  }
+
+  function renderAccountAction(user) {
+    const knownUser = userById(user?.id) || user;
+    if (!knownUser || knownUser.id === state.me?.id) return '<button class="mini-btn account-action" disabled>You</button>';
+    if (knownUser.isContact) return `<button class="mini-btn account-action" data-action="open-chat" data-user-id="${esc(knownUser.id)}">Message</button>`;
+    if (knownUser.incomingRequest) return `<button class="mini-btn account-action primary-action" data-action="accept-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Accept</button>`;
+    if (knownUser.outgoingRequest) return '<button class="mini-btn account-action" disabled>Requested</button>';
+    if (knownUser.hasBlocked || knownUser.blockedBy) return '<button class="mini-btn account-action" disabled>Blocked</button>';
+    return `<button class="mini-btn account-action primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Follow</button>`;
+  }
+
+  function renderAccountRow(user, options = {}) {
+    return `
+      <article class="account-row">
+        <button class="account-identity" data-action="view-user-profile" data-username="${esc(user.username)}">
+          ${avatarHtml(user)}
+          <span class="person">
+            <strong>${esc(user.displayName)}</strong>
+            <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
+          </span>
+        </button>
+        <span class="account-row-actions">
+          ${renderAccountAction(user)}
+          ${options.dismissible ? `<button class="account-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>` : ''}
+        </span>
+      </article>
+    `;
+  }
+
+  function renderSearchProfileActions(user) {
+    const knownUser = userById(user?.id) || user;
+    if (!knownUser || knownUser.id === state.me?.id) return '<button class="mini-btn" disabled>This is you</button>';
+    if (knownUser.isContact) {
+      return `
+        <button class="mini-btn profile-primary-action" data-action="open-chat" data-user-id="${esc(knownUser.id)}">Message</button>
+        <button class="mini-btn" data-action="remove-friend" data-user-id="${esc(knownUser.id)}">Unfollow</button>
+      `;
+    }
+    if (knownUser.incomingRequest) {
+      return `
+        <button class="mini-btn profile-primary-action" data-action="accept-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Accept</button>
+        <button class="mini-btn" data-action="decline-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Decline</button>
+      `;
+    }
+    if (knownUser.outgoingRequest) return '<button class="mini-btn" disabled>Requested</button>';
+    if (knownUser.hasBlocked || knownUser.blockedBy) return '<button class="mini-btn" disabled>Blocked</button>';
+    return `<button class="mini-btn profile-primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Follow</button>`;
   }
 
   function renderPublicProfileCard(user) {
@@ -1451,6 +1569,46 @@
     `;
   }
 
+  function renderNotificationPermissionPrompt() {
+    const canPrompt = state.messageNotifications &&
+      !state.notificationPromptDismissed &&
+      'Notification' in window &&
+      window.isSecureContext &&
+      Notification.permission === 'default';
+    if (!canPrompt) return '';
+    return `
+      <section class="notification-permission">
+        <span class="notification-permission-icon">${icon('bell')}</span>
+        <span class="notification-permission-copy">
+          <strong>Turn on notifications</strong>
+          <small>Messages, requests, and mentions</small>
+        </span>
+        <button class="mini-btn notification-enable" data-action="enable-notifications">Turn on</button>
+        <button class="notification-prompt-close" data-action="dismiss-notification-prompt" aria-label="Dismiss">${icon('x')}</button>
+      </section>
+    `;
+  }
+
+  function renderToastStack() {
+    if (!state.toasts.length) return '';
+    return `
+      <aside class="toast-stack" aria-live="polite" aria-atomic="false">
+        ${state.toasts.map((toast) => `
+          <article class="app-toast" data-toast-id="${esc(toast.id)}">
+            <button class="toast-main" data-action="open-toast" data-toast-id="${esc(toast.id)}">
+              ${toast.actor ? avatarHtml(toast.actor) : `<span class="toast-symbol">${icon(toast.kind === 'message' ? 'messages' : 'bell')}</span>`}
+              <span class="toast-copy">
+                <strong>${esc(toast.title)}</strong>
+                <small>${esc(toast.body)}</small>
+              </span>
+            </button>
+            <button class="toast-close" data-action="dismiss-toast" data-toast-id="${esc(toast.id)}" aria-label="Dismiss">${icon('x')}</button>
+          </article>
+        `).join('')}
+      </aside>
+    `;
+  }
+
   function renderActionSheet() {
     const sheet = state.actionSheet;
     if (!sheet) return '';
@@ -1601,10 +1759,10 @@
         <div class="story-object-trash" id="story-object-trash" aria-hidden="true">${icon('trash')}</div>
         ${renderStoryTopToolbar(editor, tools)}
         ${editor.textEditing ? `
-          <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" aria-label="Text size">
+          <input class="story-size-slider" id="story-text-size" type="range" min="22" max="96" step="1" value="${esc(editor.textSize || 44)}" aria-label="Text size" data-stop-close>
         ` : ''}
         ${editor.activeTool === 'draw' ? `
-          <input class="story-size-slider story-brush-slider" id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}" aria-label="Brush size">
+          <input class="story-size-slider story-brush-slider" id="story-draw-size" type="range" min="2" max="20" step="1" value="${esc(editor.drawSize || 6)}" aria-label="Brush size" data-stop-close>
         ` : ''}
         ${renderStoryFloatingTray(editor)}
         ${editor.textEditing || ['stickers', 'audio'].includes(editor.activeTool) ? '' : `
@@ -1731,8 +1889,8 @@
             <h3>${icon('bell')} Notifications</h3>
             <label class="switch-row">
               <span>
-                <strong>Message notifications</strong>
-                <small>Show a browser notification when someone texts you while this site is open. HTTPS is required outside localhost.</small>
+                <strong>Browser notifications</strong>
+                <small>Messages, follow requests, and social updates while the site is open. HTTPS is required outside localhost.</small>
               </span>
               <input type="checkbox" data-action="toggle-message-notifications" ${state.messageNotifications ? 'checked' : ''}>
             </label>
@@ -2675,21 +2833,40 @@
     renderApp();
   }
 
+  let userSearchId = 0;
+
+  function focusUserSearch() {
+    const input = document.getElementById('user-search');
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(state.userQuery.length, state.userQuery.length);
+  }
+
   async function searchUsers(query) {
-    if (!query.trim()) {
+    const trimmed = query.trim();
+    const searchId = ++userSearchId;
+    state.userQuery = query;
+    if (trimmed.length < 2) {
       state.searchResults = [];
+      state.userSearching = false;
       renderApp();
+      setTimeout(focusUserSearch, 0);
       return;
     }
-    const data = await api(`/api/users/search?q=${encodeURIComponent(query.trim())}`);
-    state.searchResults = data.users;
+    const data = await api(`/api/users/search?q=${encodeURIComponent(trimmed)}`);
+    if (searchId !== userSearchId || trimmed !== state.userQuery.trim()) return;
+    state.searchResults = data.users || [];
+    state.userSearching = false;
     renderApp();
-    const input = document.getElementById('user-search');
-    if (input) {
-      input.value = query;
-      input.focus();
-      input.setSelectionRange(query.length, query.length);
-    }
+    setTimeout(focusUserSearch, 0);
+  }
+
+  async function openSearchProfile(username) {
+    await loadPublicProfile(username);
+    if (!state.publicProfile) throw new Error('User not found.');
+    state.searchProfileOpen = true;
+    state.searchProfileSocialView = null;
+    renderApp();
   }
 
   let conversationSearchId = 0;
@@ -2719,47 +2896,110 @@
   async function setMessageNotifications(enabled) {
     if (!enabled) {
       state.messageNotifications = false;
-      localStorage.removeItem('messageNotifications');
+      localStorage.setItem('messageNotifications', '0');
       renderApp();
       return;
     }
     if (!('Notification' in window)) {
       state.messageNotifications = false;
-      alert('This browser does not support message notifications.');
+      localStorage.setItem('messageNotifications', '0');
+      alert('This browser does not support browser notifications. In-app alerts will still appear.');
       renderApp();
       return;
     }
     if (!window.isSecureContext) {
       state.messageNotifications = false;
-      alert('Message notifications need HTTPS on iPhone and normal websites. We can enable this after the HTTPS step.');
+      localStorage.setItem('messageNotifications', '0');
+      alert('Browser notifications need HTTPS on iPhone and normal websites. In-app alerts will still appear.');
       renderApp();
       return;
     }
     const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
     state.messageNotifications = permission === 'granted';
+    state.notificationPromptDismissed = true;
+    sessionStorage.setItem('notificationPromptDismissed', '1');
     if (state.messageNotifications) localStorage.setItem('messageNotifications', '1');
-    else localStorage.removeItem('messageNotifications');
+    else localStorage.setItem('messageNotifications', '0');
     renderApp();
   }
 
-  function showIncomingMessageNotification(message) {
+  function updateToastSlot() {
+    const slot = document.getElementById('toast-slot');
+    if (slot) slot.innerHTML = renderToastStack();
+  }
+
+  function dismissToast(toastId) {
+    state.toasts = state.toasts.filter((toast) => toast.id !== toastId);
+    clearTimeout(toastTimers.get(toastId));
+    toastTimers.delete(toastId);
+    updateToastSlot();
+  }
+
+  function pushToast(toast) {
+    const existing = toast.key ? state.toasts.find((item) => item.key === toast.key) : null;
+    const toastId = existing?.id || `toast_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const next = { ...existing, ...toast, id: toastId };
+    state.toasts = [next, ...state.toasts.filter((item) => item.id !== toastId)].slice(0, 4);
+    clearTimeout(toastTimers.get(toastId));
+    toastTimers.set(toastId, setTimeout(() => dismissToast(toastId), 5600));
+    updateToastSlot();
+    if (document.hidden) navigator.vibrate?.(60);
+  }
+
+  function showSystemNotification({ title, body, actor, tag, userId = null }) {
     if (!state.messageNotifications || !('Notification' in window) || Notification.permission !== 'granted') return;
-    const sender = userById(message.senderId);
-    const title = sender?.displayName || sender?.username || 'New message';
     try {
       const notification = new Notification(title, {
-        body: describeMessage(message),
-        icon: sender?.avatar?.url || undefined,
-        tag: `chat-${message.senderId}`
+        body,
+        icon: actor?.avatar?.url || undefined,
+        tag
       });
       notification.onclick = () => {
         window.focus();
-        openChat(message.senderId).catch((error) => alert(error.message));
+        if (userId) openChat(userId).catch((error) => alert(error.message));
+        else {
+          state.lastTab = state.tab;
+          state.tab = 'notifications';
+          refreshChatsOnly().finally(() => renderApp());
+        }
         notification.close();
       };
     } catch {
       // Some mobile browsers expose Notification but still block constructor use.
     }
+  }
+
+  function showIncomingMessageNotification(message) {
+    const sender = userById(message.senderId);
+    const title = sender?.displayName || sender?.username || 'New message';
+    const body = describeMessage(message);
+    pushToast({
+      key: `message-${message.senderId}`,
+      kind: 'message',
+      title,
+      body,
+      actor: sender,
+      userId: message.senderId
+    });
+    showSystemNotification({ title, body, actor: sender, tag: `chat-${message.senderId}`, userId: message.senderId });
+  }
+
+  function showSocialNotification(event) {
+    if (event.request?.from) {
+      const actor = event.request.from;
+      const title = 'New follow request';
+      const body = `${actor.displayName || actor.username} wants to follow you.`;
+      pushToast({ key: `request-${event.request.id}`, kind: 'request', title, body, actor });
+      showSystemNotification({ title, body, actor, tag: `request-${event.request.id}` });
+      return;
+    }
+    const note = event.notification;
+    if (!note || note.type === 'message' || note.type === 'friend_request' || note.type === 'request_declined') return;
+    const actor = note.actor;
+    const title = note.type === 'mention' ? 'You were mentioned' : 'New follower update';
+    const body = note.text || `${actor?.displayName || actor?.username || 'Someone'} sent an update.`;
+    pushToast({ key: `social-${note.id}`, kind: 'social', title, body, actor });
+    showSystemNotification({ title, body, actor, tag: `social-${note.id}` });
   }
 
   function connectWs() {
@@ -2814,7 +3054,8 @@
       renderApp();
     }
     if (event.type === 'notification:new') {
-      state.pendingRequestCount = event.pendingRequestCount || state.pendingRequestCount;
+      state.pendingRequestCount = event.pendingRequestCount ?? state.pendingRequestCount;
+      showSocialNotification(event);
       await refreshChatsOnly();
       renderApp();
     }
@@ -3366,6 +3607,9 @@
       if (action === 'logout') {
         await api('/api/auth/logout', { method: 'POST' });
         if (state.ws) state.ws.close();
+        toastTimers.forEach((timer) => clearTimeout(timer));
+        toastTimers.clear();
+        state.toasts = [];
         state.me = null;
         state.activePeer = null;
         state.tab = 'chats';
@@ -3679,6 +3923,32 @@
       if (action === 'add-contact') {
         await addContact(target.dataset.username);
       }
+      if (action === 'view-user-profile') {
+        await openSearchProfile(target.dataset.username);
+      }
+      if (action === 'close-search-profile') {
+        state.searchProfileOpen = false;
+        state.searchProfileSocialView = null;
+        state.publicProfile = null;
+        renderApp();
+      }
+      if (action === 'open-search-social') {
+        state.searchProfileSocialView = target.dataset.social === 'following' ? 'following' : 'followers';
+        renderApp();
+      }
+      if (action === 'close-search-social') {
+        state.searchProfileSocialView = null;
+        renderApp();
+      }
+      if (action === 'clear-user-search') {
+        clearTimeout(searchTimer);
+        userSearchId += 1;
+        state.userQuery = '';
+        state.userSearching = false;
+        state.searchResults = [];
+        renderApp();
+        setTimeout(focusUserSearch, 0);
+      }
       if (action === 'accept-request') {
         await acceptRequest(target.dataset.requestId);
       }
@@ -3743,6 +4013,30 @@
       }
       if (action === 'toggle-message-notifications') {
         await setMessageNotifications(target.checked);
+      }
+      if (action === 'enable-notifications') {
+        await setMessageNotifications(true);
+      }
+      if (action === 'dismiss-notification-prompt') {
+        state.notificationPromptDismissed = true;
+        sessionStorage.setItem('notificationPromptDismissed', '1');
+        renderApp();
+      }
+      if (action === 'dismiss-toast') {
+        dismissToast(target.dataset.toastId);
+      }
+      if (action === 'open-toast') {
+        const toast = state.toasts.find((item) => item.id === target.dataset.toastId);
+        if (toast) {
+          dismissToast(toast.id);
+          if (toast.kind === 'message' && toast.userId) await openChat(toast.userId);
+          else {
+            state.lastTab = state.tab;
+            state.tab = 'notifications';
+            await refreshChatsOnly();
+            renderApp();
+          }
+        }
       }
       if (action === 'open-social') {
         const nextSocial = target.dataset.social === 'following' ? 'following' : 'followers';
@@ -3988,11 +4282,20 @@
       return;
     }
     if (event.target.id === 'user-search') {
-      const query = event.target.value;
+      state.userQuery = event.target.value;
       clearTimeout(searchTimer);
+      userSearchId += 1;
+      state.searchResults = [];
+      state.userSearching = state.userQuery.trim().length >= 2;
+      renderApp();
+      setTimeout(focusUserSearch, 0);
       searchTimer = setTimeout(() => {
-        searchUsers(query).catch((error) => alert(error.message));
-      }, 220);
+        searchUsers(state.userQuery).catch((error) => {
+          state.userSearching = false;
+          renderApp();
+          alert(error.message);
+        });
+      }, 340);
     }
     if (event.target.id === 'composer-text') {
       if (state.activePeer) state.composerDrafts[state.activePeer.id] = event.target.value;
@@ -4033,7 +4336,11 @@
   });
 
   document.addEventListener('pointerdown', async (event) => {
-    if (state.me && event.clientX < 24 && !event.target.closest('input,textarea,button,a')) {
+    if (event.target.closest('.story-size-slider')) {
+      state.edgeSwipe = null;
+      return;
+    }
+    if (state.me && !state.storyEditor && event.clientX < 24 && !event.target.closest('input,textarea,button,a')) {
       state.edgeSwipe = { startX: event.clientX, startY: event.clientY };
     }
 
