@@ -110,6 +110,10 @@ test('story size controls stay inside the editor gesture boundary', () => {
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
   assert.match(clientSource, /class="story-size-control story-text-size-control"/);
   assert.match(clientSource, /id="story-editor-text" data-action="story-text-drag"/);
+  assert.match(clientSource, /class="story-text-choice-rail story-\$\{panel\}-choices"/);
+  assert.match(clientSource, /class="story-text-format-bar"/);
+  assert.match(clientSource, /class="story-editor-mode-switch"/);
+  assert.doesNotMatch(clientSource, /story-option-strip story-text-style-strip/);
   assert.match(clientSource, /const storyMediaPointers = new Map\(\)/);
   assert.match(clientSource, /requestAnimationFrame\(\(\) =>/);
   assert.match(clientSource, /state\.me && !state\.storyEditor && event\.clientX < 24/);
@@ -347,10 +351,10 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
         textX: 52,
         textY: 44,
         textColor: '#ffffff',
-        textFont: 'strong',
+        textFont: 'poster',
         textSize: 48,
         textAlign: 'center',
-        textEffect: 'outline',
+        textEffect: 'shimmer',
         textAnimation: 'bounce',
         drawings: [{ brush: 'neon', color: '#ff4fa3', size: 8, points: [{ x: 10, y: 10 }, { x: 30, y: 40 }] }],
         stickers: [
@@ -371,8 +375,8 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(storyResponse.data.story.edits.brightness, 112);
   assert.equal(storyResponse.data.story.edits.mediaOffsetX, 12);
   assert.equal(storyResponse.data.story.edits.mediaOffsetY, -8);
-  assert.equal(storyResponse.data.story.edits.textFont, 'strong');
-  assert.equal(storyResponse.data.story.edits.textEffect, 'outline');
+  assert.equal(storyResponse.data.story.edits.textFont, 'poster');
+  assert.equal(storyResponse.data.story.edits.textEffect, 'shimmer');
   assert.equal(storyResponse.data.story.edits.textAnimation, 'bounce');
   assert.equal(storyResponse.data.story.edits.drawings[0].brush, 'neon');
   assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.type === 'link').href, 'https://example.com/path');

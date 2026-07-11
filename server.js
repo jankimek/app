@@ -1107,10 +1107,13 @@ async function handleApi(req, res, pathname, query) {
         textY: Math.max(5, Math.min(95, Number(body.edits?.textY || 50))),
         textRotation: Math.max(-180, Math.min(180, Number(body.edits?.textRotation || 0))),
         textColor: /^#[0-9a-f]{6}$/i.test(String(body.edits?.textColor || '')) ? body.edits.textColor : '#ffffff',
-        textFont: ['system', 'serif', 'mono', 'script', 'strong', 'rounded', 'condensed'].includes(body.edits?.textFont) ? body.edits.textFont : 'system',
+        textFont: [
+          'system', 'serif', 'mono', 'script', 'strong', 'rounded', 'condensed',
+          'editor', 'deco', 'elegant', 'poster', 'literature', 'directional', 'meme', 'journal'
+        ].includes(body.edits?.textFont) ? body.edits.textFont : 'system',
         textSize: Math.max(22, Math.min(96, Number(body.edits?.textSize || 44))),
         textAlign: ['left', 'center', 'right'].includes(body.edits?.textAlign) ? body.edits.textAlign : 'center',
-        textEffect: ['none', 'shadow', 'glow', 'neon', 'outline', 'lift', 'rainbow'].includes(body.edits?.textEffect) ? body.edits.textEffect : 'shadow',
+        textEffect: ['none', 'shadow', 'glow', 'neon', 'sparkle', 'shimmer', 'pixel', 'outline', 'lift', 'rainbow'].includes(body.edits?.textEffect) ? body.edits.textEffect : 'shadow',
         textAnimation: ['none', 'fade', 'rise', 'pop', 'type', 'bounce', 'flicker', 'pulse'].includes(body.edits?.textAnimation) ? body.edits.textAnimation : 'none',
         textBgEnabled: Boolean(body.edits?.textBgEnabled),
         textBgColor: /^#[0-9a-f]{6}$/i.test(String(body.edits?.textBgColor || '')) ? body.edits.textBgColor : '#000000',

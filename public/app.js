@@ -214,6 +214,7 @@
       comment: '<svg viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-8.5 8.5 9 9 0 0 1-4.1-1L3 21l1.5-5.1A8.5 8.5 0 1 1 21 12Z"/></svg>',
       text: '<svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>',
       filter: '<svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>',
+      eyedropper: '<svg viewBox="0 0 24 24"><path d="m19 3 2 2-9.5 9.5-2-2L19 3Z"/><path d="m8.5 11.5 4 4-6.8 6.8H2v-3.7l6.5-7.1Z"/></svg>',
       poll: '<svg viewBox="0 0 24 24"><path d="M5 19V9M12 19V5M19 19v-7"/></svg>',
       rotate: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>',
       smile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>',
@@ -411,6 +412,7 @@
         const storyText = document.getElementById('story-editor-text');
         storyText?.focus();
         storyText?.setSelectionRange?.(storyText.value.length, storyText.value.length);
+        document.querySelector('.story-text-choice-rail > .active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
       }
       if (state.highlightMessageId) scrollHighlightedMessage();
       else if (scrollMode === 'bottom') scrollMessagesToBottom();
@@ -739,9 +741,17 @@
       serif: 'Georgia, serif',
       mono: '"SFMono-Regular", Consolas, monospace',
       script: '"Brush Script MT", "Segoe Script", cursive',
-      strong: 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif',
+      strong: '"Arial Black", Arial, sans-serif',
       rounded: '"Arial Rounded MT Bold", "Trebuchet MS", sans-serif',
       condensed: '"Arial Narrow", "Roboto Condensed", sans-serif',
+      journal: '"Segoe Print", "Bradley Hand", cursive',
+      editor: 'Rockwell, "American Typewriter", Georgia, serif',
+      deco: '"Century Gothic", "Trebuchet MS", sans-serif',
+      elegant: 'Didot, "Bodoni MT", "Times New Roman", serif',
+      poster: '"Rockwell Extra Bold", Rockwell, Georgia, serif',
+      literature: 'Palatino, "Book Antiqua", Georgia, serif',
+      directional: '"Trebuchet MS", Arial, sans-serif',
+      meme: 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif',
       system: 'Inter, system-ui, sans-serif'
     }[font] || 'Inter, system-ui, sans-serif';
   }
@@ -760,7 +770,7 @@
   }
 
   function storyTextClass(edits = {}) {
-    const effect = ['none', 'shadow', 'glow', 'neon', 'outline', 'lift', 'rainbow'].includes(edits.textEffect) ? edits.textEffect : 'shadow';
+    const effect = ['none', 'shadow', 'glow', 'neon', 'sparkle', 'shimmer', 'pixel', 'outline', 'lift', 'rainbow'].includes(edits.textEffect) ? edits.textEffect : 'shadow';
     const animation = ['none', 'fade', 'rise', 'pop', 'type', 'bounce', 'flicker', 'pulse'].includes(edits.textAnimation) ? edits.textAnimation : 'none';
     return `text-effect-${effect} text-anim-${animation}`;
   }
@@ -777,64 +787,128 @@
     return `rgba(${(int >> 16) & 255},${(int >> 8) & 255},${int & 255},${alpha})`;
   }
 
-  function storyTextToolPanel(editor) {
-    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
-    const fonts = [
+  async function sampleStoryColor(kind) {
+    if (!state.storyEditor) return;
+    if (!window.EyeDropper) {
+      document.getElementById(kind === 'draw' ? 'story-draw-custom-color' : 'story-text-custom-color')?.click();
+      return;
+    }
+    try {
+      const result = await new window.EyeDropper().open();
+      const color = /^#[0-9a-f]{6}$/i.test(result.sRGBHex || '') ? result.sRGBHex : '#ffffff';
+      if (kind === 'draw') {
+        state.storyEditor.drawColor = color;
+        document.querySelectorAll('[data-action="story-draw-color"]').forEach((button) => button.classList.toggle('active', button.dataset.color === color));
+      } else {
+        state.storyEditor.textColor = color;
+        updateStoryTextUi();
+        updateStoryTextComposerUi();
+      }
+    } catch (error) {
+      if (error?.name !== 'AbortError') throw error;
+    }
+  }
+
+  function storyTextFontOptions() {
+    return [
       ['system', 'Modern'],
       ['serif', 'Classic'],
-      ['mono', 'Typewriter'],
+      ['condensed', 'Squeeze'],
       ['script', 'Signature'],
+      ['journal', 'Journal'],
+      ['editor', 'Editor'],
+      ['deco', 'Deco'],
       ['strong', 'Strong'],
-      ['rounded', 'Rounded'],
-      ['condensed', 'Condensed']
+      ['elegant', 'Elegant'],
+      ['rounded', 'Bubble'],
+      ['poster', 'Poster'],
+      ['literature', 'Literature'],
+      ['mono', 'Typewriter'],
+      ['directional', 'Directional'],
+      ['meme', 'Meme']
     ];
-    const effects = [
+  }
+
+  function storyTextEffectOptions() {
+    return [
       ['none', 'Plain'],
       ['shadow', 'Shadow'],
       ['glow', 'Glow'],
       ['neon', 'Neon'],
+      ['sparkle', 'Sparkle'],
+      ['shimmer', 'Shimmer'],
+      ['pixel', 'Pixel'],
       ['outline', 'Outline'],
       ['lift', 'Lift'],
       ['rainbow', 'Color']
     ];
-    const animations = [
+  }
+
+  function storyTextAnimationOptions() {
+    return [
       ['none', 'Still'],
       ['fade', 'Fade'],
       ['rise', 'Rise'],
       ['pop', 'Pop'],
       ['type', 'Type'],
-      ['bounce', 'Bounce'],
+      ['bounce', 'Jump'],
       ['flicker', 'Flicker'],
       ['pulse', 'Pulse']
     ];
-    return `
-      <div class="story-swatch-row story-text-colors" aria-label="Text color">
-        ${colors.map((color) => `<button class="${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
-        <label class="story-custom-color" title="Custom color" aria-label="Custom text color">
+  }
+
+  function storyTextToolPanel(editor) {
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
+    const panel = ['font', 'color', 'animation', 'effect'].includes(editor.textPanel) ? editor.textPanel : 'font';
+    const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
+    let choices = '';
+    if (panel === 'font') {
+      choices = storyTextFontOptions().map(([font, label]) => `
+        <button class="story-font-choice ${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}" aria-label="${esc(label)} font">
+          <span style="font-family:${esc(storyTextFontCss(font))}">${esc(label)}</span>
+        </button>
+      `).join('');
+    }
+    if (panel === 'color') {
+      choices = `
+        <button class="story-color-sampler" data-action="story-text-eyedropper" aria-label="Sample a color">${icon('eyedropper')}</button>
+        ${colors.map((color) => `<button class="story-color-choice ${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
+        <label class="story-color-choice story-custom-color" title="Custom color" aria-label="Custom text color">
           <input id="story-text-custom-color" type="color" value="${esc(editor.textColor || '#ffffff')}">
         </label>
-      </div>
-      <div class="story-option-strip story-text-style-strip story-font-strip">
-        ${fonts.map(([font, label]) => `
-          <button class="${editor.textFont === font ? 'active' : ''}" data-action="story-font" data-font="${font}">
-            <span class="story-text-option-preview" style="font-family:${esc(storyTextFontCss(font))}">Aa</span><small>${esc(label)}</small>
-          </button>
-        `).join('')}
-      </div>
-      <div class="story-option-strip story-text-style-strip story-effect-strip">
-        ${effects.map(([effect, label]) => `
-          <button class="${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">
-            <span class="story-text-option-preview text-effect-${effect}" style="color:${esc(editor.textColor || '#ffffff')}">Aa</span><small>${esc(label)}</small>
-          </button>
-        `).join('')}
-      </div>
-      <div class="story-option-strip story-text-style-strip story-animation-strip">
-        ${animations.map(([animation, label]) => `
-          <button class="${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="story-text-animation" data-animation="${animation}">
-            <span class="story-text-option-preview story-animation-preview preview-${animation}">Aa</span><small>${esc(label)}</small>
-          </button>
-        `).join('')}
-      </div>
+      `;
+    }
+    if (panel === 'effect') {
+      choices = storyTextEffectOptions().map(([effect, label]) => `
+        <button class="story-effect-choice ${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="story-text-effect" data-effect="${effect}">
+          <span class="story-text-option-preview text-effect-${effect}" style="color:${esc(editor.textColor || '#ffffff')}">Aa</span>
+          <small>${esc(label)}</small>
+        </button>
+      `).join('');
+    }
+    if (panel === 'animation') {
+      choices = storyTextAnimationOptions().map(([animation, label]) => `
+        <button class="story-animation-choice ${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="story-text-animation" data-animation="${animation}">
+          <span class="story-text-option-preview preview-${animation}">Aa</span>
+          <small>${esc(label)}</small>
+        </button>
+      `).join('');
+    }
+    return `
+      <section class="story-text-composer" data-panel="${panel}">
+        <div class="story-text-choice-rail story-${panel}-choices" aria-label="${esc(panel)} options">
+          ${choices}
+        </div>
+        <div class="story-text-format-bar" aria-label="Text formatting">
+          <button class="${panel === 'font' ? 'active' : ''}" data-action="story-text-panel" data-panel="font" aria-label="Fonts"><span class="story-aa">Aa</span></button>
+          <button class="${panel === 'color' ? 'active' : ''}" data-action="story-text-panel" data-panel="color" aria-label="Text color"><span class="story-color-wheel"></span></button>
+          <button class="${panel === 'animation' ? 'active' : ''}" data-action="story-text-panel" data-panel="animation" aria-label="Text animation">${icon('play')}</button>
+          <button class="${panel === 'effect' ? 'active' : ''}" data-action="story-text-panel" data-panel="effect" aria-label="Text effects">${icon('sparkle')}</button>
+          <button data-action="cycle-story-text-align" aria-label="Change alignment">${icon(alignIcon)}</button>
+          <button class="${editor.textBgEnabled ? 'active' : ''}" data-action="story-text-bg" aria-label="Text background"><span class="story-aa">A</span></button>
+          <button class="${editor.textFrame ? 'active' : ''}" data-action="story-text-frame" aria-label="Text outline"><span class="story-aa story-aa-frame">A</span></button>
+        </div>
+      </section>
     `;
   }
 
@@ -856,7 +930,6 @@
   function storyBackgroundToolPanel(editor) {
     if (!editor.isBlankStory) return '';
     return `
-      <div class="story-editor-section-label">Background</div>
       <div class="story-background-carousel" aria-label="Story background">
         ${storyBackgroundPresets().map(([preset, label, from, to]) => `
           <button class="${editor.backgroundPreset === preset ? 'active' : ''}" style="--bg-from:${from};--bg-to:${to}" data-action="story-background" data-background="${preset}" aria-label="${esc(label)}">
@@ -887,10 +960,12 @@
       ['vignette', 'Vignette', 0, 80, 0],
       ['blur', 'Blur', 0, 8, 0]
     ];
-    return `
-      <section class="story-effects-panel">
-        ${storyBackgroundToolPanel(editor)}
-        <div class="story-editor-section-label">Filters</div>
+    const availablePanels = editor.isBlankStory ? ['filters', 'effects', 'adjust', 'background'] : ['filters', 'effects', 'adjust'];
+    const panel = availablePanels.includes(editor.filterPanel) ? editor.filterPanel : 'filters';
+    const selectedAdjustment = adjustments.find(([name]) => name === editor.activeAdjustment) || adjustments[0];
+    let panelContent = '';
+    if (panel === 'filters') {
+      panelContent = `
         <div class="story-filter-carousel" aria-label="Story filters">
           ${filters.map(([filter, label]) => `
             <button class="${editor.filter === filter ? 'active' : ''}" data-action="story-filter" data-filter="${filter}">
@@ -899,7 +974,10 @@
             </button>
           `).join('')}
         </div>
-        <div class="story-editor-section-label">Effects</div>
+      `;
+    }
+    if (panel === 'effects') {
+      panelContent = `
         <div class="story-overlay-effects" aria-label="Story effects">
           ${overlayEffects.map(([effect, label]) => `
             <button class="${(editor.overlayEffect || 'none') === effect ? 'active' : ''}" data-action="story-overlay-effect" data-effect="${effect}">
@@ -908,15 +986,31 @@
             </button>
           `).join('')}
         </div>
-        <div class="story-editor-section-label">Adjust</div>
-        <div class="story-adjustments" aria-label="Image adjustments">
-          ${adjustments.map(([name, label, min, max, fallback]) => `
-            <label>
-              <span>${esc(label)} <output>${esc(editor[name] ?? fallback)}</output></span>
-              <input type="range" min="${min}" max="${max}" step="1" value="${esc(editor[name] ?? fallback)}" data-story-adjust="${name}">
-            </label>
+      `;
+    }
+    if (panel === 'background') panelContent = storyBackgroundToolPanel(editor);
+    if (panel === 'adjust') {
+      const [name, label, min, max, fallback] = selectedAdjustment;
+      panelContent = `
+        <div class="story-adjustment-picker" aria-label="Choose adjustment">
+          ${adjustments.map(([adjustment, adjustmentLabel]) => `
+            <button class="${name === adjustment ? 'active' : ''}" data-action="story-adjustment-select" data-adjustment="${adjustment}">${esc(adjustmentLabel)}</button>
           `).join('')}
         </div>
+        <label class="story-adjustment-control">
+          <span>${esc(label)} <output>${esc(editor[name] ?? fallback)}</output></span>
+          <input type="range" min="${min}" max="${max}" step="1" value="${esc(editor[name] ?? fallback)}" data-story-adjust="${name}">
+        </label>
+      `;
+    }
+    return `
+      <section class="story-effects-panel">
+        <div class="story-editor-mode-switch" aria-label="Effects mode">
+          ${availablePanels.map((mode) => `
+            <button class="${panel === mode ? 'active' : ''}" data-action="story-filter-panel" data-panel="${mode}">${esc(mode === 'adjust' ? 'Adjust' : mode[0].toUpperCase() + mode.slice(1))}</button>
+          `).join('')}
+        </div>
+        <div class="story-effect-browser">${panelContent}</div>
       </section>
     `;
   }
@@ -1017,25 +1111,26 @@
     `;
   }
 
-  function storyDrawToolPanel(editor) {
-    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff'];
-    const brushes = [
+  function storyDrawBrushOptions() {
+    return [
       ['pen', 'Pen', 'pen'],
       ['marker', 'Marker', 'text'],
       ['neon', 'Neon', 'sparkle'],
       ['chalk', 'Chalk', 'edit'],
       ['eraser', 'Eraser', 'eraser']
     ];
+  }
+
+  function storyDrawToolPanel(editor) {
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff'];
     return `
-      <div class="story-brush-row" aria-label="Drawing brush">
-        ${brushes.map(([brush, label, iconName]) => `
-          <button class="${(editor.drawBrush || 'pen') === brush ? 'active' : ''}" data-action="story-draw-brush" data-brush="${brush}" title="${label}" aria-label="${label}">${icon(iconName)}</button>
-        `).join('')}
-      </div>
-      <div class="story-swatch-row">
+      <div class="story-swatch-row story-draw-colors" aria-label="Drawing color">
+        <button class="story-draw-sampler" data-action="story-draw-eyedropper" aria-label="Sample a color">${icon('eyedropper')}</button>
         ${colors.map((color) => `<button class="${editor.drawColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="story-draw-color" data-color="${color}" aria-label="Draw color"></button>`).join('')}
+        <label class="story-custom-color" title="Custom color" aria-label="Custom drawing color">
+          <input id="story-draw-custom-color" type="color" value="${esc(editor.drawColor || '#ffffff')}">
+        </label>
       </div>
-      <button class="story-undo-btn" data-action="undo-story-draw" aria-label="Undo last stroke">${icon('undo')}</button>
     `;
   }
 
@@ -1093,17 +1188,23 @@
 
   function renderStoryTopToolbar(editor, tools) {
     if (editor.textEditing) {
-      const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
       return `
-        <div class="story-top-bar story-text-topbar" data-stop-close>
+        <div class="story-top-bar story-mode-topbar story-text-topbar" data-stop-close>
           <button class="story-top-btn story-close-btn" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
-          <div class="story-top-tools">
-            <button class="story-top-btn" data-action="cycle-story-text-align" aria-label="Change alignment">${icon(alignIcon)}</button>
-            <button class="story-top-btn ${editor.textBgEnabled ? 'active' : ''}" data-action="story-text-bg" aria-label="Text background"><span class="story-aa">A</span></button>
-            <button class="story-top-btn ${editor.textFrame ? 'active' : ''}" data-action="story-text-frame" aria-label="Text frame"><span class="story-aa story-aa-frame">A</span></button>
-            <button class="story-top-btn ${editor.textAnimation !== 'none' ? 'active' : ''}" data-action="cycle-story-text-animation" aria-label="Text animation">${icon('sparkle')}</button>
-            <button class="story-done-btn" data-action="finish-story-tool">Done</button>
+          <button class="story-done-btn" data-action="finish-story-tool">Done</button>
+        </div>
+      `;
+    }
+    if (editor.activeTool === 'draw') {
+      return `
+        <div class="story-top-bar story-mode-topbar story-draw-topbar" data-stop-close>
+          <button class="story-top-btn story-undo-btn" data-action="undo-story-draw" aria-label="Undo last stroke">${icon('undo')}</button>
+          <div class="story-brush-row" aria-label="Drawing brush">
+            ${storyDrawBrushOptions().map(([brush, label, iconName]) => `
+              <button class="${(editor.drawBrush || 'pen') === brush ? 'active' : ''}" data-action="story-draw-brush" data-brush="${brush}" title="${label}" aria-label="${label}">${icon(iconName)}</button>
+            `).join('')}
           </div>
+          <button class="story-done-btn" data-action="finish-story-tool">Done</button>
         </div>
       `;
     }
@@ -1269,6 +1370,20 @@
     if (!live) overlay.textContent = editor.text || '';
     const size = document.getElementById('story-text-size');
     updateStoryRangeProgress(size, editor.textSize || 44);
+  }
+
+  function updateStoryTextComposerUi() {
+    const editor = state.storyEditor;
+    const current = document.querySelector('.story-text-composer');
+    if (!editor || !current) return;
+    const template = document.createElement('template');
+    template.innerHTML = storyTextToolPanel(editor).trim();
+    const next = template.content.firstElementChild;
+    if (!next) return;
+    current.replaceWith(next);
+    requestAnimationFrame(() => {
+      next.querySelector('.story-text-choice-rail > .active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+    });
   }
 
   function updateStoryTextTransformUi() {
@@ -2013,9 +2128,9 @@
     if (!editor) return '';
     const style = `filter:${storyFilterCss(editor.filter, editor)}; transform:${storyMediaTransformCss(editor)};`;
     const tools = [
-      ['text', 'Text', 'text'],
-      ['stickers', 'Stickers', 'stickers'],
       ['audio', 'Music', 'music'],
+      ['stickers', 'Stickers', 'stickers'],
+      ['text', 'Text', 'text'],
       ['draw', 'Draw', 'pen'],
       ['filter', 'Effects', 'sparkle'],
       ['more', 'More', 'more']
@@ -2062,7 +2177,7 @@
           </div>
         ` : ''}
         ${renderStoryFloatingTray(editor)}
-        ${editor.textEditing || ['stickers', 'audio'].includes(editor.activeTool) ? '' : `
+        ${editor.activeTool ? '' : `
           <div class="story-share-bar" data-stop-close>
             <button class="story-share-pill" data-action="publish-story">
               ${avatarHtml(state.me)}
@@ -2606,6 +2721,9 @@
       isBlankStory,
       activeTool: textEditing ? 'text' : initialTool,
       textEditing,
+      textPanel: 'font',
+      filterPanel: 'filters',
+      activeAdjustment: 'brightness',
       filter: 'normal',
       overlayEffect: 'none',
       brightness: 100,
@@ -2864,7 +2982,7 @@
     drawStoryStickersOnCanvas(ctx, editor, canvas.width, canvas.height);
     if (editor.text) {
       const textSize = clamp(Number(editor.textSize || 44), 22, 96) * 1.55;
-      ctx.font = `800 ${textSize}px ${storyTextFontCss(editor.textFont)}`;
+      ctx.font = `800 ${textSize}px ${storyTextFontCss(editor.textEffect === 'pixel' ? 'mono' : editor.textFont)}`;
       ctx.fillStyle = editor.textColor || '#ffffff';
       ctx.textAlign = ['left', 'center', 'right'].includes(editor.textAlign) ? editor.textAlign : 'center';
       ctx.textBaseline = 'middle';
@@ -2876,6 +2994,11 @@
         const rainbow = ctx.createLinearGradient(-430, 0, 430, 0);
         ['#ff304f', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#9f7cff'].forEach((color, index, colors) => rainbow.addColorStop(index / (colors.length - 1), color));
         ctx.fillStyle = rainbow;
+      }
+      if (editor.textEffect === 'shimmer') {
+        const shimmer = ctx.createLinearGradient(-430, 0, 430, 0);
+        ['#aeb4c2', '#ffffff', '#dbeafe', '#ffffff', '#aeb4c2'].forEach((color, index, colors) => shimmer.addColorStop(index / (colors.length - 1), color));
+        ctx.fillStyle = shimmer;
       }
       if (editor.textBgEnabled || editor.textFrame) drawCanvasTextBox(ctx, editor.text, textSize, editor);
       wrapCanvasText(ctx, editor.text, 0, 0, canvas.width - 150, textSize * 1.15, { stroke: editor.textEffect === 'outline' });
@@ -2984,6 +3107,18 @@
       ctx.shadowBlur = 30;
       return;
     }
+    if (editor.textEffect === 'sparkle') {
+      ctx.shadowColor = editor.textColor || '#ffffff';
+      ctx.shadowBlur = 26;
+      return;
+    }
+    if (editor.textEffect === 'pixel') {
+      ctx.shadowColor = 'rgba(255,60,121,.72)';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 6;
+      ctx.shadowOffsetY = 5;
+      return;
+    }
     if (editor.textEffect === 'lift') {
       ctx.shadowColor = 'rgba(0,0,0,.72)';
       ctx.shadowBlur = 2;
@@ -2999,7 +3134,7 @@
       ctx.lineJoin = 'round';
       return;
     }
-    if (editor.textEffect === 'rainbow') {
+    if (['rainbow', 'shimmer'].includes(editor.textEffect)) {
       ctx.shadowColor = 'rgba(0,0,0,.35)';
       ctx.shadowBlur = 10;
       return;
@@ -4229,6 +4364,14 @@
         storyStickerPointers.clear();
         renderApp();
       }
+      if (action === 'story-filter-panel') {
+        if (state.storyEditor) state.storyEditor.filterPanel = target.dataset.panel || 'filters';
+        renderApp();
+      }
+      if (action === 'story-adjustment-select') {
+        if (state.storyEditor) state.storyEditor.activeAdjustment = target.dataset.adjustment || 'brightness';
+        renderApp();
+      }
       if (action === 'story-filter') {
         if (state.storyEditor) state.storyEditor.filter = target.dataset.filter || 'normal';
         target.closest('.story-filter-carousel')?.querySelectorAll('[data-action="story-filter"]').forEach((button) => {
@@ -4275,7 +4418,8 @@
           const index = alignments.indexOf(state.storyEditor.textAlign || 'center');
           state.storyEditor.textAlign = alignments[(index + 1) % alignments.length];
         }
-        renderApp();
+        updateStoryTextUi();
+        updateStoryTextComposerUi();
       }
       if (action === 'cycle-story-text-animation') {
         if (state.storyEditor) {
@@ -4283,11 +4427,26 @@
           const index = animations.indexOf(state.storyEditor.textAnimation || 'none');
           state.storyEditor.textAnimation = animations[(index + 1) % animations.length];
         }
-        renderApp();
+        updateStoryTextUi();
+        updateStoryTextComposerUi();
+      }
+      if (action === 'story-text-panel') {
+        if (state.storyEditor) {
+          const panel = target.dataset.panel || 'font';
+          state.storyEditor.textPanel = state.storyEditor.textPanel === panel && panel !== 'font' ? 'font' : panel;
+        }
+        updateStoryTextComposerUi();
+      }
+      if (action === 'story-text-eyedropper') {
+        await sampleStoryColor('text');
+      }
+      if (action === 'story-draw-eyedropper') {
+        await sampleStoryColor('draw');
       }
       if (action === 'story-color') {
         if (state.storyEditor) state.storyEditor.textColor = target.dataset.color || '#ffffff';
-        renderApp();
+        updateStoryTextUi();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-bg-color') {
         if (state.storyEditor) {
@@ -4295,36 +4454,37 @@
           state.storyEditor.textBgEnabled = true;
         }
         updateStoryTextUi();
-        renderApp();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-font') {
         if (state.storyEditor) state.storyEditor.textFont = target.dataset.font || 'system';
-        renderApp();
+        updateStoryTextUi();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-text-align') {
         if (state.storyEditor) state.storyEditor.textAlign = target.dataset.align || 'center';
         updateStoryTextUi();
-        renderApp();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-text-bg') {
         if (state.storyEditor) state.storyEditor.textBgEnabled = !state.storyEditor.textBgEnabled;
         updateStoryTextUi();
-        renderApp();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-text-frame') {
         if (state.storyEditor) state.storyEditor.textFrame = !state.storyEditor.textFrame;
         updateStoryTextUi();
-        renderApp();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-text-effect') {
         if (state.storyEditor) state.storyEditor.textEffect = target.dataset.effect || 'shadow';
         updateStoryTextUi();
-        renderApp();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-text-animation') {
         if (state.storyEditor) state.storyEditor.textAnimation = target.dataset.animation || 'none';
         updateStoryTextUi();
-        renderApp();
+        updateStoryTextComposerUi();
       }
       if (action === 'story-draw-color') {
         if (state.storyEditor) state.storyEditor.drawColor = target.dataset.color || '#ffffff';
@@ -4773,6 +4933,10 @@
     if (event.target.id === 'story-text-custom-color' && state.storyEditor) {
       state.storyEditor.textColor = event.target.value || '#ffffff';
       updateStoryTextUi();
+      return;
+    }
+    if (event.target.id === 'story-draw-custom-color' && state.storyEditor) {
+      state.storyEditor.drawColor = event.target.value || '#ffffff';
       return;
     }
     if (event.target.id === 'story-sticker-search' && state.storyEditor) {
