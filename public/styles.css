@@ -2226,7 +2226,10 @@ a {
 
 .story-editor-page {
   position: fixed;
-  inset: 0;
+  inset: auto 0 auto;
+  top: var(--viewport-top);
+  width: 100%;
+  height: var(--app-height);
   z-index: 80;
   background: #020305;
   overflow: hidden;
@@ -2296,7 +2299,7 @@ a {
 }
 
 .story-top-bar {
-  position: fixed;
+  position: absolute;
   left: max(10px, env(safe-area-inset-left));
   right: max(10px, env(safe-area-inset-right));
   top: max(10px, env(safe-area-inset-top));
@@ -2358,7 +2361,7 @@ a {
 }
 
 .story-floating-tray {
-  position: fixed;
+  position: absolute;
   left: max(10px, env(safe-area-inset-left));
   right: max(10px, env(safe-area-inset-right));
   bottom: calc(74px + env(safe-area-inset-bottom));
@@ -2374,7 +2377,7 @@ a {
 }
 
 .story-size-control {
-  position: fixed;
+  position: absolute;
   left: calc(14px + env(safe-area-inset-left));
   top: 50%;
   z-index: 8;
@@ -2481,7 +2484,7 @@ a {
 }
 
 .story-post-btn {
-  position: fixed;
+  position: absolute;
   right: max(12px, env(safe-area-inset-right));
   bottom: max(14px, env(safe-area-inset-bottom));
   z-index: 5;
@@ -2678,7 +2681,7 @@ a {
 }
 
 .story-object-trash {
-  position: fixed;
+  position: absolute;
   left: 50%;
   bottom: calc(68px + env(safe-area-inset-bottom));
   z-index: 8;
@@ -2791,7 +2794,7 @@ a {
 }
 
 .story-floating-tray {
-  position: fixed;
+  position: absolute;
   inset: auto;
   z-index: 7;
   pointer-events: none;
@@ -2857,7 +2860,7 @@ a {
 }
 
 .story-share-bar {
-  position: fixed;
+  position: absolute;
   left: max(14px, env(safe-area-inset-left));
   right: max(14px, env(safe-area-inset-right));
   bottom: calc(10px + env(safe-area-inset-bottom));
@@ -3435,7 +3438,7 @@ a {
 }
 
 .story-sticker-sheet {
-  position: fixed;
+  position: absolute;
   left: 50%;
   bottom: 0;
   width: min(560px, 100%);

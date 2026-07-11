@@ -386,6 +386,14 @@
     messages.scrollTop = snapshot.top;
   }
 
+  function centerStoryActiveChoice(root = document) {
+    const rail = root.querySelector?.('.story-text-choice-rail');
+    const active = rail?.querySelector('.active');
+    if (!rail || !active) return;
+    const left = active.offsetLeft - (rail.clientWidth - active.offsetWidth) / 2;
+    rail.scrollTo({ left: Math.max(0, left), behavior: 'auto' });
+  }
+
   function renderApp(options = {}) {
     const scrollSnapshot = captureMessagesScroll();
     const scrollMode = options.scroll || 'preserve';
@@ -410,9 +418,10 @@
       resizeComposerInput();
       if (state.storyEditor?.textEditing) {
         const storyText = document.getElementById('story-editor-text');
-        storyText?.focus();
+        storyText?.focus({ preventScroll: true });
         storyText?.setSelectionRange?.(storyText.value.length, storyText.value.length);
-        document.querySelector('.story-text-choice-rail > .active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+        resizeStoryTextInput(storyText);
+        centerStoryActiveChoice();
       }
       if (state.highlightMessageId) scrollHighlightedMessage();
       else if (scrollMode === 'bottom') scrollMessagesToBottom();
@@ -1360,6 +1369,16 @@
     if (options[1]) options[1].textContent = editor.pollOptionB || 'No';
   }
 
+  function resizeStoryTextInput(textarea = document.getElementById('story-editor-text')) {
+    if (!textarea || textarea.tagName !== 'TEXTAREA') return;
+    const viewportHeight = window.visualViewport?.height || window.innerHeight;
+    const maxHeight = Math.max(72, Math.round(viewportHeight * 0.46));
+    textarea.style.height = 'auto';
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }
+
   function updateStoryTextUi() {
     const editor = state.storyEditor;
     const overlay = document.querySelector('.story-draggable-text, .story-live-text');
@@ -1368,6 +1387,7 @@
     const live = overlay.classList.contains('story-live-text');
     overlay.className = `${live ? 'story-live-text' : 'story-draggable-text'} ${storyTextClass(editor)}`;
     if (!live) overlay.textContent = editor.text || '';
+    if (live) resizeStoryTextInput(overlay);
     const size = document.getElementById('story-text-size');
     updateStoryRangeProgress(size, editor.textSize || 44);
   }
@@ -1382,7 +1402,7 @@
     if (!next) return;
     current.replaceWith(next);
     requestAnimationFrame(() => {
-      next.querySelector('.story-text-choice-rail > .active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+      centerStoryActiveChoice(next);
     });
   }
 
@@ -1397,6 +1417,7 @@
       overlay.style.top = `${clamp(Number(editor.textY || 50), 5, 95)}%`;
       overlay.style.transform = `translate(-50%,-50%) rotate(${clamp(Number(editor.textRotation || 0), -180, 180)}deg)`;
       overlay.style.fontSize = `${clamp(Number(editor.textSize || 44), 22, 96)}px`;
+      if (overlay.classList.contains('story-live-text')) resizeStoryTextInput(overlay);
       updateStoryRangeProgress(document.getElementById('story-text-size'), editor.textSize || 44);
     });
   }
@@ -4926,8 +4947,7 @@
     if (event.target.id === 'story-editor-text' && state.storyEditor) {
       state.storyEditor.text = event.target.value.slice(0, 120);
       event.target.cols = storyTextColumns(state.storyEditor.text);
-      event.target.style.height = 'auto';
-      event.target.style.height = `${Math.min(event.target.scrollHeight, window.innerHeight * 0.46)}px`;
+      resizeStoryTextInput(event.target);
       return;
     }
     if (event.target.id === 'story-text-custom-color' && state.storyEditor) {
@@ -5111,7 +5131,19 @@
       return;
     }
 
-    const storyText = event.target.closest('[data-action="story-text-drag"]');
+    const storyPreview = event.target.closest('.story-editor-preview');
+    const directStoryText = event.target.closest('[data-action="story-text-drag"]');
+    if (state.storyEditor && directStoryText && !storyTextPointers.size && storyMediaPointers.size === 1) {
+      storyMediaPointers.forEach((point, pointerId) => storyTextPointers.set(pointerId, point));
+      storyMediaPointers.clear();
+      state.storyMediaDrag = null;
+      state.storyMediaGesture = null;
+    }
+    const continuingTextGesture = storyTextPointers.size > 0 && storyPreview &&
+      !event.target.closest('button,input,textarea,a,audio,video');
+    const storyText = directStoryText || (continuingTextGesture
+      ? document.querySelector('.story-draggable-text, .story-live-text')
+      : null);
     if (state.storyEditor && storyText) {
       const canvas = storyText.closest('.story-editor-preview');
       const rect = canvas?.getBoundingClientRect();
@@ -5138,7 +5170,6 @@
             y: Number(state.storyEditor.textY || 50),
             rect
           };
-          storyText.blur?.();
           pointerIds.forEach((pointerId) => capturePointer(storyText, pointerId));
           document.getElementById('story-object-trash')?.classList.remove('visible', 'active');
         } else {
@@ -5162,7 +5193,6 @@
       return;
     }
 
-    const storyPreview = event.target.closest('.story-editor-preview');
     if (state.storyEditor?.activeTool === 'draw' && storyPreview && !event.target.closest('button,input,textarea,a,audio,video')) {
       event.preventDefault();
       const rect = storyPreview.getBoundingClientRect();
@@ -5352,7 +5382,6 @@
         if (drag.pending && Math.hypot(dx, dy) < 7) return;
         if (drag.pending) {
           drag.pending = false;
-          drag.element?.blur?.();
           capturePointer(drag.element, event.pointerId);
           document.getElementById('story-object-trash')?.classList.add('visible');
         }
@@ -5574,6 +5603,12 @@
     state.edgeSwipe = null;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;
+  });
+
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach((eventName) => {
+    document.addEventListener(eventName, (event) => {
+      if (state.storyEditor && event.target.closest?.('.story-editor-preview')) event.preventDefault();
+    }, { passive: false });
   });
 
   document.addEventListener('wheel', (event) => {

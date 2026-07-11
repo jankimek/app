@@ -106,6 +106,7 @@ async function sendMessage(client, peerId, body) {
 
 test('story size controls stay inside the editor gesture boundary', () => {
   const clientSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
+  const styleSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
   assert.match(clientSource, /class="story-size-control story-text-size-control"/);
@@ -116,10 +117,16 @@ test('story size controls stay inside the editor gesture boundary', () => {
   assert.doesNotMatch(clientSource, /story-option-strip story-text-style-strip/);
   assert.match(clientSource, /const storyMediaPointers = new Map\(\)/);
   assert.match(clientSource, /requestAnimationFrame\(\(\) =>/);
+  assert.match(clientSource, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(clientSource, /function resizeStoryTextInput/);
+  assert.match(clientSource, /function centerStoryActiveChoice/);
+  assert.match(clientSource, /const continuingTextGesture = storyTextPointers\.size > 0/);
   assert.match(clientSource, /state\.me && !state\.storyEditor && event\.clientX < 24/);
   assert.match(clientSource, /initialTool = null/);
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
   assert.match(clientSource, /class="story-effects-panel"/);
+  assert.match(styleSource, /\.story-editor-page \{[\s\S]*?top: var\(--viewport-top\)/);
+  assert.match(styleSource, /\.story-floating-tray \{[\s\S]*?position: absolute/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
