@@ -12,7 +12,8 @@ const PNG_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1
 const TEXT_DATA = 'data:text/plain;base64,SGVsbG8gZnJvbSBhIGRvY3VtZW50Lg==';
 const AUDIO_DATA = 'data:audio/wav;base64,UklGRg==';
 const VIDEO_DATA = 'data:video/mp4;base64,AAAAHGZ0eXBtcDQy';
-const GIF_DATA = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+const GIF_DATA = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+const SVG_DATA = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIj48dGV4dCB4PSIyNTYiIHk9IjI1NiI+SGk8L3RleHQ+PC9zdmc+';
 
 class ApiClient {
   constructor(baseUrl) {
@@ -148,6 +149,14 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="view-profile-picture"/);
   assert.match(clientSource, /data-action="change-profile-picture"/);
   assert.match(clientSource, /data-action="toggle-avatar-viewable"/);
+  assert.match(clientSource, /maxlength="8000"/);
+  assert.match(clientSource, /function renderChatCustomization/);
+  assert.match(clientSource, /function renderStickerCreator/);
+  assert.match(clientSource, /function buildTextStickerSvg/);
+  assert.match(clientSource, /function chatStickerPresets/);
+  assert.match(clientSource, /data-action="send-gif"/);
+  assert.match(clientSource, /gifId: payload\.gifId \|\| null/);
+  assert.match(clientSource, /class="nav-profile-avatar"/);
   assert.match(clientSource, /data-profile-setting="mentionPermission"/);
   assert.match(clientSource, /story-pick-media/);
   assert.match(clientSource, /function continueAvatarCropDrag/);
@@ -170,6 +179,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(styleSource, /\.profile-photo-editor/);
   assert.match(styleSource, /\.privacy-choice-row/);
   assert.match(styleSource, /\.profile-suggestion-section/);
+  assert.match(styleSource, /\.bottom-tab\[data-tab="chats"\]\.active svg path:first-child/);
+  assert.match(styleSource, /\.chat-customization-sheet/);
+  assert.match(styleSource, /\.sticker-creator-page/);
+  assert.match(styleSource, /\.chat-gif-grid/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -358,6 +371,28 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(connectedBob.data.user.isFollowing, true);
   assert.equal(connectedBob.data.user.followsViewer, true);
 
+  const defaultAppearance = await alice.request(`/api/chats/${bobUser.id}/appearance`);
+  assert.equal(defaultAppearance.status, 200);
+  assert.equal(defaultAppearance.data.settings.theme, 'midnight');
+  const customAppearance = await alice.request(`/api/chats/${bobUser.id}/appearance`, {
+    method: 'PATCH',
+    body: {
+      theme: 'custom',
+      background: 'dusk',
+      backgroundColor: '#170d1c',
+      mineColor: '#c24f82',
+      theirsColor: '#28323d'
+    }
+  });
+  assert.equal(customAppearance.status, 200);
+  assert.equal(customAppearance.data.settings.mineColor, '#c24f82');
+  assert.equal((await alice.request(`/api/chats/${bobUser.id}/appearance`)).data.settings.background, 'dusk');
+  assert.equal((await bob.request(`/api/chats/${aliceUser.id}/appearance`)).data.settings.theme, 'midnight');
+  const poolGifMessage = await sendMessage(alice, bobUser.id, { kind: 'gif', gifId: gifSubmission.data.gif.id });
+  assert.equal(poolGifMessage.status, 201);
+  assert.equal(poolGifMessage.data.message.kind, 'gif');
+  assert.equal((await bob.request(poolGifMessage.data.message.attachment.url)).status, 200);
+
   const unfollowBob = await alice.request(`/api/follows/${bobUser.id}`, { method: 'DELETE' });
   assert.equal(unfollowBob.status, 200);
   assert.equal(unfollowBob.data.user.isContact, true);
@@ -394,6 +429,10 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(textMessage.data.message.kind, 'text');
   assert.ok(!Number.isNaN(Date.parse(textMessage.data.message.createdAt)));
 
+  const longMessage = await sendMessage(alice, bobUser.id, { kind: 'text', text: 'x'.repeat(8000) });
+  assert.equal(longMessage.status, 201);
+  assert.equal(longMessage.data.message.text.length, 8000);
+
   const reply = await sendMessage(bob, aliceUser.id, {
     kind: 'text',
     text: 'Replying now',
@@ -417,13 +456,17 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
     { kind: 'document', file: { name: 'notes.txt', type: 'text/plain', dataUrl: TEXT_DATA } },
     { kind: 'voice', file: { name: 'voice.wav', type: 'audio/wav', dataUrl: AUDIO_DATA } },
     { kind: 'video', file: { name: 'clip.mp4', type: 'video/mp4', dataUrl: VIDEO_DATA } },
-    { kind: 'sticker', file: { name: 'sticker.png', type: 'image/png', dataUrl: PNG_DATA }, stickerId: 'local-sticker' }
+    { kind: 'gif', file: { name: 'reaction.gif', type: 'image/gif', dataUrl: GIF_DATA } },
+    { kind: 'sticker', file: { name: 'sticker.svg', type: 'image/svg+xml', dataUrl: SVG_DATA }, stickerId: 'local-sticker' }
   ];
+  let directGifMessage = null;
   for (const mediaCase of mediaCases) {
     const response = await sendMessage(alice, bobUser.id, mediaCase);
     assert.equal(response.status, 201);
     assert.equal(response.data.message.kind, mediaCase.kind);
+    if (mediaCase.kind === 'gif') directGifMessage = response.data.message;
   }
+  assert.equal((await bob.request(directGifMessage.attachment.url)).status, 200);
 
   assert.equal((await bob.request(imageMessage.data.message.attachment.metaUrl)).status, 200);
   assert.equal((await bob.request(imageMessage.data.message.attachment.downloadUrl)).status, 200);

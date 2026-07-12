@@ -42,6 +42,7 @@ const db = {
   sessions: readJson('sessions.json', {}),
   contacts: readJson('contacts.json', {}),
   follows: readJson('follows.json', {}),
+  chatSettings: readJson('chatSettings.json', {}),
   messages: readJson('messages.json', {}),
   files: readJson('files.json', {}),
   friendRequests: readJson('friendRequests.json', {}),
@@ -92,6 +93,10 @@ function saveContacts() {
 
 function saveFollows() {
   return saveJson('follows.json', db.follows);
+}
+
+function saveChatSettings() {
+  return saveJson('chatSettings.json', db.chatSettings);
 }
 
 function saveMessages() {
@@ -365,6 +370,34 @@ function ensureFollowList(userId) {
 
 function isFollowing(userId, targetId) {
   return (db.follows[userId] || []).includes(targetId);
+}
+
+const CHAT_THEMES = new Set(['midnight', 'dusk', 'ocean', 'aurora', 'graphite', 'rose', 'custom']);
+const CHAT_BACKGROUNDS = new Set(['midnight', 'dusk', 'ocean', 'aurora', 'graphite', 'rose', 'plain', 'custom']);
+const DEFAULT_CHAT_APPEARANCE = Object.freeze({
+  theme: 'midnight',
+  background: 'midnight',
+  backgroundColor: '#070a12',
+  mineColor: '#55339a',
+  theirsColor: '#182131'
+});
+
+function cleanHexColor(value, fallback) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || '')) ? String(value).toLowerCase() : fallback;
+}
+
+function cleanChatAppearance(value = {}) {
+  return {
+    theme: CHAT_THEMES.has(value.theme) ? value.theme : DEFAULT_CHAT_APPEARANCE.theme,
+    background: CHAT_BACKGROUNDS.has(value.background) ? value.background : DEFAULT_CHAT_APPEARANCE.background,
+    backgroundColor: cleanHexColor(value.backgroundColor, DEFAULT_CHAT_APPEARANCE.backgroundColor),
+    mineColor: cleanHexColor(value.mineColor, DEFAULT_CHAT_APPEARANCE.mineColor),
+    theirsColor: cleanHexColor(value.theirsColor, DEFAULT_CHAT_APPEARANCE.theirsColor)
+  };
+}
+
+function chatAppearanceFor(userId, peerId) {
+  return cleanChatAppearance(db.chatSettings[userId]?.[peerId] || {});
 }
 
 function addFollow(userId, targetId) {
@@ -1002,6 +1035,7 @@ function extensionForMime(mime) {
     'image/png': '.png',
     'image/gif': '.gif',
     'image/webp': '.webp',
+    'image/svg+xml': '.svg',
     'video/mp4': '.mp4',
     'video/webm': '.webm',
     'audio/webm': '.webm',
@@ -1968,6 +2002,23 @@ async function handleApi(req, res, pathname, query) {
     return res.end(JSON.stringify(payload, null, 2));
   }
 
+  const chatAppearanceMatch = /^\/api\/chats\/([^/]+)\/appearance$/.exec(pathname);
+  if (chatAppearanceMatch && ['GET', 'PATCH'].includes(req.method)) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const peer = db.users[decodeURIComponent(chatAppearanceMatch[1])];
+    if (!peer || !canViewChat(user.id, peer.id)) return sendError(res, 404, 'Chat not found.');
+    if (req.method === 'GET') return sendJson(res, 200, { settings: chatAppearanceFor(user.id, peer.id) });
+    const body = await readJsonBody(req);
+    if (!db.chatSettings[user.id]) db.chatSettings[user.id] = {};
+    db.chatSettings[user.id][peer.id] = cleanChatAppearance({
+      ...chatAppearanceFor(user.id, peer.id),
+      ...body
+    });
+    await saveChatSettings();
+    return sendJson(res, 200, { settings: db.chatSettings[user.id][peer.id] });
+  }
+
   const messageListMatch = /^\/api\/chats\/([^/]+)\/messages$/.exec(pathname);
   if (req.method === 'GET' && messageListMatch) {
     const user = await requireAuth(req, res);
@@ -1995,19 +2046,25 @@ async function handleApi(req, res, pathname, query) {
     const body = await readJsonBody(req);
     const chatId = chatIdFor(user.id, peer.id);
     const list = ensureChatMessages(chatId);
-    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker'].includes(body.kind) ? body.kind : 'text';
-    const text = cleanText(body.text || '', kind === 'text' ? 4000 : 500);
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(body.kind) ? body.kind : 'text';
+    const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
 
     let file = null;
-    if (body.file?.dataUrl) {
+    if (kind === 'gif' && body.gifId) {
+      const gif = db.gifs[cleanText(body.gifId || '', 120)];
+      if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
+      file = db.files[gif.fileId];
+    } else if (body.file?.dataUrl) {
       const incomingMime = mimeFromDataUrl(body.file.dataUrl);
       if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
       if (kind === 'video' && !incomingMime.startsWith('video/')) return sendError(res, 400, 'That file is not a video.');
       if (kind === 'voice' && !incomingMime.startsWith('audio/')) return sendError(res, 400, 'That file is not audio.');
-      file = await saveUpload(body.file, user.id, kind);
+      if (kind === 'sticker' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That sticker is not an image.');
+      if (kind === 'gif' && !['image/gif', 'image/webp'].includes(incomingMime)) return sendError(res, 400, 'Choose an animated GIF or WebP file.');
+      file = await saveUpload(body.file, user.id, kind === 'gif' ? 'message-gif' : kind);
     }
-    if (['image', 'video', 'document', 'voice', 'sticker'].includes(kind) && !file) {
+    if (['image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(kind) && !file) {
       return sendError(res, 400, 'This message type needs a file.');
     }
 
@@ -2032,7 +2089,7 @@ async function handleApi(req, res, pathname, query) {
       deletedAt: null,
       deletedBy: null
     };
-    if (file) {
+    if (file && file.scope !== 'gif') {
       file.messageId = message.id;
       await saveFiles();
     }

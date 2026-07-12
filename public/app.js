@@ -93,6 +93,11 @@
     storyViewer: null,
     mediaViewer: null,
     stickerPanel: false,
+    chatTrayTab: 'stickers',
+    chatGifQuery: '',
+    stickerCreator: null,
+    chatCustomizationOpen: false,
+    chatAppearance: defaultChatAppearance(),
     stickers: [],
     stickerMap: new Map(),
     replyTo: null,
@@ -289,6 +294,10 @@
       scissors: '<svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.6 8.5 11.4 7M8.6 15.5 20 8.5"/></svg>',
       volume: '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg>',
       fit: '<svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>',
+      palette: '<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.4a1.8 1.8 0 0 0 1.2-3.2 1.8 1.8 0 0 1 1.2-3.2H18A3 3 0 0 0 21 11.5 8.5 8.5 0 0 0 12 3Z"/><circle cx="7.5" cy="11" r=".8"/><circle cx="10" cy="7.5" r=".8"/><circle cx="14" cy="7.5" r=".8"/><circle cx="17" cy="10.5" r=".8"/></svg>',
+      gif: '<svg viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="3"/><path d="M8.5 10.5H6.8a2.3 2.3 0 0 0 0 4.6h1.7v-2H7M11.5 10.5v4.6M14.5 15.1v-4.6h3.2M14.5 12.7h2.6"/></svg>',
+      refresh: '<svg viewBox="0 0 24 24"><path d="M20 7v5h-5"/><path d="M19 12a7 7 0 1 0-2 5"/></svg>',
+      plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
       check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
@@ -297,9 +306,12 @@
   function navButton(tab, label, iconName) {
     const active = state.tab === tab || (state.tab === 'notifications' && tab === 'chats');
     const unreadDot = tab === 'chats' && hasUnreadMessages();
+    const symbol = tab === 'profile'
+      ? `<span class="nav-profile-avatar">${state.me?.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}</span>`
+      : icon(iconName);
     return `
       <button class="bottom-tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" title="${esc(label)}" aria-label="${esc(label)}">
-        ${icon(iconName)}
+        ${symbol}
         ${unreadDot ? '<span class="red-dot tab-dot"></span>' : ''}
       </button>
     `;
@@ -585,6 +597,8 @@
       <div id="story-editor-slot">${renderStoryEditor()}</div>
       <div id="story-viewer-slot">${renderStoryViewer()}</div>
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
+      <div id="chat-customization-slot">${renderChatCustomization()}</div>
+      <div id="sticker-creator-slot">${renderStickerCreator()}</div>
       <input id="avatar-input" type="file" accept="image/*" hidden>
       <input id="story-input" type="file" accept="image/*,video/*" hidden>
     `;
@@ -655,6 +669,14 @@
 
   function updateMediaViewerSlot() {
     return updateSlot('media-viewer-slot', renderMediaViewer());
+  }
+
+  function updateChatCustomizationSlot() {
+    return updateSlot('chat-customization-slot', renderChatCustomization());
+  }
+
+  function updateStickerCreatorSlot() {
+    return updateSlot('sticker-creator-slot', renderStickerCreator());
   }
 
   function updateRecommendationsSection() {
@@ -1182,6 +1204,168 @@
       ['flicker', 'Flicker'],
       ['pulse', 'Pulse']
     ];
+  }
+
+  function stickerCreatorDefaults() {
+    return {
+      text: '',
+      panel: 'font',
+      textFont: 'rounded',
+      textColor: '#ffffff',
+      textSize: 64,
+      textAlign: 'center',
+      textEffect: 'shadow',
+      textAnimation: 'none',
+      textBgEnabled: false,
+      textBgColor: '#111111',
+      textFrame: false
+    };
+  }
+
+  function stickerTextColors() {
+    return ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
+  }
+
+  function renderStickerCreatorChoices(editor) {
+    const panel = ['font', 'color', 'animation', 'effect'].includes(editor.panel) ? editor.panel : 'font';
+    if (panel === 'font') {
+      return storyTextFontOptions().map(([font, label]) => `
+        <button class="story-font-choice ${editor.textFont === font ? 'active' : ''}" data-action="sticker-creator-font" data-font="${font}" aria-label="${esc(label)} font">
+          <span style="font-family:${esc(storyTextFontCss(font))}">${esc(label)}</span>
+        </button>
+      `).join('');
+    }
+    if (panel === 'color') {
+      return `
+        ${stickerTextColors().map((color) => `<button class="story-color-choice ${editor.textColor === color ? 'active' : ''}" style="--swatch:${color}" data-action="sticker-creator-color" data-color="${color}" aria-label="Text color"></button>`).join('')}
+        <label class="story-color-choice story-custom-color" title="Custom text color" aria-label="Custom text color"><input id="sticker-creator-color" type="color" value="${esc(editor.textColor)}"></label>
+        <label class="sticker-bg-color-choice" title="Background color"><span>BG</span><input id="sticker-creator-bg-color" type="color" value="${esc(editor.textBgColor)}"></label>
+      `;
+    }
+    if (panel === 'effect') {
+      return storyTextEffectOptions().map(([effect, label]) => `
+        <button class="story-effect-choice ${(editor.textEffect || 'shadow') === effect ? 'active' : ''}" data-action="sticker-creator-effect" data-effect="${effect}">
+          <span class="story-text-option-preview text-effect-${effect}" style="color:${esc(editor.textColor)}">Aa</span><small>${esc(label)}</small>
+        </button>
+      `).join('');
+    }
+    return storyTextAnimationOptions().map(([animation, label]) => `
+      <button class="story-animation-choice ${(editor.textAnimation || 'none') === animation ? 'active' : ''}" data-action="sticker-creator-animation" data-animation="${animation}">
+        <span class="story-text-option-preview preview-${animation}">Aa</span><small>${esc(label)}</small>
+      </button>
+    `).join('');
+  }
+
+  function renderStickerCreator() {
+    const editor = state.stickerCreator;
+    if (!editor) return '';
+    const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
+    const background = editor.textBgEnabled ? hexToRgba(editor.textBgColor, 0.72) : 'transparent';
+    const frame = editor.textFrame ? '2px solid rgba(255,255,255,.9)' : '2px solid transparent';
+    return `
+      <div class="sticker-creator-page" data-action="close-sticker-creator">
+        <section class="sticker-creator-shell" data-stop-close>
+          <header class="sticker-creator-head">
+            <button class="icon-btn" data-action="close-sticker-creator" aria-label="Close">${icon('x')}</button>
+            <strong>Create sticker</strong>
+            <button class="sticker-save-btn" data-action="save-text-sticker" ${editor.text.trim() ? '' : 'disabled'}>Save</button>
+          </header>
+          <div class="sticker-creator-stage">
+            <span class="sticker-live-text ${esc(storyTextClass(editor))}" style="color:${esc(editor.textColor)};font-family:${esc(storyTextFontCss(editor.textFont))};font-size:${esc(editor.textSize)}px;text-align:${esc(editor.textAlign)};background:${esc(background)};border:${esc(frame)}">${esc(editor.text || 'Type your sticker')}</span>
+          </div>
+          <div class="sticker-creator-input-row">
+            <input id="sticker-creator-text" maxlength="80" value="${esc(editor.text)}" placeholder="Type your sticker" autocomplete="off">
+            <label class="sticker-size-control" aria-label="Sticker text size">${icon('text')}<input id="sticker-creator-size" type="range" min="32" max="96" step="1" value="${esc(editor.textSize)}"></label>
+          </div>
+          <div class="sticker-creator-choice-rail story-text-choice-rail story-${esc(editor.panel)}-choices">
+            ${renderStickerCreatorChoices(editor)}
+          </div>
+          <div class="sticker-creator-format-bar">
+            <button class="${editor.panel === 'font' ? 'active' : ''}" data-action="sticker-creator-panel" data-panel="font" aria-label="Fonts"><span class="story-aa">Aa</span></button>
+            <button class="${editor.panel === 'color' ? 'active' : ''}" data-action="sticker-creator-panel" data-panel="color" aria-label="Colors"><span class="story-color-wheel"></span></button>
+            <button class="${editor.panel === 'animation' ? 'active' : ''}" data-action="sticker-creator-panel" data-panel="animation" aria-label="Animations">${icon('play')}</button>
+            <button class="${editor.panel === 'effect' ? 'active' : ''}" data-action="sticker-creator-panel" data-panel="effect" aria-label="Effects">${icon('sparkle')}</button>
+            <button data-action="cycle-sticker-align" aria-label="Change alignment">${icon(alignIcon)}</button>
+            <button class="${editor.textBgEnabled ? 'active' : ''}" data-action="toggle-sticker-bg" aria-label="Text background"><span class="story-aa">A</span></button>
+            <button class="${editor.textFrame ? 'active' : ''}" data-action="toggle-sticker-frame" aria-label="Text frame"><span class="story-aa story-aa-frame">A</span></button>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  function xmlEsc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
+    }[char]));
+  }
+
+  function stickerTextLines(value, size) {
+    const maxChars = Math.max(6, Math.floor(900 / Math.max(32, Number(size || 64))));
+    const words = String(value || '').trim().split(/\s+/).filter(Boolean);
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+      const parts = word.length > maxChars ? word.match(new RegExp(`.{1,${maxChars}}`, 'g')) : [word];
+      for (const part of parts) {
+        const candidate = line ? `${line} ${part}` : part;
+        if (candidate.length > maxChars && line) {
+          lines.push(line);
+          line = part;
+        } else {
+          line = candidate;
+        }
+      }
+    }
+    if (line) lines.push(line);
+    return (lines.length ? lines : ['Sticker']).slice(0, 4);
+  }
+
+  function buildTextStickerSvg(editor) {
+    const size = clamp(Number(editor.textSize || 64), 32, 96);
+    const lines = stickerTextLines(editor.text, size);
+    const lineHeight = size * 1.08;
+    const startY = 256 - ((lines.length - 1) * lineHeight) / 2;
+    const align = ['left', 'center', 'right'].includes(editor.textAlign) ? editor.textAlign : 'center';
+    const x = align === 'left' ? 64 : align === 'right' ? 448 : 256;
+    const anchor = align === 'left' ? 'start' : align === 'right' ? 'end' : 'middle';
+    const color = chatColor(editor.textColor, '#ffffff');
+    const background = chatColor(editor.textBgColor, '#111111');
+    const effect = storyTextEffectOptions().some(([value]) => value === editor.textEffect) ? editor.textEffect : 'shadow';
+    const animation = storyTextAnimationOptions().some(([value]) => value === editor.textAnimation) ? editor.textAnimation : 'none';
+    const fill = effect === 'rainbow' ? 'url(#rainbow)' : effect === 'shimmer' ? 'url(#shimmer)' : color;
+    const effectStyle = {
+      none: '',
+      shadow: 'filter:drop-shadow(0 10px 12px rgba(0,0,0,.72));',
+      glow: 'filter:url(#glow);',
+      neon: 'filter:url(#neon);',
+      sparkle: 'filter:url(#sparkle);',
+      shimmer: 'filter:drop-shadow(0 6px 10px rgba(0,0,0,.5));',
+      pixel: 'font-family:monospace;filter:drop-shadow(5px 5px 0 #ff3c79) drop-shadow(-5px -2px 0 #34d3ff);',
+      outline: 'paint-order:stroke fill;stroke:#08090c;stroke-width:13px;stroke-linejoin:round;',
+      lift: 'filter:drop-shadow(10px 13px 0 rgba(0,0,0,.68));',
+      rainbow: 'filter:drop-shadow(0 6px 10px rgba(0,0,0,.45));'
+    }[effect] || '';
+    const animationClass = animation === 'none' ? '' : `anim-${animation}`;
+    const tspans = lines.map((line, index) => `<tspan x="${x}" y="${startY + index * lineHeight}">${xmlEsc(line)}</tspan>`).join('');
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+      <defs>
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="neon" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="7" result="a"/><feFlood flood-color="#ff5fb8"/><feComposite in2="a" operator="in"/><feGaussianBlur stdDeviation="12" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="a"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="sparkle" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <linearGradient id="rainbow"><stop stop-color="#ff304f"/><stop offset=".2" stop-color="#ff8a00"/><stop offset=".4" stop-color="#ffd166"/><stop offset=".6" stop-color="#4fd2c2"/><stop offset=".8" stop-color="#00a8ff"/><stop offset="1" stop-color="#9f7cff"/></linearGradient>
+        <linearGradient id="shimmer"><stop stop-color="#9ca3af"/><stop offset=".42" stop-color="#ffffff"/><stop offset=".58" stop-color="#dbeafe"/><stop offset="1" stop-color="#9ca3af"><animate attributeName="offset" values=".7;1;.7" dur="1.5s" repeatCount="indefinite"/></stop></linearGradient>
+      </defs>
+      <style>
+        .sticker-text{transform-box:fill-box;transform-origin:center;}
+        .anim-fade{animation:a-fade 1.8s ease-in-out infinite}.anim-rise{animation:a-rise 1.8s ease-in-out infinite}.anim-pop{animation:a-pop 1.35s ease-in-out infinite}.anim-type{animation:a-type 1.8s steps(8,end) infinite}.anim-bounce{animation:a-bounce 1.2s ease-in-out infinite}.anim-flicker{animation:a-flicker 1.45s linear infinite}.anim-pulse{animation:a-pulse 1.3s ease-in-out infinite}
+        @keyframes a-fade{0%,100%{opacity:.35}50%{opacity:1}}@keyframes a-rise{0%,100%{transform:translateY(18px);opacity:.55}50%{transform:translateY(-8px);opacity:1}}@keyframes a-pop{0%,100%{transform:scale(.86)}50%{transform:scale(1.08)}}@keyframes a-type{0%,18%{opacity:0;letter-spacing:18px}55%,100%{opacity:1;letter-spacing:0}}@keyframes a-bounce{0%,100%{transform:translateY(0)}45%{transform:translateY(-20px)}65%{transform:translateY(5px)}}@keyframes a-flicker{0%,18%,22%,62%,66%,100%{opacity:1}20%,64%{opacity:.18}}@keyframes a-pulse{0%,100%{transform:scale(.94)}50%{transform:scale(1.06)}}
+      </style>
+      ${editor.textBgEnabled ? `<rect x="30" y="102" width="452" height="308" rx="52" fill="${background}" fill-opacity=".76"/>` : ''}
+      ${editor.textFrame ? '<rect x="24" y="96" width="464" height="320" rx="58" fill="none" stroke="#ffffff" stroke-opacity=".88" stroke-width="7"/>' : ''}
+      <text class="sticker-text ${animationClass}" text-anchor="${anchor}" dominant-baseline="middle" fill="${fill}" font-family="${xmlEsc(storyTextFontCss(editor.textFont))}" font-size="${size}" font-weight="800" style="${effectStyle}">${tspans}</text>
+      ${effect === 'sparkle' ? '<g fill="#fff"><circle cx="92" cy="142" r="8"/><circle cx="426" cy="172" r="6"/><circle cx="402" cy="376" r="9"/><circle cx="116" cy="382" r="5"/></g>' : ''}
+    </svg>`;
   }
 
   function storyTextToolPanel(editor) {
@@ -2452,6 +2636,119 @@
     `;
   }
 
+  function defaultChatAppearance() {
+    return {
+      theme: 'midnight',
+      background: 'midnight',
+      backgroundColor: '#070a12',
+      mineColor: '#55339a',
+      theirsColor: '#182131'
+    };
+  }
+
+  function chatThemePresets() {
+    return [
+      ['midnight', 'Midnight', '#55339a', '#182131', 'midnight', '#070a12'],
+      ['dusk', 'Dusk', '#b73f76', '#35213d', 'dusk', '#160d1c'],
+      ['ocean', 'Ocean', '#177fa4', '#173245', 'ocean', '#07151c'],
+      ['aurora', 'Aurora', '#23836f', '#293844', 'aurora', '#081713'],
+      ['graphite', 'Graphite', '#4f5968', '#20242b', 'graphite', '#0b0d11'],
+      ['rose', 'Rose', '#bd4c69', '#39232d', 'rose', '#180d12']
+    ];
+  }
+
+  function chatBackgroundOptions() {
+    return [
+      ['plain', 'Plain', '#080b10'],
+      ['midnight', 'Midnight', '#111a2e'],
+      ['dusk', 'Dusk', '#3b1d3e'],
+      ['ocean', 'Ocean', '#0d3444'],
+      ['aurora', 'Aurora', '#123c34'],
+      ['graphite', 'Graphite', '#242932'],
+      ['rose', 'Rose', '#45202e']
+    ];
+  }
+
+  function chatColor(value, fallback) {
+    return /^#[0-9a-f]{6}$/i.test(String(value || '')) ? value : fallback;
+  }
+
+  function readableTextColor(hex) {
+    const value = parseInt(chatColor(hex, '#000000').slice(1), 16);
+    const luminance = (((value >> 16) & 255) * 299 + ((value >> 8) & 255) * 587 + (value & 255) * 114) / 1000;
+    return luminance > 160 ? '#080b10' : '#f7f8fb';
+  }
+
+  function chatAppearanceStyle(settings = state.chatAppearance) {
+    const defaults = defaultChatAppearance();
+    const backgroundColor = chatColor(settings?.backgroundColor, defaults.backgroundColor);
+    const mineColor = chatColor(settings?.mineColor, defaults.mineColor);
+    const theirsColor = chatColor(settings?.theirsColor, defaults.theirsColor);
+    return `--chat-bg:${backgroundColor};--chat-mine:${mineColor};--chat-mine-text:${readableTextColor(mineColor)};--chat-theirs:${theirsColor};--chat-theirs-text:${readableTextColor(theirsColor)};`;
+  }
+
+  function renderChatCustomization() {
+    if (!state.chatCustomizationOpen || !state.activePeer) return '';
+    const settings = { ...defaultChatAppearance(), ...(state.chatAppearance || {}) };
+    return `
+      <div class="chat-customization-overlay" data-action="close-chat-customization">
+        <section class="chat-customization-sheet" data-stop-close>
+          <header class="chat-customization-head">
+            <button class="icon-btn" data-action="close-chat-customization" aria-label="Close">${icon('x')}</button>
+            <span><strong>Chat appearance</strong><small>@${esc(state.activePeer.username)}</small></span>
+            <button class="icon-btn" data-action="reset-chat-appearance" aria-label="Reset appearance">${icon('refresh')}</button>
+          </header>
+          <section class="chat-appearance-section">
+            <h3>Theme</h3>
+            <div class="chat-theme-grid">
+              ${chatThemePresets().map(([theme, label, mine, theirs, background]) => `
+                <button class="chat-theme-choice ${settings.theme === theme ? 'active' : ''}" data-action="set-chat-theme" data-theme="${theme}" aria-label="${esc(label)} theme">
+                  <span class="theme-preview" style="--theme-mine:${mine};--theme-theirs:${theirs}" aria-hidden="true"><i></i><i></i></span>
+                  <small>${esc(label)}</small>
+                  ${settings.theme === theme ? icon('check') : ''}
+                </button>
+              `).join('')}
+            </div>
+          </section>
+          <section class="chat-appearance-section">
+            <h3>Background</h3>
+            <div class="chat-background-row">
+              ${chatBackgroundOptions().map(([background, label, color]) => `
+                <button class="chat-background-choice chat-background-${background} ${settings.background === background ? 'active' : ''}" data-action="set-chat-background" data-background="${background}" style="--choice-bg:${color}" aria-label="${esc(label)} background"><span></span><small>${esc(label)}</small></button>
+              `).join('')}
+              <label class="chat-background-choice custom-background ${settings.background === 'custom' ? 'active' : ''}" aria-label="Custom background color">
+                <input id="chat-background-color" type="color" value="${esc(settings.backgroundColor)}">
+                <span style="--choice-bg:${esc(settings.backgroundColor)}"></span><small>Custom</small>
+              </label>
+            </div>
+          </section>
+          <section class="chat-appearance-section bubble-color-section">
+            <h3>Message colors</h3>
+            <label class="chat-color-row"><span class="chat-color-preview mine" style="--preview-color:${esc(settings.mineColor)}">Aa</span><span><strong>Your messages</strong><small>Sent</small></span><input id="chat-mine-color" type="color" value="${esc(settings.mineColor)}"></label>
+            <label class="chat-color-row"><span class="chat-color-preview theirs" style="--preview-color:${esc(settings.theirsColor)}">Aa</span><span><strong>Their messages</strong><small>Received</small></span><input id="chat-theirs-color" type="color" value="${esc(settings.theirsColor)}"></label>
+          </section>
+        </section>
+      </div>
+    `;
+  }
+
+  async function updateChatAppearance(patch) {
+    if (!state.activePeer) return;
+    const data = await api(`/api/chats/${encodeURIComponent(state.activePeer.id)}/appearance`, { method: 'PATCH', body: patch });
+    state.chatAppearance = data.settings;
+    applyChatAppearanceUi();
+    updateChatCustomizationSlot();
+  }
+
+  function applyChatAppearanceUi() {
+    const pane = document.querySelector('.chat-pane.active-chat');
+    if (!pane) return;
+    for (const name of ['midnight', 'dusk', 'ocean', 'aurora', 'graphite', 'rose', 'plain', 'custom']) {
+      pane.classList.toggle(`chat-background-${name}`, state.chatAppearance?.background === name);
+    }
+    pane.setAttribute('style', chatAppearanceStyle());
+  }
+
   function renderChatPane() {
     if (state.searchProfileOpen && state.publicProfile) {
       return `
@@ -2480,7 +2777,7 @@
     if (state.chatProfileOpen) return renderChatProfilePane();
 
     return `
-      <main class="chat-pane ${state.chatReturnAnimation ? 'chat-returning' : ''}">
+      <main class="chat-pane active-chat chat-background-${esc(state.chatAppearance?.background || 'midnight')} ${state.chatReturnAnimation ? 'chat-returning' : ''}" style="${esc(chatAppearanceStyle())}">
         <header class="chat-header">
           <button class="icon-btn back-btn" title="Back" aria-label="Back" data-action="back">${icon('back')}</button>
           <button class="chat-profile-button" data-action="open-chat-profile">
@@ -2491,6 +2788,7 @@
             <small>@${esc(state.activePeer.username)}</small>
           </button>
           <div class="toolbar" style="margin-left:auto">
+            <button class="icon-btn" title="Chat appearance" aria-label="Chat appearance" data-action="open-chat-customization">${icon('palette')}</button>
             <button class="icon-btn" title="Voice call" aria-label="Voice call" data-action="audio-call">${icon('phone')}</button>
             <button class="icon-btn" title="Video call" aria-label="Video call" data-action="video-call">${icon('video')}</button>
           </div>
@@ -2510,7 +2808,7 @@
             <div class="composer-row">
               <button class="icon-btn" title="Attach file" aria-label="Attach file" data-action="attach-open">${icon('file')}</button>
               <button class="icon-btn" title="Stickers" aria-label="Stickers" data-action="sticker-toggle">${icon('sticker')}</button>
-              <textarea id="composer-text" class="composer-input" rows="1" placeholder="Message ${esc(state.activePeer.displayName)}">${esc(state.composerDrafts[state.activePeer.id] || '')}</textarea>
+              <textarea id="composer-text" class="composer-input" rows="1" maxlength="8000" placeholder="Message ${esc(state.activePeer.displayName)}">${esc(state.composerDrafts[state.activePeer.id] || '')}</textarea>
               <button class="icon-btn" title="Hold to record voice" aria-label="Hold to record voice" data-action="record-voice">${icon('mic')}</button>
               <button class="primary send-btn" title="Send" aria-label="Send" data-action="send-text">${icon('send')}</button>
               <input id="file-input" type="file" hidden>
@@ -2603,7 +2901,7 @@
     const mine = message.senderId === state.me.id;
     const highlighted = state.highlightMessageId === message.id;
     const stickerMessage = message.kind === 'sticker' && !message.deletedAt;
-    const mediaMessage = ['image', 'video'].includes(message.kind) && message.attachment && !message.deletedAt;
+    const mediaMessage = ['image', 'video', 'gif'].includes(message.kind) && message.attachment && !message.deletedAt;
     return `
       <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''}" data-message-id="${esc(message.id)}">
         <div class="bubble">
@@ -2652,6 +2950,9 @@
   function renderMessageBody(message) {
     if (message.deletedAt) return '<div class="message-text">Message deleted</div>';
     const attachment = message.attachment;
+    if (message.kind === 'gif' && attachment) {
+      return `<img class="chat-gif" src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name || 'GIF')}" data-type="${esc(attachment.mime || 'image/gif')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
+    }
     if (message.kind === 'image' && attachment) {
       return `<img class="media-image" src="${esc(attachment.url)}" alt="${esc(attachment.name)}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name)}" data-type="${esc(attachment.mime || 'image/*')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
     }
@@ -2697,22 +2998,64 @@
     return `<div class="message-text">${esc(message.text || '')}</div>`;
   }
 
+  function presetStickerSvg(content, animation, from, to) {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${from}"/><stop offset="1" stop-color="${to}"/></linearGradient></defs><style>.p{transform-box:fill-box;transform-origin:center;animation:${animation} 1.25s ease-in-out infinite}@keyframes wave{0%,100%{transform:rotate(-12deg)}50%{transform:rotate(18deg)}}@keyframes pop{0%,100%{transform:scale(.9)}50%{transform:scale(1.08)}}@keyframes float{0%,100%{transform:translateY(14px)}50%{transform:translateY(-16px)}}@keyframes flicker{0%,100%{opacity:1}45%{opacity:.42}52%{opacity:1}58%{opacity:.2}}</style><circle cx="256" cy="256" r="204" fill="url(#g)" fill-opacity=".18"/><text class="p" x="256" y="278" text-anchor="middle" font-family="Arial Rounded MT Bold,Arial,sans-serif" font-size="184" font-weight="900" fill="#fff">${content}</text></svg>`)}`;
+  }
+
+  function chatStickerPresets() {
+    return [
+      { id: 'preset_wave', name: 'Wave', dataUrl: presetStickerSvg('&#x1F44B;', 'wave', '#00a8ff', '#6c63ff'), animated: true, preset: true },
+      { id: 'preset_heart', name: 'Heart', dataUrl: presetStickerSvg('&#x2764;', 'pop', '#ff304f', '#ff4fa3'), animated: true, preset: true },
+      { id: 'preset_fire', name: 'Fire', dataUrl: presetStickerSvg('&#x1F525;', 'float', '#ff8a00', '#ff304f'), animated: true, preset: true },
+      { id: 'preset_lol', name: 'LOL', dataUrl: presetStickerSvg('LOL', 'pop', '#4fd2c2', '#00a8ff'), animated: true, preset: true },
+      { id: 'preset_wow', name: 'WOW', dataUrl: presetStickerSvg('WOW', 'flicker', '#9f7cff', '#ff4fa3'), animated: true, preset: true },
+      { id: 'preset_hi', name: 'HI', dataUrl: presetStickerSvg('HI', 'float', '#23836f', '#4fd2c2'), animated: true, preset: true }
+    ];
+  }
+
+  function availableChatStickers() {
+    const presets = chatStickerPresets().map((preset) => state.stickerMap.get(preset.id) || preset);
+    const presetIds = new Set(presets.map((preset) => preset.id));
+    return [...presets, ...state.stickers.filter((sticker) => !presetIds.has(sticker.id))];
+  }
+
   function renderStickerPanel() {
+    const tab = state.chatTrayTab === 'gifs' ? 'gifs' : 'stickers';
+    const gifQuery = state.chatGifQuery.trim().toLowerCase();
+    const gifs = state.gifPool.filter((gif) => !gifQuery || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery));
     return `
-      <section class="sticker-panel">
-        <div class="toolbar">
-          <input class="search-input" id="sticker-text" placeholder="Create text sticker">
-          <button class="secondary" type="button" data-action="create-text-sticker">Create</button>
-          <button class="secondary" type="button" data-action="sticker-file-open">Image</button>
-          <input id="sticker-file-input" type="file" accept="image/*" hidden>
-        </div>
-        <div class="sticker-grid">
-          ${state.stickers.length ? state.stickers.map((sticker) => `
-            <button class="sticker-tile" title="${esc(sticker.name)}" data-action="send-sticker" data-sticker-id="${esc(sticker.id)}">
-              <img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}">
-            </button>
-          `).join('') : '<p class="hint">Create or download stickers to keep them on this device.</p>'}
-        </div>
+      <section class="sticker-panel chat-media-tray">
+        <header class="chat-tray-head">
+          <div class="chat-tray-tabs" role="tablist">
+            <button class="${tab === 'stickers' ? 'active' : ''}" data-action="set-chat-tray" data-tray="stickers" role="tab" aria-selected="${tab === 'stickers'}" aria-label="Stickers">${icon('sticker')}</button>
+            <button class="${tab === 'gifs' ? 'active' : ''}" data-action="set-chat-tray" data-tray="gifs" role="tab" aria-selected="${tab === 'gifs'}" aria-label="GIFs">${icon('gif')}</button>
+          </div>
+          <button class="icon-btn chat-tray-close" data-action="sticker-toggle" aria-label="Close">${icon('x')}</button>
+        </header>
+        ${tab === 'stickers' ? `
+          <div class="chat-tray-actions">
+            <button data-action="open-sticker-creator">${icon('text')}<span>Create</span></button>
+            <button data-action="sticker-file-open">${icon('file')}<span>Photo</span></button>
+            <input id="sticker-file-input" type="file" accept="image/*" hidden>
+          </div>
+          <div class="sticker-grid">
+            ${availableChatStickers().map((sticker) => `
+              <button class="sticker-tile ${sticker.animated ? 'animated-sticker' : ''}" title="${esc(sticker.name)}" data-action="send-sticker" data-sticker-id="${esc(sticker.id)}">
+                <img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}">${sticker.animated ? '<span class="animated-mark">GIF</span>' : ''}
+              </button>
+            `).join('')}
+          </div>
+        ` : `
+          <div class="chat-gif-search">
+            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIFs" autocomplete="off">
+            <button data-action="chat-gif-upload" aria-label="Upload GIF">${icon('plus')}</button>
+            <input id="chat-gif-input" type="file" accept="image/gif,image/webp" hidden>
+          </div>
+          <div class="chat-gif-grid">
+            ${state.gifPool.map((gif) => `<button data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}" ${gifQuery && !`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery) ? 'hidden' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}"></button>`).join('')}
+            <p class="chat-gif-empty" ${gifs.length ? 'hidden' : ''}>No approved GIFs found. Use + to send one from your device.</p>
+          </div>
+        `}
       </section>
     `;
   }
@@ -3318,8 +3661,12 @@
     state.hasOlderMessages = false;
     state.loadingOlderMessages = false;
     delete state.unreadByPeer[userId];
-    const data = await api(`/api/chats/${encodeURIComponent(userId)}/messages?limit=200`);
+    const [data, appearance] = await Promise.all([
+      api(`/api/chats/${encodeURIComponent(userId)}/messages?limit=200`),
+      api(`/api/chats/${encodeURIComponent(userId)}/appearance`).catch(() => ({ settings: defaultChatAppearance() }))
+    ]);
     state.messages = data.messages;
+    state.chatAppearance = appearance.settings || defaultChatAppearance();
     state.hasOlderMessages = Boolean(data.hasMore);
     renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
   }
@@ -4605,7 +4952,8 @@
       text: payload.text || '',
       replyTo: state.replyTo?.id || null,
       file: payload.file || null,
-      stickerId: payload.stickerId || null
+      stickerId: payload.stickerId || null,
+      gifId: payload.gifId || null
     };
     state.replyTo = null;
     const data = await api(`/api/chats/${encodeURIComponent(state.activePeer.id)}/messages`, {
@@ -5121,38 +5469,40 @@
     await loadStickers();
   }
 
-  async function createTextSticker() {
-    const input = document.getElementById('sticker-text');
-    const text = input?.value.trim();
-    if (!text) {
-      alert('Type sticker text first.');
-      return;
-    }
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext('2d');
-    const gradient = ctx.createLinearGradient(0, 0, 512, 512);
-    gradient.addColorStop(0, '#f4f7fb');
-    gradient.addColorStop(1, '#4fd2c2');
-    ctx.fillStyle = gradient;
-    roundedRect(ctx, 22, 22, 468, 468, 44);
-    ctx.fill();
-    ctx.fillStyle = '#061119';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '700 54px system-ui, sans-serif';
-    wrapCanvasText(ctx, text, 256, 256, 410, 64);
+  function createTextSticker() {
+    state.stickerCreator = stickerCreatorDefaults();
+    updateStickerCreatorSlot();
+    requestAnimationFrame(() => document.getElementById('sticker-creator-text')?.focus({ preventScroll: true }));
+  }
+
+  async function saveTextSticker() {
+    const editor = state.stickerCreator;
+    const text = editor?.text.trim();
+    if (!editor || !text) return;
+    const svg = buildTextStickerSvg(editor);
     const sticker = {
       id: `sticker_${cryptoRandom()}`,
       name: text.slice(0, 40),
-      dataUrl: canvas.toDataURL('image/png'),
-      createdAt: new Date().toISOString()
+      dataUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+      animated: editor.textAnimation !== 'none' || ['shimmer', 'sparkle', 'rainbow'].includes(editor.textEffect),
+      createdAt: new Date().toISOString(),
+      style: {
+        font: editor.textFont,
+        color: editor.textColor,
+        size: editor.textSize,
+        align: editor.textAlign,
+        effect: editor.textEffect,
+        animation: editor.textAnimation,
+        background: editor.textBgEnabled,
+        frame: editor.textFrame
+      }
     };
     await saveSticker(sticker);
-    if (input) input.value = '';
+    state.stickerCreator = null;
     state.stickerPanel = true;
-    renderApp();
+    state.chatTrayTab = 'stickers';
+    updateStickerCreatorSlot();
+    updateChatFooter();
   }
 
   async function createImageSticker(file) {
@@ -5230,11 +5580,29 @@
   }
 
   async function sendSticker(stickerId) {
-    const sticker = state.stickerMap.get(stickerId);
+    let sticker = state.stickerMap.get(stickerId) || chatStickerPresets().find((item) => item.id === stickerId);
     if (!sticker) return;
+    if (!state.stickerMap.has(sticker.id)) {
+      sticker = { ...sticker, createdAt: new Date().toISOString() };
+      await saveSticker(sticker);
+    }
     const blob = await (await fetch(sticker.dataUrl)).blob();
-    const file = new File([blob], `${sticker.name || 'sticker'}.png`, { type: blob.type || 'image/png' });
+    const type = blob.type || mimeFromDataUrl(sticker.dataUrl);
+    const extension = type.startsWith('image/svg') ? 'svg' : type.includes('gif') ? 'gif' : type.includes('webp') ? 'webp' : 'png';
+    const file = new File([blob], `${sticker.name || 'sticker'}.${extension}`, { type: type || 'image/png' });
     await sendFile(file, 'sticker', sticker.id);
+  }
+
+  async function sendGif(gifId) {
+    const gif = state.gifPool.find((item) => item.id === gifId);
+    if (!gif?.file?.url || !state.activePeer) return;
+    await sendMessage({
+      kind: 'gif',
+      text: '',
+      gifId: gif.id
+    });
+    state.stickerPanel = false;
+    updateChatFooter();
   }
 
   async function downloadSticker(messageId) {
@@ -5624,6 +5992,8 @@
     if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-media' && target.classList.contains('media-viewer') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-chat-customization' && target.classList.contains('chat-customization-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-sticker-creator' && target.classList.contains('sticker-creator-page') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
       if (action === 'auth-mode') {
@@ -5702,6 +6072,29 @@
         state.chatProfileSocialView = null;
         renderApp();
       }
+      if (action === 'open-chat-customization') {
+        state.chatCustomizationOpen = true;
+        updateChatCustomizationSlot();
+      }
+      if (action === 'close-chat-customization') {
+        state.chatCustomizationOpen = false;
+        updateChatCustomizationSlot();
+      }
+      if (action === 'reset-chat-appearance') {
+        await updateChatAppearance(defaultChatAppearance());
+      }
+      if (action === 'set-chat-theme') {
+        const preset = chatThemePresets().find(([theme]) => theme === target.dataset.theme);
+        if (preset) {
+          const [theme, , mineColor, theirsColor, background, backgroundColor] = preset;
+          await updateChatAppearance({ theme, mineColor, theirsColor, background, backgroundColor });
+        }
+      }
+      if (action === 'set-chat-background') {
+        const background = target.dataset.background;
+        const option = chatBackgroundOptions().find(([value]) => value === background);
+        if (option) await updateChatAppearance({ theme: 'custom', background, backgroundColor: option[2] });
+      }
       if (action === 'close-chat-profile') {
         state.chatProfileOpen = false;
         state.chatProfileSocialView = null;
@@ -5718,14 +6111,65 @@
         state.stickerPanel = !state.stickerPanel;
         updateChatFooter();
       }
+      if (action === 'set-chat-tray') {
+        state.chatTrayTab = target.dataset.tray === 'gifs' ? 'gifs' : 'stickers';
+        if (state.chatTrayTab === 'gifs') await loadGifPool();
+        updateChatFooter();
+      }
       if (action === 'sticker-file-open') {
         document.getElementById('sticker-file-input')?.click();
       }
-      if (action === 'create-text-sticker') {
-        await createTextSticker();
+      if (action === 'open-sticker-creator' || action === 'create-text-sticker') {
+        createTextSticker();
+      }
+      if (action === 'close-sticker-creator') {
+        state.stickerCreator = null;
+        updateStickerCreatorSlot();
+      }
+      if (action === 'save-text-sticker') {
+        await saveTextSticker();
+      }
+      if (action === 'sticker-creator-panel' && state.stickerCreator) {
+        state.stickerCreator.panel = target.dataset.panel || 'font';
+        updateStickerCreatorSlot();
+      }
+      if (action === 'sticker-creator-font' && state.stickerCreator) {
+        state.stickerCreator.textFont = target.dataset.font || 'system';
+        updateStickerCreatorSlot();
+      }
+      if (action === 'sticker-creator-color' && state.stickerCreator) {
+        state.stickerCreator.textColor = target.dataset.color || '#ffffff';
+        updateStickerCreatorSlot();
+      }
+      if (action === 'sticker-creator-effect' && state.stickerCreator) {
+        state.stickerCreator.textEffect = target.dataset.effect || 'shadow';
+        updateStickerCreatorSlot();
+      }
+      if (action === 'sticker-creator-animation' && state.stickerCreator) {
+        state.stickerCreator.textAnimation = target.dataset.animation || 'none';
+        updateStickerCreatorSlot();
+      }
+      if (action === 'cycle-sticker-align' && state.stickerCreator) {
+        const alignments = ['left', 'center', 'right'];
+        state.stickerCreator.textAlign = alignments[(alignments.indexOf(state.stickerCreator.textAlign) + 1) % alignments.length];
+        updateStickerCreatorSlot();
+      }
+      if (action === 'toggle-sticker-bg' && state.stickerCreator) {
+        state.stickerCreator.textBgEnabled = !state.stickerCreator.textBgEnabled;
+        updateStickerCreatorSlot();
+      }
+      if (action === 'toggle-sticker-frame' && state.stickerCreator) {
+        state.stickerCreator.textFrame = !state.stickerCreator.textFrame;
+        updateStickerCreatorSlot();
+      }
+      if (action === 'chat-gif-upload') {
+        document.getElementById('chat-gif-input')?.click();
       }
       if (action === 'send-sticker') {
         await sendSticker(target.dataset.stickerId);
+      }
+      if (action === 'send-gif') {
+        await sendGif(target.dataset.gifId);
       }
       if (action === 'download-sticker') {
         await downloadSticker(target.dataset.messageId);
@@ -6382,6 +6826,24 @@
         event.target.value = '';
         if (file) await createImageSticker(file);
       }
+      if (event.target.id === 'chat-gif-input') {
+        const file = event.target.files[0];
+        event.target.value = '';
+        if (file) {
+          await sendFile(file, 'gif');
+          state.stickerPanel = false;
+          updateChatFooter();
+        }
+      }
+      if (event.target.id === 'chat-background-color') {
+        await updateChatAppearance({ theme: 'custom', background: 'custom', backgroundColor: event.target.value });
+      }
+      if (event.target.id === 'chat-mine-color') {
+        await updateChatAppearance({ theme: 'custom', mineColor: event.target.value });
+      }
+      if (event.target.id === 'chat-theirs-color') {
+        await updateChatAppearance({ theme: 'custom', theirsColor: event.target.value });
+      }
       if (event.target.id === 'avatar-input') {
         const file = event.target.files[0];
         event.target.value = '';
@@ -6418,6 +6880,44 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.id === 'sticker-creator-text' && state.stickerCreator) {
+      state.stickerCreator.text = event.target.value.slice(0, 80);
+      const preview = document.querySelector('.sticker-live-text');
+      if (preview) preview.textContent = state.stickerCreator.text || 'Type your sticker';
+      const save = document.querySelector('.sticker-save-btn');
+      if (save) save.disabled = !state.stickerCreator.text.trim();
+      return;
+    }
+    if (event.target.id === 'sticker-creator-size' && state.stickerCreator) {
+      state.stickerCreator.textSize = Number(event.target.value || 64);
+      const preview = document.querySelector('.sticker-live-text');
+      if (preview) preview.style.fontSize = `${state.stickerCreator.textSize}px`;
+      return;
+    }
+    if (event.target.id === 'sticker-creator-color' && state.stickerCreator) {
+      state.stickerCreator.textColor = event.target.value || '#ffffff';
+      const preview = document.querySelector('.sticker-live-text');
+      if (preview) preview.style.color = state.stickerCreator.textColor;
+      return;
+    }
+    if (event.target.id === 'sticker-creator-bg-color' && state.stickerCreator) {
+      state.stickerCreator.textBgColor = event.target.value || '#111111';
+      state.stickerCreator.textBgEnabled = true;
+      updateStickerCreatorSlot();
+      return;
+    }
+    if (event.target.id === 'chat-gif-search') {
+      state.chatGifQuery = event.target.value.slice(0, 80);
+      const term = state.chatGifQuery.trim().toLowerCase();
+      let visible = 0;
+      document.querySelectorAll('.chat-gif-grid [data-search]').forEach((button) => {
+        button.hidden = Boolean(term && !String(button.dataset.search || '').includes(term));
+        if (!button.hidden) visible += 1;
+      });
+      const empty = document.querySelector('.chat-gif-empty');
+      if (empty) empty.hidden = visible > 0;
+      return;
+    }
     if (event.target.dataset.storyAdjust && state.storyEditor) {
       const name = event.target.dataset.storyAdjust;
       if (['brightness', 'contrast', 'saturation', 'warmth', 'fade', 'vignette', 'blur'].includes(name)) {
