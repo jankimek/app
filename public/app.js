@@ -59,6 +59,7 @@
     userSearching: false,
     searchProfileOpen: false,
     searchProfileSocialView: null,
+    profileReturnScroll: null,
     conversationQuery: '',
     conversationResults: [],
     conversationSearching: false,
@@ -202,6 +203,23 @@
     return match ? decodeURIComponent(match[1]) : null;
   }
 
+  function profilePath(username) {
+    return `/u/${encodeURIComponent(username || '')}`;
+  }
+
+  function captureNavigationView() {
+    return {
+      tab: state.tab,
+      lastTab: state.lastTab,
+      profileSocialView: state.profileSocialView,
+      chatProfileOpen: state.chatProfileOpen,
+      chatProfileSocialView: state.chatProfileSocialView,
+      searchProfileOpen: state.searchProfileOpen,
+      searchProfileSocialView: state.searchProfileSocialView,
+      publicProfileUsername: state.publicProfile?.username || null
+    };
+  }
+
   function initials(user) {
     const label = user?.displayName || user?.username || '?';
     return label.trim().slice(0, 2).toUpperCase();
@@ -324,6 +342,7 @@
     if (!state.me && publicName) {
       await loadPublicProfile(publicName);
       renderPublicScreen();
+      history.replaceState({ appManaged: true, route: 'profile', username: publicName }, '', location.href);
       return;
     }
 
@@ -340,13 +359,24 @@
       state.searchProfileOpen = Boolean(state.publicProfile);
     }
     renderApp();
+    history.replaceState({
+      appManaged: true,
+      route: publicName ? 'profile' : 'app',
+      username: publicName || null,
+      internalProfile: false,
+      view: captureNavigationView()
+    }, '', location.href);
     connectWs();
+  }
+
+  async function fetchPublicProfile(username) {
+    const data = await api(`/api/users/${encodeURIComponent(username)}`);
+    return data.user;
   }
 
   async function loadPublicProfile(username) {
     try {
-      const data = await api(`/api/users/${encodeURIComponent(username)}`);
-      state.publicProfile = data.user;
+      state.publicProfile = await fetchPublicProfile(username);
     } catch {
       state.publicProfile = null;
     }
@@ -391,21 +421,62 @@
 
   function renderPublicScreen() {
     const user = state.publicProfile;
-    app.innerHTML = `
-      <main class="public-screen">
-        <section class="public-box">
-          <div class="intro">
-            <div>
-              <h1>${user ? esc(user.displayName) : 'User not found'}</h1>
-              <p>${user ? esc(user.bio || `@${user.username}`) : 'This profile link does not match an account.'}</p>
-            </div>
-            ${user ? `<div class="feature-strip"><span>@${esc(user.username)}</span><span>Joined ${esc(formatTime(user.createdAt))}</span><span>${esc(location.origin + user.url)}</span></div>` : ''}
-          </div>
-          <div class="public-card">
-            ${user ? avatarHtml(user) : ''}
-            <h2>${user ? '@' + esc(user.username) : 'Open chat'}</h2>
-            <p class="hint">${user ? 'Log in to add this user and start chatting.' : 'Create an account or log in to search users.'}</p>
+    if (!user) {
+      app.innerHTML = `
+        <main class="public-profile-screen">
+          <section class="public-profile-page public-profile-missing">
+            <div class="auth-mark">${icon('profile')}</div>
+            <h1>User not found</h1>
+            <p class="hint">This profile link does not match an account.</p>
             <button class="primary" data-action="show-login">Log in or create account</button>
+          </section>
+        </main>
+      `;
+      return;
+    }
+    const highlights = (user.stories || []).filter((story) => story.saved && story.file);
+    app.innerHTML = `
+      <main class="public-profile-screen">
+        <section class="public-profile-page">
+          <header class="public-profile-header">
+            <strong>@${esc(user.username)}</strong>
+            <button class="public-login-btn" data-action="show-login">Log in</button>
+          </header>
+          <section class="public-profile-overview">
+            <span class="avatar big-avatar">${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}</span>
+            <div class="profile-stat-grid">
+              ${user.followersVisible ? `
+                <span class="profile-stat"><strong>${user.followerCount ?? 0}</strong><span>followers</span></span>
+                <span class="profile-stat"><strong>${user.followingCount ?? 0}</strong><span>following</span></span>
+              ` : '<span class="private-social-note">Private account</span>'}
+            </div>
+            <div class="profile-details">
+              <strong>${esc(user.displayName)}</strong>
+              ${user.bio ? `<p>${esc(user.bio)}</p>` : ''}
+            </div>
+          </section>
+          <button class="primary public-profile-cta" data-action="show-login">Log in to follow or message</button>
+          ${highlights.length ? `
+            <section class="highlight-strip public-highlights">
+              <div class="highlight-head"><strong>Highlights</strong></div>
+              <div class="highlight-row">
+                ${highlights.map((story) => `
+                  <article class="highlight-item">
+                    <span class="highlight-media">
+                      ${story.file.mime?.startsWith('video/')
+                        ? `<video src="${esc(story.file.url)}" muted playsinline preload="metadata"></video>`
+                        : `<img src="${esc(story.file.url)}" alt="">`}
+                    </span>
+                    <small>${esc(String(story.edits?.text || '').trim().slice(0, 16) || 'Highlight')}</small>
+                  </article>
+                `).join('')}
+              </div>
+            </section>
+          ` : ''}
+          <div class="public-profile-lock">
+            ${icon('lock')}
+            <strong>${user.socialPublic === false ? 'This account is private' : 'Join to see more'}</strong>
+            <small>${user.socialPublic === false ? 'Follow this account to see their stories.' : 'Log in to connect with this account.'}</small>
           </div>
         </section>
       </main>
@@ -462,10 +533,12 @@
   }
 
   function renderApp(options = {}) {
-    const scrollSnapshot = captureMessagesScroll();
+    const scrollSnapshot = Object.prototype.hasOwnProperty.call(options, 'scrollSnapshot')
+      ? options.scrollSnapshot
+      : captureMessagesScroll();
     const scrollMode = options.scroll || 'preserve';
     app.innerHTML = `
-      <div class="app-shell ${state.activePeer ? 'chat-open' : ''}">
+      <div class="app-shell ${state.activePeer ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -635,10 +708,18 @@
 
   function renderSearchPanel() {
     if (state.searchProfileOpen && state.publicProfile) {
-      return state.searchProfileSocialView
+      const profileView = state.searchProfileSocialView
         ? renderSearchProfileSocialPage(state.publicProfile)
         : renderSearchProfilePage(state.publicProfile);
+      return `
+        <div class="search-profile-mobile">${profileView}</div>
+        <div class="search-profile-desktop-context">${renderSearchBrowsePanel()}</div>
+      `;
     }
+    return renderSearchBrowsePanel();
+  }
+
+  function renderSearchBrowsePanel() {
     const recommendations = visibleRecommendations();
     const query = state.userQuery.trim();
     return `
@@ -670,6 +751,18 @@
     `;
   }
 
+  function renderProfileStats(user, action) {
+    if (!user.followersVisible) return '<span class="private-social-note">Private account</span>';
+    return `
+      <button type="button" class="social-stat-btn profile-stat" data-action="${esc(action)}" data-social="followers">
+        <strong>${user.followerCount ?? 0}</strong><span>followers</span>
+      </button>
+      <button type="button" class="social-stat-btn profile-stat" data-action="${esc(action)}" data-social="following">
+        <strong>${user.followingCount ?? 0}</strong><span>following</span>
+      </button>
+    `;
+  }
+
   function renderSearchProfilePage(user) {
     const story = activeProfileStory(user);
     return `
@@ -686,15 +779,12 @@
               <span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>
             </button>
           ` : `<span class="avatar big-avatar">${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}</span>`}
-          <div class="search-profile-copy">
+          <div class="profile-stat-grid">
+            ${renderProfileStats(user, 'open-search-social')}
+          </div>
+          <div class="search-profile-copy profile-details">
             <strong>${esc(user.displayName)}</strong>
-            <span>@${esc(user.username)}</span>
-            <div class="social-stats">
-              ${user.followersVisible
-                ? `<button type="button" class="social-stat-btn" data-action="open-search-social" data-social="followers"><strong>${user.followerCount ?? 0}</strong> followers</button><button type="button" class="social-stat-btn" data-action="open-search-social" data-social="following"><strong>${user.followingCount ?? 0}</strong> following</button>`
-                : '<span>Followers private</span>'}
-            </div>
-            ${user.bio ? `<p>${esc(user.bio)}</p>` : ''}
+            ${user.bio ? `<p>${esc(user.bio)}</p>` : '<p class="profile-empty-bio">No bio yet.</p>'}
           </div>
         </section>
         <div class="search-profile-actions">${renderSearchProfileActions(user)}</div>
@@ -710,14 +800,14 @@
       <section class="social-page">
         <header class="page-header">
           <button class="icon-btn" data-action="close-search-social" aria-label="Back">${icon('back')}</button>
-          <h2>${view === 'followers' ? 'Followers' : 'Following'}</h2>
+          <h2>@${esc(user.username)}</h2>
         </header>
         <div class="segmented social-switch is-${view}">
-          <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-search-social" data-social="followers">Followers</button>
-          <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-search-social" data-social="following">Following</button>
+          <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-search-social" data-social="followers"><strong>${user.followerCount ?? 0}</strong> Followers</button>
+          <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-search-social" data-social="following"><strong>${user.followingCount ?? 0}</strong> Following</button>
         </div>
         <div class="social-user-list">
-          ${users.length ? users.map((item) => renderAccountRow(item)).join('') : `<div class="empty-state">No ${view} yet.</div>`}
+          ${users.length ? users.map((item) => renderAccountRow(item, { social: true })).join('') : `<div class="empty-state">No ${view} yet.</div>`}
         </div>
       </section>
     `;
@@ -728,41 +818,32 @@
     const profileUrl = `${location.origin}/u/${state.me.username}`;
     const story = activeProfileStory(state.me);
     return `
-      <section class="profile-top-actions">
+      <header class="profile-page-header">
+        <strong>@${esc(state.me.username)}</strong>
         <button class="icon-btn" data-action="open-settings" aria-label="Settings">${icon('menu')}</button>
-      </section>
+      </header>
       <section class="profile-hero">
-        <div class="profile-avatar-wrap">
-          <button class="avatar profile-avatar-btn" data-action="${story ? 'view-story' : 'avatar-menu'}" ${story ? `data-story-id="${esc(story.id)}"` : ''} title="${story ? 'View your story' : 'Profile picture and story'}">
-            ${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}
-            ${story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : ''}
-          </button>
-          <button class="profile-avatar-add" data-action="avatar-menu" aria-label="Add story or change profile picture">+</button>
+        <div class="profile-avatar-column">
+          <div class="profile-avatar-wrap">
+            <button class="avatar profile-avatar-btn" data-action="${story ? 'view-story' : 'avatar-menu'}" ${story ? `data-story-id="${esc(story.id)}"` : ''} title="${story ? 'View your story' : 'Profile picture and story'}">
+              ${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}
+              ${story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : ''}
+            </button>
+            <button class="profile-avatar-add" data-action="avatar-menu" aria-label="Add story or change profile picture">+</button>
+          </div>
+          <button class="profile-link-icon" data-action="show-profile-link" data-link="${esc(profileUrl)}" aria-label="Share profile link">${icon('link')}</button>
         </div>
-        <div>
-          <strong>${esc(state.me.displayName)}</strong>
-          <span class="profile-username">@${esc(state.me.username)} <button class="icon-inline-btn" data-action="open-profile-edit" aria-label="Edit profile">${icon('edit')}</button></span>
-          <div class="social-stats">
-            <button type="button" class="social-stat-btn" data-action="open-social" data-social="followers"><strong>${state.me.followerCount ?? 0}</strong> followers</button>
-            <button type="button" class="social-stat-btn" data-action="open-social" data-social="following"><strong>${state.me.followingCount ?? 0}</strong> following</button>
-          </div>
+        <div class="profile-stat-grid">
+          ${renderProfileStats(state.me, 'open-social')}
+        </div>
+        <div class="profile-details">
+          <span class="profile-display-name"><strong>${esc(state.me.displayName)}</strong><button class="icon-inline-btn" data-action="open-profile-edit" aria-label="Edit profile">${icon('edit')}</button></span>
           ${state.me.bio ? `<p class="profile-bio">${esc(state.me.bio)}</p>` : ''}
-          <div class="toolbar profile-hero-actions">
-            <button class="mini-btn" data-action="show-profile-link" data-link="${esc(profileUrl)}">${icon('link')} Link</button>
-          </div>
         </div>
         <input id="avatar-input" type="file" accept="image/*" hidden>
         <input id="story-input" type="file" accept="image/*,video/*" hidden>
       </section>
       ${renderHighlights(state.me, true)}
-      <section class="profile-fill">
-        <h2>Activity</h2>
-        <div class="profile-activity-grid">
-          <span><strong>${state.contacts.length}</strong><small>friends</small></span>
-          <span><strong>${state.me.stories?.length || 0}</strong><small>stories</small></span>
-          <span><strong>${state.chats.length}</strong><small>chats</small></span>
-        </div>
-      </section>
       ${renderRecommendations()}
     `;
   }
@@ -775,23 +856,16 @@
       <section class="social-page">
         <header class="page-header">
           <button class="icon-btn" data-action="close-social" aria-label="Back">${icon('back')}</button>
-          <h2>${view === 'followers' ? 'Followers' : 'Following'}</h2>
+          <h2>@${esc(state.me.username)}</h2>
         </header>
         <div class="segmented social-switch is-${view}">
-          <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers">Followers</button>
-          <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-social" data-social="following">Following</button>
+          <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers"><strong>${state.me.followerCount ?? 0}</strong> Followers</button>
+          <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-social" data-social="following"><strong>${state.me.followingCount ?? 0}</strong> Following</button>
         </div>
         <div class="social-user-list">
-          ${users.length ? users.map((item) => `
-            <article class="person-card social-user-row">
-              ${avatarHtml(item)}
-              <span class="person">
-                <strong>${esc(item.displayName)}</strong>
-                <small>@${esc(item.username)}${item.bio ? ' - ' + esc(item.bio) : ''}</small>
-              </span>
-              <button class="mini-btn" data-action="${view === 'followers' ? 'remove-follower' : 'unfollow-user'}" data-user-id="${esc(item.id)}">${view === 'followers' ? 'Remove' : 'Unfollow'}</button>
-            </article>
-          `).join('') : `<div class="empty-state">${empty}</div>`}
+          ${users.length ? users.map((item) => renderSocialAccountRow(item, `
+            <button class="mini-btn account-action social-row-action" data-action="${view === 'followers' ? 'remove-follower' : 'unfollow-user'}" data-user-id="${esc(item.id)}">${view === 'followers' ? 'Remove' : 'Unfollow'}</button>
+          `)).join('') : `<div class="empty-state">${empty}</div>`}
         </div>
       </section>
     `;
@@ -810,10 +884,8 @@
             ${recommendations.length ? recommendations.map((user) => `
               <article class="recommend-card">
                 <button class="recommend-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>
-                ${avatarHtml(user)}
-                <strong>${esc(user.displayName)}</strong>
-                <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
-                <button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>
+                ${renderRecommendationIdentity(user)}
+                ${renderAccountAction(user)}
               </article>
             `).join('') : '<p class="hint">Friends of friends will appear here after you add more people.</p>'}
           </div>
@@ -2119,8 +2191,7 @@
               <button class="highlight-media" data-action="view-story" data-story-id="${esc(story.id)}">
                 ${renderStoryMedia(story, true)}
               </button>
-              ${renderStoryEngagement(story, true)}
-              <small>${esc(shortTime(story.createdAt))}</small>
+              <small>${esc(String(story.edits?.text || '').trim().slice(0, 16) || 'Highlight')}</small>
             </article>
           `).join('') || (own ? '' : '<p class="hint">Save a story to keep it here.</p>')}
         </div>
@@ -2177,28 +2248,39 @@
     return state.searchResults.map((user) => renderAccountRow(user)).join('');
   }
 
+  function accountProfileHref(user) {
+    return user?.url || profilePath(user?.username);
+  }
+
+  function renderAccountIdentity(user, className = 'account-identity') {
+    return `
+      <a class="${esc(className)}" href="${esc(accountProfileHref(user))}" data-action="view-user-profile" data-username="${esc(user.username)}">
+        ${avatarHtml(user)}
+        <span class="person">
+          <strong>${esc(user.displayName)}</strong>
+          <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
+        </span>
+      </a>
+    `;
+  }
+
   function renderAccountAction(user) {
     const knownUser = userById(user?.id) || user;
     if (!knownUser || knownUser.id === state.me?.id) return '<button class="mini-btn account-action" disabled>You</button>';
-    if (knownUser.isContact && !knownUser.isFollowing) return `<button class="mini-btn account-action primary-action" data-action="follow-user" data-user-id="${esc(knownUser.id)}">Follow</button>`;
-    if (knownUser.isContact) return `<button class="mini-btn account-action" data-action="open-chat" data-user-id="${esc(knownUser.id)}">Message</button>`;
-    if (knownUser.isFollowing) return `<button class="mini-btn account-action" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button>`;
-    if (knownUser.incomingRequest) return `<button class="mini-btn account-action primary-action" data-action="accept-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Accept</button>`;
-    if (knownUser.outgoingRequest) return '<button class="mini-btn account-action" disabled>Requested</button>';
     if (knownUser.hasBlocked || knownUser.blockedBy) return '<button class="mini-btn account-action" disabled>Blocked</button>';
-    return `<button class="mini-btn account-action primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Follow</button>`;
+    if (knownUser.isFollowing) return `<button class="mini-btn account-action" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button>`;
+    if (knownUser.socialPublic === false && !knownUser.isContact) {
+      if (knownUser.outgoingRequest) return '<button class="mini-btn account-action" disabled>Requested</button>';
+      if (knownUser.incomingRequest) return `<button class="mini-btn account-action primary-action" data-action="accept-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Accept</button>`;
+      return `<button class="mini-btn account-action primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Follow</button>`;
+    }
+    return `<button class="mini-btn account-action primary-action" data-action="follow-user" data-user-id="${esc(knownUser.id)}">Follow</button>`;
   }
 
   function renderAccountRow(user, options = {}) {
     return `
-      <article class="account-row">
-        <button class="account-identity" data-action="view-user-profile" data-username="${esc(user.username)}">
-          ${avatarHtml(user)}
-          <span class="person">
-            <strong>${esc(user.displayName)}</strong>
-            <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
-          </span>
-        </button>
+      <article class="account-row ${options.social ? 'social-user-row' : ''}">
+        ${renderAccountIdentity(user)}
         <span class="account-row-actions">
           ${renderAccountAction(user)}
           ${options.dismissible ? `<button class="account-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>` : ''}
@@ -2207,59 +2289,66 @@
     `;
   }
 
+  function renderSocialAccountRow(user, actionHtml = '') {
+    return `
+      <article class="account-row social-user-row">
+        ${renderAccountIdentity(user)}
+        <span class="account-row-actions">${actionHtml || renderAccountAction(user)}</span>
+      </article>
+    `;
+  }
+
+  function renderRecommendationIdentity(user) {
+    return `
+      <a class="recommend-identity" href="${esc(accountProfileHref(user))}" data-action="view-user-profile" data-username="${esc(user.username)}">
+        ${avatarHtml(user)}
+        <strong>${esc(user.displayName)}</strong>
+        <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
+      </a>
+    `;
+  }
+
   function renderSearchProfileActions(user) {
     const knownUser = userById(user?.id) || user;
     if (!knownUser || knownUser.id === state.me?.id) return '<button class="mini-btn" disabled>This is you</button>';
-    if (knownUser.isContact) {
-      return `
-        <button class="mini-btn profile-primary-action" data-action="open-chat" data-user-id="${esc(knownUser.id)}">Message</button>
-        ${knownUser.isFollowing
-          ? `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button>`
-          : `<button class="mini-btn" data-action="follow-user" data-user-id="${esc(knownUser.id)}">Follow</button>`}
-      `;
-    }
-    if (knownUser.isFollowing) {
-      return `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button><button class="mini-btn profile-primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Add friend</button>`;
-    }
+    if (knownUser.hasBlocked || knownUser.blockedBy) return '<button class="mini-btn" disabled>Blocked</button>';
     if (knownUser.incomingRequest) {
       return `
         <button class="mini-btn profile-primary-action" data-action="accept-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Accept</button>
         <button class="mini-btn" data-action="decline-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Decline</button>
       `;
     }
-    if (knownUser.outgoingRequest) return '<button class="mini-btn" disabled>Requested</button>';
-    if (knownUser.hasBlocked || knownUser.blockedBy) return '<button class="mini-btn" disabled>Blocked</button>';
-    return `<button class="mini-btn profile-primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Follow</button>`;
-  }
-
-  function renderPublicProfileCard(user) {
-    const isMe = user.id === state.me?.id;
-    let controls = '<button class="mini-btn" disabled>You</button>';
-    const reportControl = !isMe ? `<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>` : '';
-    if (!isMe) {
-      if (user.isContact) controls = `<button class="mini-btn" data-action="open-chat" data-user-id="${esc(user.id)}">Message</button>${user.isFollowing ? `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button>` : `<button class="mini-btn follow-btn" data-action="follow-user" data-user-id="${esc(user.id)}">Follow</button>`}`;
-      else if (user.isFollowing) controls = `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button><button class="mini-btn" data-action="add-contact" data-username="${esc(user.username)}">Add friend</button>`;
-      else if (user.incomingRequest) controls = `<button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button><button class="mini-btn" data-action="decline-request" data-request-id="${esc(user.incomingRequest.id)}">Decline</button>`;
-      else if (user.outgoingRequest) controls = '<button class="mini-btn" disabled>Requested</button>';
-      else if (user.hasBlocked || user.blockedBy) controls = '<button class="mini-btn" disabled>Blocked</button>';
-      else controls = `<button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button>`;
-    }
+    const privateRequest = knownUser.socialPublic === false && !knownUser.isContact && !knownUser.isFollowing;
+    const followControl = knownUser.isFollowing
+      ? `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button>`
+      : privateRequest
+        ? knownUser.outgoingRequest
+          ? '<button class="mini-btn" disabled>Requested</button>'
+          : `<button class="mini-btn profile-primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Follow</button>`
+        : `<button class="mini-btn profile-primary-action" data-action="follow-user" data-user-id="${esc(knownUser.id)}">Follow</button>`;
+    const contactControl = knownUser.isContact
+      ? `<button class="mini-btn" data-action="open-chat" data-user-id="${esc(knownUser.id)}">Message</button>`
+      : knownUser.outgoingRequest
+        ? '<button class="mini-btn" disabled>Friend requested</button>'
+        : `<button class="mini-btn" data-action="add-contact" data-username="${esc(knownUser.username)}">Add friend</button>`;
     return `
-      <article class="person-card">
-        ${avatarHtml(user)}
-        <span class="person">
-          <strong>${esc(user.displayName)}</strong>
-          <small>@${esc(user.username)}${user.bio ? ' - ' + esc(user.bio) : ''}</small>
-        </span>
-        <span class="toolbar">
-          ${controls}
-          ${reportControl}
-        </span>
-      </article>
+      ${followControl}
+      ${privateRequest ? '' : contactControl}
     `;
   }
 
   function renderChatPane() {
+    if (state.searchProfileOpen && state.publicProfile) {
+      return `
+        <main class="chat-pane searched-profile-pane">
+          <div class="searched-profile-scroll">
+            ${state.searchProfileSocialView
+              ? renderSearchProfileSocialPage(state.publicProfile)
+              : renderSearchProfilePage(state.publicProfile)}
+          </div>
+        </main>
+      `;
+    }
     if (!state.activePeer) {
       return `
         <main class="chat-pane">
@@ -2344,10 +2433,8 @@
             `}
             <strong>${esc(peer.displayName)}</strong>
             <span>@${esc(peer.username)}</span>
-            <div class="social-stats centered">
-              ${peer.followersVisible
-                ? `<button type="button" class="social-stat-btn" data-action="open-peer-social" data-social="followers"><strong>${peer.followerCount ?? 0}</strong> followers</button><button type="button" class="social-stat-btn" data-action="open-peer-social" data-social="following"><strong>${peer.followingCount ?? 0}</strong> following</button>`
-                : '<span>Followers private</span>'}
+            <div class="profile-stat-grid peer-profile-stats">
+              ${renderProfileStats(peer, 'open-peer-social')}
             </div>
             <p>${esc(peer.bio || 'No bio yet.')}</p>
             <div class="toolbar">
@@ -2395,19 +2482,11 @@
         </header>
         <section class="chat-profile-content">
           <div class="segmented social-switch is-${view}">
-            <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-peer-social" data-social="followers">Followers</button>
-            <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-peer-social" data-social="following">Following</button>
+            <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-peer-social" data-social="followers"><strong>${peer.followerCount ?? 0}</strong> Followers</button>
+            <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-peer-social" data-social="following"><strong>${peer.followingCount ?? 0}</strong> Following</button>
           </div>
           <div class="social-user-list">
-            ${users.length ? users.map((item) => `
-              <article class="person-card social-user-row">
-                ${avatarHtml(item)}
-                <span class="person">
-                  <strong>${esc(item.displayName)}</strong>
-                  <small>@${esc(item.username)}${item.bio ? ' - ' + esc(item.bio) : ''}</small>
-                </span>
-              </article>
-            `).join('') : `<div class="empty-state">${empty}</div>`}
+            ${users.length ? users.map((item) => renderAccountRow(item, { social: true })).join('') : `<div class="empty-state">${empty}</div>`}
           </div>
         </section>
       </main>
@@ -2461,17 +2540,7 @@
 
   function renderRelationshipButton(user) {
     if (!user || user.id === state.me?.id) return '<button class="mini-btn" disabled>You</button>';
-    if (user.isContact) return `${user.isFollowing ? `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button>` : `<button class="mini-btn follow-btn" data-action="follow-user" data-user-id="${esc(user.id)}">Follow</button>`}<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
-    if (user.isFollowing) return `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button><button class="mini-btn" data-action="add-contact" data-username="${esc(user.username)}">Add friend</button><button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
-    if (user.incomingRequest) {
-      return `
-        <button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button>
-        <button class="mini-btn" data-action="decline-request" data-request-id="${esc(user.incomingRequest.id)}">Decline</button>
-      `;
-    }
-    if (user.outgoingRequest) return '<button class="mini-btn" disabled>Requested</button>';
-    if (user.hasBlocked || user.blockedBy) return '<button class="mini-btn" disabled>Blocked</button>';
-    return `<button class="mini-btn follow-btn" data-action="add-contact" data-username="${esc(user.username)}">Follow</button><button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
+    return `${renderSearchProfileActions(user)}<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
   }
 
   function renderMessageBody(message) {
@@ -2545,11 +2614,13 @@
   function renderNotificationsPage() {
     const requests = state.requests.length ? state.requests.map((request) => `
       <article class="notification-row">
-        ${avatarHtml(request.from)}
-        <span class="person">
-          <strong>${esc(request.from.displayName)}</strong>
-          <small>@${esc(request.from.username)} requested to follow you</small>
-        </span>
+        <a class="notification-identity" href="${esc(accountProfileHref(request.from))}" data-action="view-user-profile" data-username="${esc(request.from.username)}">
+          ${avatarHtml(request.from)}
+          <span class="person">
+            <strong>${esc(request.from.displayName)}</strong>
+            <small>@${esc(request.from.username)} requested to add you</small>
+          </span>
+        </a>
         <span class="toolbar">
           <button class="mini-btn" data-action="accept-request" data-request-id="${esc(request.id)}">Accept</button>
           <button class="mini-btn danger" data-action="decline-request" data-request-id="${esc(request.id)}">Decline</button>
@@ -2559,11 +2630,15 @@
     const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention'].includes(note.type));
     const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
-        ${avatarHtml(note.actor)}
-        <span class="person">
-          <strong>${esc(note.actor?.displayName || 'Update')}</strong>
-          <small>${esc(note.text || note.type)} - ${esc(shortTime(note.createdAt))}</small>
-        </span>
+        ${note.actor ? `
+          <a class="notification-identity" href="${esc(accountProfileHref(note.actor))}" data-action="view-user-profile" data-username="${esc(note.actor.username)}">
+            ${avatarHtml(note.actor)}
+            <span class="person">
+              <strong>${esc(note.actor.displayName || 'Update')}</strong>
+              <small>${esc(note.text || note.type)} - ${esc(shortTime(note.createdAt))}</small>
+            </span>
+          </a>
+        ` : `<span class="person"><strong>Update</strong><small>${esc(note.text || note.type)} - ${esc(shortTime(note.createdAt))}</small></span>`}
       </article>
     `).join('') : '<p class="hint">Follower updates will appear here.</p>';
     return `
@@ -4480,7 +4555,7 @@
     if (trimmed.length < 2) {
       state.searchResults = [];
       state.userSearching = false;
-      renderApp();
+      renderSidebarState();
       setTimeout(focusUserSearch, 0);
       return;
     }
@@ -4488,16 +4563,70 @@
     if (searchId !== userSearchId || trimmed !== state.userQuery.trim()) return;
     state.searchResults = data.users || [];
     state.userSearching = false;
-    renderApp();
+    renderSidebarState();
     setTimeout(focusUserSearch, 0);
   }
 
-  async function openSearchProfile(username) {
-    await loadPublicProfile(username);
-    if (!state.publicProfile) throw new Error('User not found.');
+  async function restoreNavigationView(view) {
+    const returnScroll = state.profileReturnScroll;
+    const profileUsername = view?.publicProfileUsername || null;
+    state.tab = ['chats', 'search', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'search';
+    state.lastTab = ['chats', 'search', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
+    state.profileSocialView = view?.profileSocialView || null;
+    state.chatProfileOpen = Boolean(view?.chatProfileOpen && state.activePeer);
+    state.chatProfileSocialView = view?.chatProfileSocialView || null;
+    state.searchProfileOpen = Boolean(view?.searchProfileOpen && profileUsername);
+    state.searchProfileSocialView = view?.searchProfileSocialView || null;
+    state.publicProfile = state.searchProfileOpen ? await fetchPublicProfile(profileUsername) : null;
+    state.tabTransition = false;
+    renderApp({ scrollSnapshot: state.searchProfileOpen ? null : returnScroll });
+    if (!state.searchProfileOpen) state.profileReturnScroll = null;
+  }
+
+  async function openSearchProfile(username, options = {}) {
+    const user = await fetchPublicProfile(username);
+    if (!user) throw new Error('User not found.');
+    if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
+    if (options.pushHistory !== false) {
+      history.replaceState({
+        ...(history.state || {}),
+        appManaged: true,
+        view: captureNavigationView()
+      }, '', location.href);
+      history.pushState({
+        appManaged: true,
+        route: 'profile',
+        username: user.username,
+        internalProfile: true
+      }, '', profilePath(user.username));
+    }
+    state.lastTab = state.tab;
+    state.tab = 'search';
+    state.publicProfile = user;
     state.searchProfileOpen = true;
     state.searchProfileSocialView = null;
+    state.profileSocialView = null;
+    state.chatProfileOpen = false;
+    state.chatProfileSocialView = null;
+    state.tabTransition = false;
     renderApp();
+  }
+
+  function closeSearchProfileNavigation() {
+    if (!state.searchProfileOpen) return;
+    if (history.state?.internalProfile) {
+      history.back();
+      return;
+    }
+    state.searchProfileOpen = false;
+    state.searchProfileSocialView = null;
+    state.publicProfile = null;
+    state.tab = 'search';
+    state.tabTransition = false;
+    history.replaceState({ appManaged: true, route: 'app', view: captureNavigationView() }, '', '/');
+    const returnScroll = state.profileReturnScroll;
+    state.profileReturnScroll = null;
+    renderApp({ scrollSnapshot: returnScroll });
   }
 
   let conversationSearchId = 0;
@@ -4508,14 +4637,14 @@
     if (!trimmed) {
       state.conversationResults = [];
       state.conversationSearching = false;
-      renderApp();
+      renderSidebarState();
       return;
     }
     const data = await api(`/api/chats/search?q=${encodeURIComponent(trimmed)}`);
     if (searchId !== conversationSearchId || trimmed !== state.conversationQuery.trim()) return;
     state.conversationResults = data.results || [];
     state.conversationSearching = false;
-    renderApp();
+    renderSidebarState();
     const input = document.getElementById('conversation-search');
     if (input) {
       input.value = state.conversationQuery;
@@ -5173,6 +5302,11 @@
     return true;
   }
 
+  function renderSidebarState() {
+    if (!isMobileLayout() && state.activePeer && !state.searchProfileOpen && updateSidebar()) return;
+    renderApp();
+  }
+
   function updateChatFooter(options = {}) {
     const pane = document.querySelector('.chat-pane');
     const current = pane?.querySelector('footer');
@@ -5279,7 +5413,8 @@
   document.addEventListener('click', async (event) => {
     const target = event.target.closest('[data-action]');
     if (!target) return;
-    if (target.matches('button, a[href="#"]')) event.preventDefault();
+    if (target.matches('a[data-action]') && (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)) return;
+    if (target.matches('button, a[data-action]')) event.preventDefault();
     const action = target.dataset.action;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
@@ -5313,10 +5448,19 @@
       }
       if (action === 'tab') {
         const nextTab = target.dataset.tab;
+        const leavingPublicProfile = state.searchProfileOpen;
+        const profileReturnScroll = state.profileReturnScroll;
+        const wasChatProfileOpen = state.chatProfileOpen;
         state.lastTab = state.tab;
         state.tabTransition = nextTab !== state.tab;
         state.tabDirection = tabIndex(nextTab) < tabIndex(state.tab) ? 'left' : 'right';
         state.tab = nextTab;
+        if (leavingPublicProfile) {
+          state.searchProfileOpen = false;
+          state.searchProfileSocialView = null;
+          state.publicProfile = null;
+          history.replaceState({ appManaged: true, route: 'app' }, '', '/');
+        }
         if (isMobileLayout()) {
           state.activePeer = null;
           state.chatProfileOpen = false;
@@ -5326,7 +5470,11 @@
           state.chatProfileSocialView = null;
         }
         if (state.tab !== 'profile') state.profileSocialView = null;
-        renderApp();
+        const keepDesktopChat = !isMobileLayout() && state.activePeer && !wasChatProfileOpen && !leavingPublicProfile;
+        if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
+        else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
+        else renderApp();
+        if (leavingPublicProfile) state.profileReturnScroll = null;
       }
       if (action === 'open-chat') {
         if (state.longPressTriggered) {
@@ -5798,10 +5946,7 @@
         await openSearchProfile(target.dataset.username);
       }
       if (action === 'close-search-profile') {
-        state.searchProfileOpen = false;
-        state.searchProfileSocialView = null;
-        state.publicProfile = null;
-        renderApp();
+        closeSearchProfileNavigation();
       }
       if (action === 'open-search-social') {
         state.searchProfileSocialView = target.dataset.social === 'following' ? 'following' : 'followers';
@@ -5817,7 +5962,7 @@
         state.userQuery = '';
         state.userSearching = false;
         state.searchResults = [];
-        renderApp();
+        renderSidebarState();
         setTimeout(focusUserSearch, 0);
       }
       if (action === 'accept-request') {
@@ -6079,7 +6224,7 @@
         conversationSearchId += 1;
         state.conversationResults = [];
         state.conversationSearching = false;
-        renderApp();
+        renderSidebarState();
         const input = document.getElementById('conversation-search');
         if (input) {
           input.focus();
@@ -6088,7 +6233,7 @@
         return;
       }
       state.conversationSearching = true;
-      renderApp();
+      renderSidebarState();
       const input = document.getElementById('conversation-search');
       if (input) {
         input.focus();
@@ -6097,7 +6242,7 @@
       conversationTimer = setTimeout(() => {
         searchConversations(state.conversationQuery).catch((error) => {
           state.conversationSearching = false;
-          renderApp();
+          renderSidebarState();
           alert(error.message);
         });
       }, 220);
@@ -6268,12 +6413,12 @@
       userSearchId += 1;
       state.searchResults = [];
       state.userSearching = state.userQuery.trim().length >= 2;
-      renderApp();
+      renderSidebarState();
       setTimeout(focusUserSearch, 0);
       searchTimer = setTimeout(() => {
         searchUsers(state.userQuery).catch((error) => {
           state.userSearching = false;
-          renderApp();
+          renderSidebarState();
           alert(error.message);
         });
       }, 340);
@@ -6824,6 +6969,12 @@
           clearStoryAdvance();
           state.storyViewer = null;
         } else if (state.storyEditor) state.storyEditor = null;
+        else if (state.searchProfileSocialView) state.searchProfileSocialView = null;
+        else if (state.searchProfileOpen) {
+          state.edgeSwipe = null;
+          closeSearchProfileNavigation();
+          return;
+        }
         else if (state.chatProfileOpen) state.chatProfileOpen = false;
         else if (state.activePeer) state.activePeer = null;
         else if (state.lastTab && state.lastTab !== state.tab) {
@@ -6901,10 +7052,30 @@
     }
   }, { passive: false });
 
-  window.addEventListener('popstate', () => {
-    init().catch((error) => {
+  window.addEventListener('popstate', (event) => {
+    (async () => {
+      if (!state.me) {
+        await init();
+        return;
+      }
+      if (event.state?.view) {
+        await restoreNavigationView(event.state.view);
+        return;
+      }
+      const username = publicUsernameFromPath();
+      if (username) {
+        await openSearchProfile(username, { pushHistory: false });
+        return;
+      }
+      state.searchProfileOpen = false;
+      state.searchProfileSocialView = null;
+      state.publicProfile = null;
+      state.tabTransition = false;
+      renderApp();
+    })().catch((error) => {
       console.error(error);
-      renderAuth(error.message);
+      if (state.me) alert(error.message);
+      else renderAuth(error.message);
     });
   });
 

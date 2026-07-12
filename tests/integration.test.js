@@ -136,6 +136,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /class="story-upload-progress"/);
   assert.match(clientSource, /data-story-slider/);
   assert.match(clientSource, /class="story-gif-grid"/);
+  assert.match(clientSource, /function renderAccountIdentity[\s\S]*?href="\$\{esc\(accountProfileHref\(user\)\)\}"/);
+  assert.match(clientSource, /class="chat-pane searched-profile-pane"/);
+  assert.match(clientSource, /function restoreNavigationView/);
+  assert.doesNotMatch(clientSource, />Activity</);
   assert.doesNotMatch(clientSource, /class="story-card"/);
   assert.match(styleSource, /\.story-editor-page \{[\s\S]*?top: var\(--visual-top\)/);
   assert.match(styleSource, /html\.keyboard-open \.bottom-tabs/);
@@ -144,6 +148,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(styleSource, /\.profile-avatar-add/);
   assert.match(styleSource, /\.story-upload-progress/);
   assert.match(styleSource, /\.story-gif-media/);
+  assert.match(styleSource, /\.social-user-row \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto/);
+  assert.match(styleSource, /\.page-header\.search-profile-header \{[\s\S]*?grid-template-columns: 40px minmax\(0, 1fr\) 40px/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -249,6 +255,16 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   const exactUserSearch = await alice.request('/api/users/search?q=dora_test');
   assert.equal(exactUserSearch.status, 200);
   assert.equal(exactUserSearch.data.users[0].id, doraUser.id);
+
+  const publicFollow = await alice.request(`/api/follows/${doraUser.id}`, { method: 'POST' });
+  assert.equal(publicFollow.status, 200);
+  assert.equal(publicFollow.data.user.isFollowing, true);
+  assert.equal(publicFollow.data.user.isContact, false);
+  const doraProfileAfterFollow = await dora.request('/api/me');
+  const aliceFollowerRow = doraProfileAfterFollow.data.user.followers.find((user) => user.id === aliceUser.id);
+  assert.equal(aliceFollowerRow.followsViewer, true);
+  assert.equal(aliceFollowerRow.isFollowing, false);
+  assert.equal((await alice.request(`/api/follows/${doraUser.id}`, { method: 'DELETE' })).status, 200);
 
   const request = await alice.request('/api/contacts/bob_test', { method: 'POST' });
   assert.equal(request.status, 201);
@@ -404,6 +420,7 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
     body: { socialPublic: false }
   });
   assert.equal(privateProfile.status, 200);
+  assert.equal((await charlie.request(`/api/follows/${aliceUser.id}`, { method: 'POST' })).status, 409);
 
   const storyResponse = await alice.request('/api/me/story', {
     method: 'POST',

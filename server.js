@@ -305,21 +305,29 @@ function basicPublicUser(user, viewerId = null) {
       : [],
     url: `/u/${encodeURIComponent(user.username)}`,
     createdAt: user.createdAt,
+    socialPublic: user.profile?.socialPublic !== false,
     searchable: user.profile?.searchable !== false
+  };
+}
+
+function relationshipPublicUser(user, viewerId = null) {
+  if (!user) return null;
+  const relation = viewerId ? relationFor(viewerId, user.id) : {};
+  return {
+    ...basicPublicUser(user, viewerId),
+    isContact: Boolean(viewerId && (db.contacts[viewerId] || []).includes(user.id)),
+    isFollowing: Boolean(viewerId && isFollowing(viewerId, user.id)),
+    followsViewer: Boolean(viewerId && isFollowing(user.id, viewerId)),
+    ...relation
   };
 }
 
 function publicUser(user, viewerId = null) {
   if (!user) return null;
-  const relation = viewerId ? relationFor(viewerId, user.id) : {};
   const follow = followStatsFor(user, viewerId);
   return {
-    ...basicPublicUser(user, viewerId),
-    ...follow,
-    isContact: Boolean(viewerId && (db.contacts[viewerId] || []).includes(user.id)),
-    isFollowing: Boolean(viewerId && isFollowing(viewerId, user.id)),
-    followsViewer: Boolean(viewerId && isFollowing(user.id, viewerId)),
-    ...relation
+    ...relationshipPublicUser(user, viewerId),
+    ...follow
   };
 }
 
@@ -332,8 +340,8 @@ function followStatsFor(user, viewerId = null) {
     followersVisible: visible,
     followerCount: visible ? followers.length : null,
     followingCount: visible ? following.length : null,
-    followers: visible ? followers.map((id) => basicPublicUser(db.users[id], viewerId)) : [],
-    following: visible ? following.map((id) => basicPublicUser(db.users[id], viewerId)) : []
+    followers: visible ? followers.map((id) => relationshipPublicUser(db.users[id], viewerId)) : [],
+    following: visible ? following.map((id) => relationshipPublicUser(db.users[id], viewerId)) : []
   };
 }
 
@@ -1708,8 +1716,8 @@ async function handleApi(req, res, pathname, query) {
     const peer = db.users[decodeURIComponent(followMatch[1])] || userByUsername(decodeURIComponent(followMatch[1]));
     if (!peer || peer.id === user.id) return sendError(res, 404, 'User not found.');
     if (isBlockedBetween(user.id, peer.id)) return sendError(res, 403, 'This user cannot be followed right now.');
-    if (req.method === 'POST' && !(db.contacts[user.id] || []).includes(peer.id)) {
-      return sendError(res, 409, 'Send a follow request first.');
+    if (req.method === 'POST' && peer.profile?.socialPublic === false && !(db.contacts[user.id] || []).includes(peer.id)) {
+      return sendError(res, 409, 'This private account requires an approved request first.');
     }
     const changed = req.method === 'POST' ? addFollow(user.id, peer.id) : removeFollow(user.id, peer.id);
     let notification = null;
