@@ -44,6 +44,11 @@
     lastTab: 'chats',
     tabTransition: false,
     tabDirection: 'right',
+    navigationStack: [],
+    routeForward: null,
+    navigationBusy: false,
+    suppressNextPopstate: false,
+    socialTransition: null,
     contacts: [],
     chats: [],
     groups: [],
@@ -248,8 +253,128 @@
       chatProfileSocialView: state.chatProfileSocialView,
       searchProfileOpen: state.searchProfileOpen,
       searchProfileSocialView: state.searchProfileSocialView,
-      publicProfileUsername: state.publicProfile?.username || null
+      publicProfileUsername: state.publicProfile?.username || null,
+      activePeerId: state.activePeer?.id || null,
+      activeGroupId: state.activeGroup?.id || null
     };
+  }
+
+  function currentAppShell() {
+    return app.querySelector(':scope > .app-shell');
+  }
+
+  function captureNavigationEntry(kind = 'page') {
+    capturePersistentScroll();
+    return {
+      kind,
+      view: captureNavigationView(),
+      activePeer: state.activePeer,
+      activeGroup: state.activeGroup,
+      publicProfile: state.publicProfile,
+      messages: state.messages,
+      chatAppearance: state.chatAppearance,
+      hasOlderMessages: state.hasOlderMessages,
+      highlightMessageId: state.highlightMessageId,
+      messageScroll: captureMessagesScroll(),
+      scrollMemory: { ...state.scrollMemory },
+      previewHtml: currentAppShell()?.outerHTML || ''
+    };
+  }
+
+  function pushNavigationEntry(entry, url = location.href) {
+    if (!entry) return;
+    state.navigationStack.push(entry);
+    state.routeForward = entry;
+    history.pushState({
+      appManaged: true,
+      navDepth: state.navigationStack.length,
+      view: captureNavigationView()
+    }, '', url);
+  }
+
+  function restorePreviewScroll(root, entry) {
+    if (!root || !entry) return;
+    root.querySelectorAll('[data-scroll-memory]').forEach((element) => {
+      const position = entry.scrollMemory?.[element.dataset.scrollMemory];
+      if (!position) return;
+      element.scrollTop = position.top || 0;
+      element.scrollLeft = position.left || 0;
+    });
+    const messages = root.querySelector('.messages');
+    if (messages && entry.messageScroll) messages.scrollTop = entry.messageScroll.top || 0;
+  }
+
+  function sanitizeNavigationPreview(root) {
+    root?.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+  }
+
+  function installNavigationPreview(entry, mode = 'back') {
+    document.querySelector('.route-page-preview')?.remove();
+    if (!entry?.previewHtml) return null;
+    const preview = document.createElement('div');
+    preview.className = `route-page-preview route-preview-${mode}`;
+    preview.setAttribute('aria-hidden', 'true');
+    preview.innerHTML = entry.previewHtml;
+    app.insertBefore(preview, currentAppShell());
+    sanitizeNavigationPreview(preview);
+    restorePreviewScroll(preview, entry);
+    return preview;
+  }
+
+  async function restoreNavigationEntry(entry) {
+    if (!entry) return false;
+    const view = entry.view || {};
+    state.tab = view.tab || 'chats';
+    state.lastTab = view.lastTab || state.tab;
+    state.profileSocialView = view.profileSocialView || null;
+    state.chatProfileOpen = Boolean(view.chatProfileOpen);
+    state.chatProfileSocialView = view.chatProfileSocialView || null;
+    state.searchProfileOpen = Boolean(view.searchProfileOpen);
+    state.searchProfileSocialView = view.searchProfileSocialView || null;
+    state.activePeer = entry.activePeer || null;
+    state.activeGroup = entry.activeGroup || null;
+    state.publicProfile = entry.publicProfile || null;
+    state.messages = entry.messages || [];
+    state.chatAppearance = entry.chatAppearance || defaultChatAppearance();
+    state.hasOlderMessages = Boolean(entry.hasOlderMessages);
+    state.highlightMessageId = entry.highlightMessageId || null;
+    state.scrollMemory = { ...state.scrollMemory, ...(entry.scrollMemory || {}) };
+    state.routeForward = null;
+    state.chatOpening = false;
+    state.chatReturnAnimation = false;
+    renderApp({ scrollSnapshot: entry.messageScroll, scroll: 'preserve' });
+    return true;
+  }
+
+  async function finishNavigationBack(entry, options = {}) {
+    if (!entry || state.navigationBusy === 'finishing') return;
+    state.navigationBusy = 'finishing';
+    if (state.navigationStack[state.navigationStack.length - 1] === entry) state.navigationStack.pop();
+    await restoreNavigationEntry(entry);
+    if (!options.skipHistory && history.length > 1) {
+      state.suppressNextPopstate = true;
+      history.back();
+    }
+    state.navigationBusy = false;
+  }
+
+  function animateNavigationBack(options = {}) {
+    if (state.navigationBusy) return false;
+    const entry = state.navigationStack[state.navigationStack.length - 1];
+    const current = currentAppShell();
+    if (!entry || !current) return false;
+    state.navigationBusy = true;
+    const preview = installNavigationPreview(entry, 'back');
+    current.classList.add('route-page-exiting');
+    preview?.classList.add('route-page-revealing');
+    setTimeout(() => finishNavigationBack(entry, options).catch((error) => alert(error.message)), 270);
+    return true;
+  }
+
+  function beginDetailNavigation(kind, url = location.href) {
+    const entry = captureNavigationEntry(kind);
+    pushNavigationEntry(entry, url);
+    return entry;
   }
 
   function initials(user) {
@@ -754,8 +879,10 @@
       ? options.scrollSnapshot
       : captureMessagesScroll();
     const scrollMode = options.scroll || 'preserve';
+    const forwardEntry = state.routeForward;
     app.innerHTML = `
-      <div class="app-shell ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''}">
+      ${forwardEntry?.previewHtml ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
+      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -778,9 +905,11 @@
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
     state.tabTransition = false;
+    sanitizeNavigationPreview(document.querySelector('.route-preview-forward'));
     resizeComposerInput();
     applyRenderScroll(scrollMode, scrollSnapshot);
     restorePersistentScroll();
+    if (forwardEntry) restorePreviewScroll(document.querySelector('.route-preview-forward'), forwardEntry);
     updateBubbleViewportColors();
     setTimeout(() => {
       resizeComposerInput();
@@ -801,6 +930,14 @@
       state.chatReturnAnimation = false;
       state.chatOpening = false;
     }, 0);
+    if (forwardEntry) {
+      setTimeout(() => {
+        if (state.routeForward !== forwardEntry) return;
+        state.routeForward = null;
+        document.querySelector('.route-preview-forward')?.remove();
+        currentAppShell()?.classList.remove('route-page-current', 'route-page-entering');
+      }, 310);
+    }
   }
 
   function updateSlot(id, html) {
@@ -1099,11 +1236,11 @@
           <button class="icon-btn" data-action="close-search-social" aria-label="Back">${icon('back')}</button>
           <h2>@${esc(user.username)}</h2>
         </header>
-        <div class="segmented social-switch is-${view}">
+        <div class="segmented social-switch is-${view} ${state.socialTransition ? `social-switch-${state.socialTransition}` : ''}">
           <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-search-social" data-social="followers"><strong>${user.followerCount ?? 0}</strong> Followers</button>
           <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-search-social" data-social="following"><strong>${user.followingCount ?? 0}</strong> Following</button>
         </div>
-        <div class="social-user-list">
+        <div class="social-user-list ${state.socialTransition ? `social-list-slide social-list-${state.socialTransition}` : ''}">
           ${users.length ? users.map((item) => renderAccountRow(item, { social: true })).join('') : `<div class="empty-state">No ${view} yet.</div>`}
         </div>
       </section>
@@ -1151,11 +1288,11 @@
           <button class="icon-btn" data-action="close-social" aria-label="Back">${icon('back')}</button>
           <h2>@${esc(state.me.username)}</h2>
         </header>
-        <div class="segmented social-switch is-${view}">
+        <div class="segmented social-switch is-${view} ${state.socialTransition ? `social-switch-${state.socialTransition}` : ''}">
           <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers"><strong>${state.me.followerCount ?? 0}</strong> Followers</button>
           <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-social" data-social="following"><strong>${state.me.followingCount ?? 0}</strong> Following</button>
         </div>
-        <div class="social-user-list">
+        <div class="social-user-list ${state.socialTransition ? `social-list-slide social-list-${state.socialTransition}` : ''}">
           ${users.length ? users.map((item) => renderSocialAccountRow(item, `
             <button class="mini-btn account-action social-row-action" data-action="${view === 'followers' ? 'remove-follower' : 'unfollow-user'}" data-user-id="${esc(item.id)}">${view === 'followers' ? 'Remove' : 'Unfollow'}</button>
           `)).join('') : `<div class="empty-state">${empty}</div>`}
@@ -3339,11 +3476,11 @@
           </div>
         </header>
         <section class="chat-profile-content">
-          <div class="segmented social-switch is-${view}">
+          <div class="segmented social-switch is-${view} ${state.socialTransition ? `social-switch-${state.socialTransition}` : ''}">
             <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-peer-social" data-social="followers"><strong>${peer.followerCount ?? 0}</strong> Followers</button>
             <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-peer-social" data-social="following"><strong>${peer.followingCount ?? 0}</strong> Following</button>
           </div>
-          <div class="social-user-list">
+          <div class="social-user-list ${state.socialTransition ? `social-list-slide social-list-${state.socialTransition}` : ''}">
             ${users.length ? users.map((item) => renderAccountRow(item, { social: true })).join('') : `<div class="empty-state">${empty}</div>`}
           </div>
         </section>
@@ -4288,16 +4425,16 @@
     updateProfileModalSlots();
   }
 
-  async function openChat(userId, highlightMessageId = null) {
+  async function openChat(userId, highlightMessageId = null, options = {}) {
     const peer = userById(userId);
     if (!peer) return;
+    const navigationEntry = isMobileLayout() && options.pushNavigation !== false ? captureNavigationEntry('chat') : null;
     state.activePeer = peer;
     state.activeGroup = null;
     if (state.searchProfileOpen) {
       state.searchProfileOpen = false;
       state.searchProfileSocialView = null;
       state.publicProfile = null;
-      if (location.pathname !== '/') history.replaceState({ appManaged: true, route: 'app' }, '', '/');
     }
     if (isMobileLayout()) {
       state.tab = 'chats';
@@ -4322,12 +4459,14 @@
     state.messages = data.messages;
     state.chatAppearance = appearance.settings || defaultChatAppearance();
     state.hasOlderMessages = Boolean(data.hasMore);
+    if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
     renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
   }
 
-  async function openGroup(groupId, highlightMessageId = null) {
+  async function openGroup(groupId, highlightMessageId = null, options = {}) {
     const group = state.groups.find((item) => item.id === groupId);
     if (!group) return;
+    const navigationEntry = isMobileLayout() && options.pushNavigation !== false ? captureNavigationEntry('group-chat') : null;
     state.activeGroup = group;
     state.activePeer = null;
     state.chatProfileOpen = false;
@@ -4354,6 +4493,7 @@
     state.messages = data.messages || [];
     state.chatAppearance = appearance.settings || defaultChatAppearance();
     state.hasOlderMessages = Boolean(data.hasMore);
+    if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
     renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
   }
 
@@ -5897,24 +6037,31 @@
     if (!state.searchProfileOpen) state.profileReturnScroll = null;
   }
 
+  function openSocialView(scope, nextView) {
+    const key = scope === 'search' ? 'searchProfileSocialView' : scope === 'peer' ? 'chatProfileSocialView' : 'profileSocialView';
+    const current = state[key];
+    if (!current) beginDetailNavigation(`${scope}-social`);
+    else if (current !== nextView) state.socialTransition = nextView === 'following' ? 'from-right' : 'from-left';
+    state[key] = nextView;
+    renderApp();
+    if (state.socialTransition) {
+      const transition = state.socialTransition;
+      setTimeout(() => {
+        if (state.socialTransition === transition) state.socialTransition = null;
+      }, 230);
+    }
+  }
+
+  function navigationBackOr(fallback) {
+    if (!animateNavigationBack()) fallback?.();
+  }
+
   async function openSearchProfile(username, options = {}) {
     const user = await fetchPublicProfile(username);
     if (!user) throw new Error('User not found.');
     rememberViewedProfile(user);
     if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
-    if (options.pushHistory !== false) {
-      history.replaceState({
-        ...(history.state || {}),
-        appManaged: true,
-        view: captureNavigationView()
-      }, '', location.href);
-      history.pushState({
-        appManaged: true,
-        route: 'profile',
-        username: user.username,
-        internalProfile: true
-      }, '', profilePath(user.username));
-    }
+    if (options.pushHistory !== false) beginDetailNavigation('profile', profilePath(user.username));
     state.lastTab = state.tab;
     state.tab = 'search';
     state.publicProfile = user;
@@ -5929,19 +6076,17 @@
 
   function closeSearchProfileNavigation() {
     if (!state.searchProfileOpen) return;
-    if (history.state?.internalProfile) {
-      history.back();
-      return;
-    }
-    state.searchProfileOpen = false;
-    state.searchProfileSocialView = null;
-    state.publicProfile = null;
-    state.tab = 'search';
-    state.tabTransition = false;
-    history.replaceState({ appManaged: true, route: 'app', view: captureNavigationView() }, '', '/');
-    const returnScroll = state.profileReturnScroll;
-    state.profileReturnScroll = null;
-    renderApp({ scrollSnapshot: returnScroll });
+    navigationBackOr(() => {
+      state.searchProfileOpen = false;
+      state.searchProfileSocialView = null;
+      state.publicProfile = null;
+      state.tab = 'search';
+      state.tabTransition = false;
+      history.replaceState({ appManaged: true, route: 'app', view: captureNavigationView() }, '', '/');
+      const returnScroll = state.profileReturnScroll;
+      state.profileReturnScroll = null;
+      renderApp({ scrollSnapshot: returnScroll });
+    });
   }
 
   let conversationSearchId = 0;
@@ -6160,7 +6305,6 @@
       await loadContactsAndChats();
       if (activePeerId && !state.contacts.some((contact) => contact.id === activePeerId)) {
         state.activePeer = null;
-        state.activeGroup = null;
         state.chatProfileOpen = false;
         state.chatProfileSocialView = null;
         renderApp();
@@ -6882,6 +7026,9 @@
         state.lastTab = 'chats';
         state.activePeer = null;
         state.activeGroup = null;
+        state.navigationStack = [];
+        state.routeForward = null;
+        state.navigationBusy = false;
         state.chatProfileOpen = false;
         state.profileSocialView = null;
         state.chatProfileSocialView = null;
@@ -6964,6 +7111,9 @@
         state.me = null;
         state.activePeer = null;
         state.activeGroup = null;
+        state.navigationStack = [];
+        state.routeForward = null;
+        state.navigationBusy = false;
         state.tab = 'chats';
         state.lastTab = 'chats';
         state.profileSocialView = null;
@@ -7023,16 +7173,20 @@
         if (confirm('Leave this group? You will no longer receive its messages.')) await leaveGroup();
       }
       if (action === 'back') {
-        state.activePeer = null;
-        state.activeGroup = null;
-        state.tab = 'chats';
-        state.lastTab = 'chats';
-        state.chatProfileOpen = false;
-        state.chatProfileSocialView = null;
-        renderApp();
+        navigationBackOr(() => {
+          state.activePeer = null;
+          state.activeGroup = null;
+          state.tab = 'chats';
+          state.lastTab = 'chats';
+          state.chatProfileOpen = false;
+          state.chatProfileSocialView = null;
+          state.chatReturnAnimation = true;
+          renderApp();
+        });
       }
       if (action === 'open-chat-profile') {
         if (state.activePeer) rememberViewedProfile(state.activePeer);
+        beginDetailNavigation('chat-profile');
         state.chatProfileOpen = true;
         state.chatProfileSocialView = null;
         renderApp();
@@ -7061,10 +7215,12 @@
         if (option) await updateChatAppearance({ theme: 'custom', background, backgroundColor: option[2] });
       }
       if (action === 'close-chat-profile') {
-        state.chatProfileOpen = false;
-        state.chatProfileSocialView = null;
-        state.chatReturnAnimation = true;
-        renderApp();
+        navigationBackOr(() => {
+          state.chatProfileOpen = false;
+          state.chatProfileSocialView = null;
+          state.chatReturnAnimation = true;
+          renderApp();
+        });
       }
       if (action === 'send-text') {
         await sendCurrentText();
@@ -7701,12 +7857,13 @@
         closeSearchProfileNavigation();
       }
       if (action === 'open-search-social') {
-        state.searchProfileSocialView = target.dataset.social === 'following' ? 'following' : 'followers';
-        renderApp();
+        openSocialView('search', target.dataset.social === 'following' ? 'following' : 'followers');
       }
       if (action === 'close-search-social') {
-        state.searchProfileSocialView = null;
-        renderApp();
+        navigationBackOr(() => {
+          state.searchProfileSocialView = null;
+          renderApp();
+        });
       }
       if (action === 'clear-user-search') {
         clearTimeout(searchTimer);
@@ -7724,6 +7881,7 @@
         await declineRequest(target.dataset.requestId);
       }
       if (action === 'open-notifications') {
+        beginDetailNavigation('notifications');
         state.lastTab = state.tab;
         state.tabTransition = true;
         state.tabDirection = 'right';
@@ -7732,10 +7890,12 @@
         renderApp();
       }
       if (action === 'back-from-notifications') {
-        state.tabTransition = true;
-        state.tabDirection = 'left';
-        state.tab = state.lastTab === 'notifications' ? 'chats' : (state.lastTab || 'chats');
-        renderApp();
+        navigationBackOr(() => {
+          state.tabTransition = true;
+          state.tabDirection = 'left';
+          state.tab = state.lastTab === 'notifications' ? 'chats' : (state.lastTab || 'chats');
+          renderApp();
+        });
       }
       if (action === 'close-overlays') {
         closeOverlays();
@@ -7809,6 +7969,7 @@
           if (toast.kind === 'message' && toast.groupId) await openGroup(toast.groupId);
           else if (toast.kind === 'message' && toast.userId) await openChat(toast.userId);
           else {
+            beginDetailNavigation('notifications');
             state.lastTab = state.tab;
             state.tab = 'notifications';
             await refreshChatsOnly();
@@ -7817,21 +7978,22 @@
         }
       }
       if (action === 'open-social') {
-        const nextSocial = target.dataset.social === 'following' ? 'following' : 'followers';
-        state.profileSocialView = nextSocial;
-        renderApp();
+        openSocialView('profile', target.dataset.social === 'following' ? 'following' : 'followers');
       }
       if (action === 'close-social') {
-        state.profileSocialView = null;
-        renderApp();
+        navigationBackOr(() => {
+          state.profileSocialView = null;
+          renderApp();
+        });
       }
       if (action === 'open-peer-social') {
-        state.chatProfileSocialView = target.dataset.social === 'following' ? 'following' : 'followers';
-        renderApp();
+        openSocialView('peer', target.dataset.social === 'following' ? 'following' : 'followers');
       }
       if (action === 'close-peer-social') {
-        state.chatProfileSocialView = null;
-        renderApp();
+        navigationBackOr(() => {
+          state.chatProfileSocialView = null;
+          renderApp();
+        });
       }
       if (action === 'open-story-create') {
         state.actionSheet = null;
@@ -8346,11 +8508,16 @@
     }
     const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer;
-    if (state.me && !gestureBlocked && event.clientX < 24 && !event.target.closest('input,textarea,[contenteditable="true"]')) {
+    const backEntry = state.navigationStack[state.navigationStack.length - 1];
+    if (state.me && backEntry && !state.navigationBusy && !gestureBlocked && event.clientX < 38 && !event.target.closest('input,textarea,[contenteditable="true"]')) {
+      const surface = currentAppShell();
       state.edgeSwipe = {
         startX: event.clientX,
         startY: event.clientY,
-        surface: event.target.closest('.chat-pane, .side-content')
+        surface,
+        preview: installNavigationPreview(backEntry, 'swipe'),
+        entry: backEntry,
+        width: surface?.getBoundingClientRect().width || window.innerWidth
       };
     }
     if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !hasActiveConversation() &&
@@ -8761,7 +8928,14 @@
         if (state.edgeSwipe.surface) {
           state.edgeSwipe.surface.style.transition = 'none';
           state.edgeSwipe.surface.style.transform = `translateX(${amount}px)`;
-          state.edgeSwipe.surface.style.boxShadow = '-14px 0 30px rgba(0,0,0,.28)';
+          state.edgeSwipe.surface.style.boxShadow = '-18px 0 38px rgba(0,0,0,.38)';
+          state.edgeSwipe.surface.classList.add('route-swipe-current');
+        }
+        if (state.edgeSwipe.preview) {
+          const progress = clamp(amount / state.edgeSwipe.width, 0, 1);
+          state.edgeSwipe.preview.style.transition = 'none';
+          state.edgeSwipe.preview.style.transform = `translateX(${(-18 + progress * 18).toFixed(2)}%)`;
+          state.edgeSwipe.preview.style.filter = `brightness(${0.78 + progress * 0.22})`;
         }
       }
     }
@@ -8869,46 +9043,41 @@
     const recordButton = event.target.closest('[data-action="record-voice"]') || document.querySelector('.recording');
     if (recordButton) stopRecording(recordButton);
     if (state.edgeSwipe) {
+      const swipe = state.edgeSwipe;
       const dx = event.clientX - state.edgeSwipe.startX;
       const dy = event.clientY - state.edgeSwipe.startY;
-      const surface = state.edgeSwipe.surface;
+      const surface = swipe.surface;
       if (state.edgeSwipe.moved) state.suppressClickUntil = Date.now() + 320;
-      if (surface) {
-        surface.style.transform = '';
-        surface.style.boxShadow = '';
-        surface.style.transition = '';
-      }
-      if (dx > 90 && Math.abs(dx) > Math.abs(dy)) {
-        if (state.searchProfileSocialView) state.searchProfileSocialView = null;
-        else if (state.searchProfileOpen) {
-          state.edgeSwipe = null;
-          closeSearchProfileNavigation();
-          return;
+      const commit = dx > Math.min(72, swipe.width * 0.2) && Math.abs(dx) > Math.abs(dy);
+      if (surface) surface.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), box-shadow 240ms ease';
+      if (swipe.preview) swipe.preview.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), filter 240ms ease';
+      if (commit) {
+        state.navigationBusy = true;
+        if (surface) {
+          surface.style.transform = `translateX(${swipe.width}px)`;
+          surface.style.boxShadow = '-18px 0 38px rgba(0,0,0,.2)';
         }
-        else if (state.profileSocialView) state.profileSocialView = null;
-        else if (state.tab === 'notifications') {
-          state.tabTransition = true;
-          state.tabDirection = 'left';
-          state.tab = state.lastTab === 'notifications' ? 'chats' : (state.lastTab || 'chats');
+        if (swipe.preview) {
+          swipe.preview.style.transform = 'translateX(0)';
+          swipe.preview.style.filter = 'brightness(1)';
         }
-        else if (state.chatProfileSocialView) state.chatProfileSocialView = null;
-        else if (state.chatProfileOpen) state.chatProfileOpen = false;
-        else if (hasActiveConversation()) {
-          state.activePeer = null;
-          state.activeGroup = null;
-          state.tab = 'chats';
-          state.lastTab = 'chats';
-          state.replyTo = null;
-          state.stickerPanel = false;
+        setTimeout(() => {
+          state.navigationBusy = false;
+          finishNavigationBack(swipe.entry).catch((error) => alert(error.message));
+        }, 245);
+      } else {
+        if (surface) {
+          surface.style.transform = 'translateX(0)';
+          surface.style.boxShadow = '';
         }
-        else if (state.lastTab && state.lastTab !== state.tab) {
-          const current = state.tab;
-          state.tabTransition = true;
-          state.tabDirection = tabIndex(state.lastTab) < tabIndex(state.tab) ? 'left' : 'right';
-          state.tab = state.lastTab;
-          state.lastTab = current;
+        if (swipe.preview) {
+          swipe.preview.style.transform = 'translateX(-18%)';
+          swipe.preview.style.filter = 'brightness(.78)';
         }
-        renderApp();
+        setTimeout(() => {
+          surface?.classList.remove('route-swipe-current');
+          swipe.preview?.remove();
+        }, 245);
       }
       state.edgeSwipe = null;
     }
@@ -8963,7 +9132,9 @@
       state.edgeSwipe.surface.style.transform = '';
       state.edgeSwipe.surface.style.boxShadow = '';
       state.edgeSwipe.surface.style.transition = '';
+      state.edgeSwipe.surface.classList.remove('route-swipe-current');
     }
+    state.edgeSwipe?.preview?.remove();
     if (state.tabSwipe?.surface) {
       state.tabSwipe.surface.style.transform = '';
       state.tabSwipe.surface.style.opacity = '';
@@ -8986,7 +9157,9 @@
       state.edgeSwipe.surface.style.transform = '';
       state.edgeSwipe.surface.style.boxShadow = '';
       state.edgeSwipe.surface.style.transition = '';
+      state.edgeSwipe.surface.classList.remove('route-swipe-current');
     }
+    state.edgeSwipe?.preview?.remove();
     if (state.tabSwipe?.surface) {
       state.tabSwipe.surface.style.transform = '';
       state.tabSwipe.surface.style.opacity = '';
@@ -9036,8 +9209,16 @@
 
   window.addEventListener('popstate', (event) => {
     (async () => {
+      if (state.suppressNextPopstate) {
+        state.suppressNextPopstate = false;
+        return;
+      }
       if (!state.me) {
         await init();
+        return;
+      }
+      if (state.navigationStack.length) {
+        animateNavigationBack({ skipHistory: true });
         return;
       }
       if (event.state?.view) {

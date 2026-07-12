@@ -7514,6 +7514,161 @@ html.keyboard-open .bottom-tabs {
   }
 }
 
+/* Layered detail navigation */
+#app {
+  position: relative;
+  isolation: isolate;
+}
+
+.route-page-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  background: #030407;
+  will-change: transform, filter;
+}
+
+.route-page-preview > .app-shell {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+}
+
+.app-shell.route-page-current,
+.app-shell.route-page-exiting,
+.app-shell.route-swipe-current {
+  position: relative;
+  z-index: 2;
+  will-change: transform, opacity;
+}
+
+.route-preview-forward {
+  animation: routeBackdropForward 290ms cubic-bezier(.22,.76,.2,1) both;
+}
+
+.route-page-entering {
+  animation: routePageForwardDesktop 270ms cubic-bezier(.2,.8,.2,1) both;
+}
+
+.route-page-exiting {
+  animation: routePageBackDesktop 260ms cubic-bezier(.28,.74,.22,1) both;
+}
+
+.route-preview-back.route-page-revealing {
+  animation: routeBackdropBackDesktop 260ms cubic-bezier(.28,.74,.22,1) both;
+}
+
+.route-preview-swipe {
+  transform: translateX(-18%);
+  filter: brightness(.78);
+}
+
+.social-user-list.social-list-slide {
+  will-change: transform, opacity;
+}
+
+.social-user-list.social-list-from-right {
+  animation: socialListFromRight 210ms cubic-bezier(.24,.76,.2,1) both;
+}
+
+.social-user-list.social-list-from-left {
+  animation: socialListFromLeft 210ms cubic-bezier(.24,.76,.2,1) both;
+}
+
+.social-switch.is-following.social-switch-from-right::before {
+  animation: socialUnderlineToRight 220ms cubic-bezier(.24,.76,.2,1) both;
+}
+
+.social-switch:not(.is-following).social-switch-from-left::before {
+  animation: socialUnderlineToLeft 220ms cubic-bezier(.24,.76,.2,1) both;
+}
+
+@keyframes routePageForwardDesktop {
+  from { opacity: .72; transform: translateX(26px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes routePageBackDesktop {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: .75; transform: translateX(34px); }
+}
+
+@keyframes routeBackdropForward {
+  from { filter: brightness(1); transform: translateX(0); }
+  to { filter: brightness(.8); transform: translateX(-4%); }
+}
+
+@keyframes routeBackdropBackDesktop {
+  from { filter: brightness(.82); transform: translateX(-4%); }
+  to { filter: brightness(1); transform: translateX(0); }
+}
+
+@keyframes socialListFromRight {
+  from { opacity: .45; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes socialListFromLeft {
+  from { opacity: .45; transform: translateX(-18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes socialUnderlineToRight {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes socialUnderlineToLeft {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@media (max-width: 860px) {
+  .app-shell.route-page-entering {
+    animation-name: routePageForwardMobile;
+  }
+
+  .app-shell.route-page-entering .chat-pane.chat-opening {
+    animation: none;
+  }
+
+  .app-shell.route-page-exiting {
+    animation-name: routePageBackMobile;
+  }
+
+  .route-preview-back.route-page-revealing {
+    animation-name: routeBackdropBackMobile;
+  }
+
+  @keyframes routePageForwardMobile {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+
+  @keyframes routePageBackMobile {
+    from { transform: translateX(0); }
+    to { transform: translateX(100%); }
+  }
+
+  @keyframes routeBackdropBackMobile {
+    from { filter: brightness(.78); transform: translateX(-18%); }
+    to { filter: brightness(1); transform: translateX(0); }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-page-preview,
+  .route-page-entering,
+  .route-page-exiting,
+  .social-user-list.social-list-slide,
+  .social-switch::before {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
 /* Group conversations */
 .new-group-btn {
   margin-left: auto;
