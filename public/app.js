@@ -417,14 +417,28 @@
     if (!messages) return null;
     return {
       top: messages.scrollTop,
-      bottom: messages.scrollHeight - messages.scrollTop - messages.clientHeight
+      bottom: messages.scrollHeight - messages.scrollTop - messages.clientHeight,
+      height: messages.scrollHeight,
+      clientHeight: messages.clientHeight
     };
   }
 
-  function restoreMessagesScroll(snapshot) {
+  function restoreMessagesScroll(snapshot, options = {}) {
     const messages = document.getElementById('messages');
     if (!messages || !snapshot) return;
-    messages.scrollTop = snapshot.top;
+    if (options.anchor === 'bottom') {
+      messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight - snapshot.bottom);
+      return;
+    }
+    messages.scrollTop = Math.min(snapshot.top, Math.max(0, messages.scrollHeight - messages.clientHeight));
+  }
+
+  function preserveMessagesScroll(callback, options = {}) {
+    const snapshot = captureMessagesScroll();
+    const result = callback();
+    restoreMessagesScroll(snapshot, options);
+    requestAnimationFrame(() => restoreMessagesScroll(snapshot, options));
+    return result;
   }
 
   function centerStoryActiveChoice(root = document) {
@@ -4633,7 +4647,7 @@
       if (event.chatId === activeIds) {
         if (event.message.senderId === state.typingPeerId) state.typingPeerId = null;
         upsertMessage(event.message);
-        if (!updateMessagesList()) renderApp();
+        if (!updateMessagesList({ scroll: 'auto', anchor: 'bottom' })) renderApp();
       }
       if (incoming && !activelyViewing) {
         state.unreadByPeer[event.message.senderId] = (state.unreadByPeer[event.message.senderId] || 0) + 1;
@@ -4683,7 +4697,7 @@
     if (event.type === 'typing') {
       if (event.from === state.activePeer?.id) {
         state.typingPeerId = event.isTyping ? event.from : null;
-        if (!updateMessagesList()) renderApp();
+        if (!updateMessagesList({ scroll: 'preserve', anchor: 'bottom' })) renderApp();
       }
     }
     if (event.type === 'signal') {
@@ -5127,11 +5141,11 @@
   function updateMessagesList(options = {}) {
     const messages = document.getElementById('messages');
     if (!messages || !state.activePeer || state.chatProfileOpen) return false;
-    const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
-    const previousTop = messages.scrollTop;
+    const snapshot = captureMessagesScroll();
+    const wasNearBottom = snapshot && snapshot.bottom < 80;
     messages.innerHTML = renderMessagesList();
-    if (options.scroll === 'bottom' || (!options.scroll && wasNearBottom)) scrollMessagesToBottom();
-    if (options.scroll === 'preserve') messages.scrollTop = previousTop;
+    if (options.scroll === 'bottom' || (options.scroll === 'auto' && wasNearBottom)) scrollMessagesToBottom();
+    else restoreMessagesScroll(snapshot, options.anchor === 'bottom' ? { anchor: 'bottom' } : {});
     return true;
   }
 
@@ -5157,14 +5171,16 @@
     template.innerHTML = renderChatPane().trim();
     const next = template.content.firstElementChild?.querySelector('footer');
     if (!next) return false;
-    current.replaceWith(next);
-    resizeComposerInput();
-    if (hadFocus || options.focus) {
-      const nextInput = document.getElementById('composer-text');
-      nextInput?.focus({ preventScroll: true });
-      const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
-      nextInput?.setSelectionRange?.(cursor, cursor);
-    }
+    preserveMessagesScroll(() => {
+      current.replaceWith(next);
+      resizeComposerInput();
+      if (hadFocus || options.focus) {
+        const nextInput = document.getElementById('composer-text');
+        nextInput?.focus({ preventScroll: true });
+        const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
+        nextInput?.setSelectionRange?.(cursor, cursor);
+      }
+    }, { anchor: 'bottom' });
     return true;
   }
 
