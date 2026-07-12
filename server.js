@@ -15,6 +15,11 @@ const COOKIE_NAME = 'chat_sid';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const REPORT_EMAIL = process.env.REPORT_EMAIL || 'newcomearound@gmail.com';
 const SENDMAIL_PATH = process.env.SENDMAIL_PATH || '/usr/sbin/sendmail';
+const GOOGLE_WEATHER_API_KEY = String(process.env.GOOGLE_WEATHER_API_KEY || '').trim();
+const MODERATOR_USERNAMES = String(process.env.MODERATOR_USERNAMES || '')
+  .split(',')
+  .map((value) => normalizeUsername(value))
+  .filter(Boolean);
 const REPORT_REASONS = [
   'Spam or scam',
   'Harassment or bullying',
@@ -44,6 +49,7 @@ const db = {
   blocks: readJson('blocks.json', {}),
   mutes: readJson('mutes.json', {}),
   stories: readJson('stories.json', {}),
+  gifs: readJson('gifs.json', {}),
   reports: readJson('reports.json', []),
   userMeta: readJson('userMeta.json', {})
 };
@@ -114,6 +120,10 @@ function saveMutes() {
 
 function saveStories() {
   return saveJson('stories.json', db.stories);
+}
+
+function saveGifs() {
+  return saveJson('gifs.json', db.gifs);
 }
 
 function saveReports() {
@@ -250,6 +260,34 @@ function publicFile(file) {
     url: `/api/files/${file.id}/download?inline=1`,
     downloadUrl: `/api/files/${file.id}/download`,
     metaUrl: `/api/files/${file.id}/meta`
+  };
+}
+
+function moderatorUserIds() {
+  const users = Object.values(db.users);
+  if (MODERATOR_USERNAMES.length) {
+    return users.filter((user) => MODERATOR_USERNAMES.includes(user.usernameLower)).map((user) => user.id);
+  }
+  const owner = users.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))[0];
+  return owner ? [owner.id] : [];
+}
+
+function isModerator(userId) {
+  return Boolean(userId && moderatorUserIds().includes(userId));
+}
+
+function publicGif(gif, viewerId) {
+  if (!gif) return null;
+  return {
+    id: gif.id,
+    title: gif.title,
+    tags: gif.tags || [],
+    status: gif.status,
+    createdAt: gif.createdAt,
+    reviewedAt: gif.reviewedAt || null,
+    submittedByMe: gif.submitterId === viewerId,
+    submitter: isModerator(viewerId) ? storyActor(db.users[gif.submitterId]) : null,
+    file: publicFile(db.files[gif.fileId])
   };
 }
 
@@ -500,6 +538,28 @@ function publicStory(story, viewerId = null) {
   const views = Array.isArray(story.views) ? story.views : [];
   const likes = Array.isArray(story.likes) ? story.likes : [];
   const comments = Array.isArray(story.comments) ? story.comments : [];
+  const stickerResponses = story.stickerResponses && typeof story.stickerResponses === 'object' ? story.stickerResponses : {};
+  const responseSummary = Object.fromEntries(Object.entries(stickerResponses).map(([stickerId, rawResponses]) => {
+    const responses = Array.isArray(rawResponses) ? rawResponses : [];
+    const numeric = responses.map((response) => Number(response.value)).filter(Number.isFinite);
+    const optionCounts = {};
+    responses.forEach((response) => {
+      const value = String(response.value ?? '');
+      optionCounts[value] = (optionCounts[value] || 0) + 1;
+    });
+    return [stickerId, {
+      count: responses.length,
+      average: numeric.length ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : null,
+      optionCounts,
+      myValue: responses.find((response) => response.userId === viewerId)?.value ?? null,
+      responses: viewerId === story.ownerId ? responses.slice(-50).map((response) => ({
+        id: response.id,
+        value: response.value,
+        createdAt: response.createdAt,
+        user: storyActor(db.users[response.userId])
+      })) : []
+    }];
+  }));
   return {
     id: story.id,
     ownerId: story.ownerId,
@@ -513,6 +573,7 @@ function publicStory(story, viewerId = null) {
     likeCount: likes.length,
     likedByMe: Boolean(viewerId && likes.includes(viewerId)),
     commentCount: comments.length,
+    stickerResponses: responseSummary,
     comments: comments.slice(-30).map((comment) => ({
       id: comment.id,
       text: comment.text,
@@ -542,6 +603,42 @@ function storyNumber(value, min, max, fallback) {
   return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
 }
 
+async function fetchJson(url, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Upstream request failed (${response.status})`);
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function weatherDescription(code) {
+  const value = Number(code);
+  if (value === 0) return 'Clear';
+  if ([1, 2].includes(value)) return 'Partly cloudy';
+  if (value === 3) return 'Overcast';
+  if ([45, 48].includes(value)) return 'Fog';
+  if (value >= 51 && value <= 67) return 'Rain';
+  if (value >= 71 && value <= 77) return 'Snow';
+  if (value >= 80 && value <= 82) return 'Showers';
+  if (value >= 85 && value <= 86) return 'Snow showers';
+  if (value >= 95) return 'Thunderstorm';
+  return 'Current weather';
+}
+
+function weatherSymbol(condition = '') {
+  const value = String(condition).toLowerCase();
+  if (value.includes('thunder')) return '\u26a1';
+  if (value.includes('snow')) return '\u2744\ufe0f';
+  if (value.includes('rain') || value.includes('shower')) return '\ud83c\udf27\ufe0f';
+  if (value.includes('fog')) return '\ud83c\udf2b\ufe0f';
+  if (value.includes('cloud') || value.includes('overcast')) return '\u2601\ufe0f';
+  return '\u2600\ufe0f';
+}
+
 function cleanStoryLink(value) {
   const raw = cleanText(value || '', 500);
   if (!raw) return '';
@@ -551,6 +648,31 @@ function cleanStoryLink(value) {
   } catch {
     return '';
   }
+}
+
+function cleanStoryStickerData(sticker) {
+  const raw = sticker?.data && typeof sticker.data === 'object' ? sticker.data : {};
+  const latitude = storyNumber(raw.latitude, -90, 90, 0);
+  const longitude = storyNumber(raw.longitude, -180, 180, 0);
+  const targetTime = new Date(raw.targetAt || '').getTime();
+  const gifUrl = /^\/api\/files\/[a-zA-Z0-9_]+\/download\?inline=1$/.test(String(raw.gifUrl || '')) ? raw.gifUrl : '';
+  return {
+    gifId: cleanText(raw.gifId || '', 80),
+    gifUrl,
+    latitude,
+    longitude,
+    placeName: cleanText(raw.placeName || '', 100),
+    region: cleanText(raw.region || '', 100),
+    condition: cleanText(raw.condition || '', 60),
+    symbol: cleanText(raw.symbol || '', 8),
+    temperature: storyNumber(raw.temperature, -100, 70, 0),
+    apparentTemperature: storyNumber(raw.apparentTemperature, -100, 80, 0),
+    provider: cleanText(raw.provider || '', 40),
+    targetAt: Number.isFinite(targetTime) ? new Date(targetTime).toISOString() : '',
+    options: Array.isArray(raw.options) ? raw.options.slice(0, 4).map((option) => cleanText(option || '', 40)).filter(Boolean) : [],
+    correctIndex: Math.max(0, Math.min(3, Number(raw.correctIndex || 0))),
+    emoji: cleanText(raw.emoji || '', 8)
+  };
 }
 
 function cleanStoryStickers(raw) {
@@ -564,6 +686,7 @@ function cleanStoryStickers(raw) {
     type: validTypes.has(sticker?.type) ? sticker.type : 'emoji',
     label: cleanText(sticker?.label || '', 80),
     href: sticker?.type === 'link' ? cleanStoryLink(sticker?.href) : '',
+    data: cleanStoryStickerData(sticker),
     x: Math.max(5, Math.min(95, Number(sticker?.x || 50))),
     y: Math.max(5, Math.min(95, Number(sticker?.y || 42))),
     rotation: Math.max(-180, Math.min(180, Number(sticker?.rotation || 0))),
@@ -896,6 +1019,10 @@ async function saveUpload({ dataUrl, name, lastModified }, ownerId, scope) {
 function canAccessFile(userId, file) {
   if (!file) return false;
   if (file.scope === 'avatar') return true;
+  if (file.scope === 'gif') {
+    const gif = Object.values(db.gifs).find((item) => item.fileId === file.id);
+    return Boolean(gif && (gif.status === 'approved' || gif.submitterId === userId || isModerator(userId)));
+  }
   if (file.scope === 'story' || file.scope === 'story-audio') {
     const story = Object.values(db.stories).find((item) => (
       item.fileId === file.id || item.audioFileId === file.id
@@ -1049,7 +1176,8 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, {
       user: publicUser(user, user.id),
       twoFactorEnabled: Boolean(user.twoFactor?.enabled),
-      pendingRequestCount: pendingIncomingRequests(user.id).length
+      pendingRequestCount: pendingIncomingRequests(user.id).length,
+      isModerator: isModerator(user.id)
     });
   }
 
@@ -1080,6 +1208,127 @@ async function handleApi(req, res, pathname, query) {
     }
     await saveUsers();
     return sendJson(res, 200, { user: publicUser(user, user.id) });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/gifs') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const requestedStatus = cleanText(query.get('status') || 'approved', 20);
+    const status = ['approved', 'pending', 'rejected'].includes(requestedStatus) ? requestedStatus : 'approved';
+    if (status !== 'approved' && !isModerator(user.id)) return sendError(res, 403, 'Moderator access required.');
+    const term = cleanText(query.get('q') || '', 80).toLowerCase();
+    const gifs = Object.values(db.gifs)
+      .filter((gif) => gif.status === status)
+      .filter((gif) => !term || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(term))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, 80)
+      .map((gif) => publicGif(gif, user.id));
+    return sendJson(res, 200, { gifs, isModerator: isModerator(user.id) });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/gifs') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const mime = mimeFromDataUrl(body.file?.dataUrl);
+    if (!['image/gif', 'image/webp'].includes(mime)) return sendError(res, 400, 'Choose an animated GIF or WebP file.');
+    const decoded = dataUrlToBuffer(body.file.dataUrl);
+    if (decoded.buffer.length > 8 * 1024 * 1024) return sendError(res, 413, 'GIF submissions must be 8 MB or smaller.');
+    const file = await saveUpload(body.file, user.id, 'gif');
+    const title = cleanText(body.title || path.parse(file.originalName).name || 'GIF', 60) || 'GIF';
+    const gif = {
+      id: id('gif'),
+      submitterId: user.id,
+      fileId: file.id,
+      title,
+      tags: cleanText(body.tags || '', 160).split(/[,#]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 12),
+      status: isModerator(user.id) ? 'approved' : 'pending',
+      createdAt: nowIso(),
+      reviewedAt: isModerator(user.id) ? nowIso() : null,
+      reviewedBy: isModerator(user.id) ? user.id : null
+    };
+    db.gifs[gif.id] = gif;
+    await saveGifs();
+    return sendJson(res, 201, { gif: publicGif(gif, user.id), pending: gif.status === 'pending' });
+  }
+
+  const gifReviewMatch = /^\/api\/gifs\/([^/]+)\/(approve|reject)$/.exec(pathname);
+  if (req.method === 'POST' && gifReviewMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    if (!isModerator(user.id)) return sendError(res, 403, 'Moderator access required.');
+    const gif = db.gifs[decodeURIComponent(gifReviewMatch[1])];
+    if (!gif) return sendError(res, 404, 'GIF submission not found.');
+    gif.status = gifReviewMatch[2] === 'approve' ? 'approved' : 'rejected';
+    gif.reviewedAt = nowIso();
+    gif.reviewedBy = user.id;
+    await saveGifs();
+    return sendJson(res, 200, { gif: publicGif(gif, user.id) });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/locations') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const term = cleanText(query.get('q') || '', 100);
+    if (term.length < 2) return sendJson(res, 200, { locations: [] });
+    const language = cleanText(String(req.headers['accept-language'] || 'en').slice(0, 2), 2).toLowerCase() || 'en';
+    const upstream = await fetchJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(term)}&count=8&language=${encodeURIComponent(language)}&format=json`);
+    const locations = (upstream.results || []).map((item) => ({
+      id: String(item.id || `${item.latitude},${item.longitude}`),
+      name: cleanText(item.name || term, 80),
+      region: cleanText([item.admin1, item.country].filter(Boolean).join(', '), 100),
+      latitude: storyNumber(item.latitude, -90, 90, 0),
+      longitude: storyNumber(item.longitude, -180, 180, 0),
+      timezone: cleanText(item.timezone || '', 80)
+    }));
+    return sendJson(res, 200, { locations });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/weather') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const latitude = storyNumber(query.get('lat'), -90, 90, NaN);
+    const longitude = storyNumber(query.get('lon'), -180, 180, NaN);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return sendError(res, 400, 'Valid coordinates are required.');
+    if (GOOGLE_WEATHER_API_KEY) {
+      try {
+        const url = new URL('https://weather.googleapis.com/v1/currentConditions:lookup');
+        url.searchParams.set('key', GOOGLE_WEATHER_API_KEY);
+        url.searchParams.set('location.latitude', String(latitude));
+        url.searchParams.set('location.longitude', String(longitude));
+        url.searchParams.set('unitsSystem', 'METRIC');
+        const result = await fetchJson(url.toString());
+        const condition = cleanText(result.weatherCondition?.description?.text || result.weatherCondition?.type || 'Current weather', 60);
+        return sendJson(res, 200, {
+          weather: {
+            latitude,
+            longitude,
+            temperature: storyNumber(result.temperature?.degrees, -100, 70, 0),
+            apparentTemperature: storyNumber(result.feelsLikeTemperature?.degrees, -100, 80, result.temperature?.degrees || 0),
+            condition,
+            symbol: weatherSymbol(condition),
+            isDay: Boolean(result.isDaytime),
+            provider: 'Google Weather'
+          }
+        });
+      } catch {
+        // Fall back to the no-key provider when Google is unavailable.
+      }
+    }
+    const result = await fetchJson(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,apparent_temperature,weather_code,is_day&timezone=auto`);
+    const condition = weatherDescription(result.current?.weather_code);
+    return sendJson(res, 200, {
+      weather: {
+        latitude,
+        longitude,
+        temperature: storyNumber(result.current?.temperature_2m, -100, 70, 0),
+        apparentTemperature: storyNumber(result.current?.apparent_temperature, -100, 80, result.current?.temperature_2m || 0),
+        condition,
+        symbol: weatherSymbol(condition),
+        isDay: Boolean(result.current?.is_day),
+        provider: 'Open-Meteo'
+      }
+    });
   }
 
   if (req.method === 'POST' && pathname === '/api/me/story') {
@@ -1163,6 +1412,7 @@ async function handleApi(req, res, pathname, query) {
       views: [],
       likes: [],
       comments: [],
+      stickerResponses: {},
       deletedAt: null
     };
     db.stories[story.id] = story;
@@ -1233,6 +1483,44 @@ async function handleApi(req, res, pathname, query) {
     notifyMentions(user, text, 'in a story comment');
     await Promise.all([saveStories(), saveNotifications()]);
     return sendJson(res, 201, { story: publicStory(story, user.id) });
+  }
+
+  const storyStickerResponseMatch = /^\/api\/stories\/([^/]+)\/stickers\/([^/]+)\/respond$/.exec(pathname);
+  if (req.method === 'POST' && storyStickerResponseMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const story = db.stories[decodeURIComponent(storyStickerResponseMatch[1])];
+    if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
+    const stickerId = cleanText(decodeURIComponent(storyStickerResponseMatch[2]), 80);
+    const sticker = stickerId === 'poll'
+      ? { id: 'poll', type: 'poll', data: { options: [story.edits?.pollOptionA || 'Yes', story.edits?.pollOptionB || 'No'] } }
+      : (story.edits?.stickers || []).find((item) => item.id === stickerId);
+    if (!sticker || !['poll', 'quiz', 'emoji_slider', 'question', 'add_yours'].includes(sticker.type)) {
+      return sendError(res, 404, 'Interactive sticker not found.');
+    }
+    const body = await readJsonBody(req);
+    let value;
+    if (sticker.type === 'emoji_slider') {
+      value = storyNumber(body.value, 0, 100, NaN);
+      if (!Number.isFinite(value)) return sendError(res, 400, 'Choose a slider position.');
+    } else if (['poll', 'quiz'].includes(sticker.type)) {
+      value = cleanText(body.value || '', 40);
+      const options = sticker.type === 'poll'
+        ? [story.edits?.pollOptionA || 'Yes', story.edits?.pollOptionB || 'No']
+        : (sticker.data?.options || []);
+      if (!options.includes(value)) return sendError(res, 400, 'Choose one of the available options.');
+    } else {
+      value = cleanText(body.value || '', 160);
+      if (!value) return sendError(res, 400, 'Write a response first.');
+    }
+    if (!story.stickerResponses || typeof story.stickerResponses !== 'object') story.stickerResponses = {};
+    const existing = Array.isArray(story.stickerResponses[stickerId]) ? story.stickerResponses[stickerId] : [];
+    story.stickerResponses[stickerId] = [
+      ...existing.filter((response) => response.userId !== user.id),
+      { id: id('response'), userId: user.id, value, createdAt: nowIso() }
+    ].slice(-500);
+    await saveStories();
+    return sendJson(res, 200, { story: publicStory(story, user.id) });
   }
 
   const storyDeleteMatch = /^\/api\/stories\/([^/]+)$/.exec(pathname);

@@ -12,6 +12,7 @@ const PNG_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1
 const TEXT_DATA = 'data:text/plain;base64,SGVsbG8gZnJvbSBhIGRvY3VtZW50Lg==';
 const AUDIO_DATA = 'data:audio/wav;base64,UklGRg==';
 const VIDEO_DATA = 'data:video/mp4;base64,AAAAHGZ0eXBtcDQy';
+const GIF_DATA = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 class ApiClient {
   constructor(baseUrl) {
@@ -130,10 +131,19 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /class="story-video-timeline"/);
   assert.match(clientSource, /data-story-video-trim="start"/);
   assert.match(clientSource, /data-action="story-video-speed"/);
+  assert.match(clientSource, /function updateRecommendationsSection/);
+  assert.match(clientSource, /data-action="open-story-owner-menu"/);
+  assert.match(clientSource, /class="story-upload-progress"/);
+  assert.match(clientSource, /data-story-slider/);
+  assert.match(clientSource, /class="story-gif-grid"/);
+  assert.doesNotMatch(clientSource, /class="story-card"/);
   assert.match(styleSource, /\.story-editor-page \{[\s\S]*?top: var\(--visual-top\)/);
   assert.match(styleSource, /html\.keyboard-open \.bottom-tabs/);
   assert.match(styleSource, /\.story-video-filmstrip/);
   assert.match(styleSource, /\.story-floating-tray \{[\s\S]*?position: absolute/);
+  assert.match(styleSource, /\.profile-avatar-add/);
+  assert.match(styleSource, /\.story-upload-progress/);
+  assert.match(styleSource, /\.story-gif-media/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -183,6 +193,31 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   const bobUser = await register(bob, 'bob_test');
   const charlieUser = await register(charlie, 'charlie_test');
   const doraUser = await register(dora, 'dora_test');
+
+  const moderatorState = await alice.request('/api/me');
+  assert.equal(moderatorState.status, 200);
+  assert.equal(moderatorState.data.isModerator, true);
+
+  const gifSubmission = await bob.request('/api/gifs', {
+    method: 'POST',
+    body: {
+      title: 'Tiny wave',
+      tags: 'wave, hello',
+      file: { name: 'wave.gif', type: 'image/gif', dataUrl: GIF_DATA }
+    }
+  });
+  assert.equal(gifSubmission.status, 201);
+  assert.equal(gifSubmission.data.pending, true);
+  assert.equal(gifSubmission.data.gif.status, 'pending');
+  assert.equal((await bob.request(gifSubmission.data.gif.file.url)).status, 200);
+  assert.equal((await charlie.request('/api/gifs?status=pending')).status, 403);
+  const pendingGifs = await alice.request('/api/gifs?status=pending');
+  assert.ok(pendingGifs.data.gifs.some((gif) => gif.id === gifSubmission.data.gif.id));
+  assert.ok(!(await charlie.request('/api/gifs')).data.gifs.some((gif) => gif.id === gifSubmission.data.gif.id));
+  assert.equal((await alice.request(`/api/gifs/${gifSubmission.data.gif.id}/approve`, { method: 'POST' })).status, 200);
+  const approvedGifs = await charlie.request('/api/gifs?q=wave');
+  assert.ok(approvedGifs.data.gifs.some((gif) => gif.id === gifSubmission.data.gif.id));
+  assert.equal((await charlie.request(gifSubmission.data.gif.file.url)).status, 200);
 
   const duplicate = await anonymous.request('/api/auth/register', {
     method: 'POST',
@@ -405,8 +440,14 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
           { type: 'mention', label: '@bob_test', x: 50, y: 62, rotation: 0, size: 1 },
           { type: 'link', label: 'example.com', href: 'https://example.com/path', x: 48, y: 72, rotation: 0, size: 1 },
           { type: 'link', label: 'Unsafe', href: 'javascript:alert(1)', x: 50, y: 78, rotation: 0, size: 1 },
-          { type: 'add_yours', label: 'Show your setup', x: 52, y: 32, rotation: 0, size: 1 }
+          { id: 'add_yours_test', type: 'add_yours', label: 'Show your setup', x: 52, y: 32, rotation: 0, size: 1 },
+          { id: 'quiz_test', type: 'quiz', label: 'Pick one', data: { options: ['Blue', 'Pink'], correctIndex: 1 }, x: 46, y: 38, rotation: 0, size: 1 },
+          { id: 'slider_test', type: 'emoji_slider', label: 'How much?', data: { emoji: '\ud83d\ude0d' }, x: 54, y: 48, rotation: 0, size: 1 },
+          { id: 'weather_test', type: 'weather', label: '18 degrees', data: { placeName: 'Berlin', region: 'Berlin, Germany', latitude: 52.52, longitude: 13.405, temperature: 18, apparentTemperature: 17, condition: 'Clear', symbol: '\u2600\ufe0f', provider: 'Open-Meteo' }, x: 55, y: 55, rotation: 0, size: 1 }
         ],
+        pollQuestion: 'Coffee or tea?',
+        pollOptionA: 'Coffee',
+        pollOptionB: 'Tea',
         audioStart: 0,
         audioEnd: 30,
         trimStart: 4,
@@ -437,6 +478,8 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(storyResponse.data.story.edits.drawings[0].brush, 'neon');
   assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.type === 'link').href, 'https://example.com/path');
   assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.label === 'Unsafe').href, '');
+  assert.deepEqual(storyResponse.data.story.edits.stickers.find((sticker) => sticker.id === 'quiz_test').data.options, ['Blue', 'Pink']);
+  assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.id === 'weather_test').data.region, 'Berlin, Germany');
   const story = storyResponse.data.story;
 
   const privatePublicView = await anonymous.request('/api/users/alice_test');
@@ -460,6 +503,31 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   });
   assert.equal(comment.status, 201);
   assert.equal(comment.data.story.commentCount, 1);
+  const quizResponse = await bob.request(`/api/stories/${story.id}/stickers/quiz_test/respond`, {
+    method: 'POST',
+    body: { value: 'Pink' }
+  });
+  assert.equal(quizResponse.status, 200);
+  assert.equal(quizResponse.data.story.stickerResponses.quiz_test.myValue, 'Pink');
+  assert.equal(quizResponse.data.story.stickerResponses.quiz_test.optionCounts.Pink, 1);
+  assert.deepEqual(quizResponse.data.story.stickerResponses.quiz_test.responses, []);
+  const sliderResponse = await bob.request(`/api/stories/${story.id}/stickers/slider_test/respond`, {
+    method: 'POST',
+    body: { value: 74 }
+  });
+  assert.equal(sliderResponse.status, 200);
+  assert.equal(sliderResponse.data.story.stickerResponses.slider_test.average, 74);
+  assert.equal((await bob.request(`/api/stories/${story.id}/stickers/add_yours_test/respond`, {
+    method: 'POST',
+    body: { value: 'My desk' }
+  })).status, 200);
+  assert.equal((await bob.request(`/api/stories/${story.id}/stickers/poll/respond`, {
+    method: 'POST',
+    body: { value: 'Coffee' }
+  })).status, 200);
+  const ownerStory = (await alice.request('/api/me')).data.user.stories.find((item) => item.id === story.id);
+  assert.equal(ownerStory.stickerResponses.quiz_test.responses[0].user.id, bobUser.id);
+  assert.equal(ownerStory.stickerResponses.poll.optionCounts.Coffee, 1);
   assert.equal((await bob.request(story.file.url)).status, 200);
   assert.equal((await bob.request(story.audio.url)).status, 200);
 

@@ -38,6 +38,7 @@
     needsTwoFactor: false,
     me: null,
     twoFactorEnabled: false,
+    isModerator: false,
     twoFactorSetup: null,
     tab: 'chats',
     lastTab: 'chats',
@@ -76,6 +77,10 @@
     toasts: [],
     actionSheet: null,
     storyMenuOpen: false,
+    storyPublishing: false,
+    gifPool: [],
+    pendingGifs: [],
+    gifLoading: false,
     overlayClosing: false,
     profileEditOpen: false,
     settingsOpen: false,
@@ -118,6 +123,11 @@
   let storyMediaTransformFrame = 0;
   let storyDrawFrame = 0;
   let pendingStoryStroke = null;
+  let storyLocationTimer = null;
+  let storyGifTimer = null;
+  let storyLocationRequestId = 0;
+  let storyGifRequestId = 0;
+  let storyCountdownTimer = null;
 
   function freshCallState() {
     return {
@@ -197,9 +207,15 @@
     return label.trim().slice(0, 2).toUpperCase();
   }
 
+  function activeProfileStory(user) {
+    return (user?.stories || []).find((story) => (
+      !story.saved && story.file && new Date(story.expiresAt || 0).getTime() > Date.now()
+    )) || null;
+  }
+
   function avatarHtml(user) {
     const avatarUrl = user?.avatar?.url;
-    const story = user?.stories?.[0];
+    const story = activeProfileStory(user);
     const storyRing = story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : '';
     return `<span class="avatar ${story ? 'has-story' : ''}">${avatarUrl ? `<img src="${esc(avatarUrl)}" alt="">` : esc(initials(user))}${storyRing}</span>`;
   }
@@ -252,7 +268,8 @@
       pause: '<svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>',
       scissors: '<svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.6 8.5 11.4 7M8.6 15.5 20 8.5"/></svg>',
       volume: '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg>',
-      fit: '<svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>'
+      fit: '<svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>',
+      check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -316,6 +333,7 @@
     }
 
     await loadContactsAndChats();
+    await loadGifPool();
     if (publicName) {
       state.tab = 'search';
       await loadPublicProfile(publicName);
@@ -427,14 +445,14 @@
       </div>
       <div id="call-dock-slot">${renderCallDock()}</div>
       <div id="toast-slot">${renderToastStack()}</div>
-      ${renderActionSheet()}
-      ${renderStoryMenu()}
-      ${renderProfileEditModal()}
-      ${renderSettingsModal()}
-      ${renderAvatarCropper()}
-      ${renderStoryEditor()}
-      ${renderStoryViewer()}
-      ${renderMediaViewer()}
+      <div id="action-sheet-slot">${renderActionSheet()}</div>
+      <div id="story-menu-slot">${renderStoryMenu()}</div>
+      <div id="profile-edit-slot">${renderProfileEditModal()}</div>
+      <div id="settings-slot">${renderSettingsModal()}</div>
+      <div id="avatar-crop-slot">${renderAvatarCropper()}</div>
+      <div id="story-editor-slot">${renderStoryEditor()}</div>
+      <div id="story-viewer-slot">${renderStoryViewer()}</div>
+      <div id="media-viewer-slot">${renderMediaViewer()}</div>
     `;
     state.tabTransition = false;
     setTimeout(() => {
@@ -454,6 +472,69 @@
       attachStoryViewerVideo();
       state.chatReturnAnimation = false;
     }, 0);
+  }
+
+  function updateSlot(id, html) {
+    const slot = document.getElementById(id);
+    if (!slot) return false;
+    slot.innerHTML = html;
+    return true;
+  }
+
+  function updateActionSheetSlot() {
+    return updateSlot('action-sheet-slot', renderActionSheet());
+  }
+
+  function updateStoryMenuSlot() {
+    return updateSlot('story-menu-slot', renderStoryMenu());
+  }
+
+  function updateProfileModalSlots() {
+    updateSlot('profile-edit-slot', renderProfileEditModal());
+    updateSlot('settings-slot', renderSettingsModal());
+    updateSlot('avatar-crop-slot', renderAvatarCropper());
+  }
+
+  function updateStoryEditorView() {
+    const editor = state.storyEditor;
+    const currentVideo = document.getElementById('story-editor-video');
+    if (editor?.isVideo && currentVideo) editor.videoCurrentTime = currentVideo.currentTime;
+    if (!updateSlot('story-editor-slot', renderStoryEditor())) return false;
+    requestAnimationFrame(() => {
+      attachStoryEditorVideo();
+      if (state.storyEditor?.textEditing) {
+        const input = document.getElementById('story-editor-text');
+        input?.focus({ preventScroll: true });
+        input?.setSelectionRange?.(input.value.length, input.value.length);
+        resizeStoryTextInput(input);
+        centerStoryActiveChoice();
+      }
+    });
+    return true;
+  }
+
+  function updateStoryViewerView() {
+    if (!updateSlot('story-viewer-slot', renderStoryViewer())) return false;
+    requestAnimationFrame(() => {
+      attachStoryViewerVideo();
+      startStoryCountdownClock();
+    });
+    return true;
+  }
+
+  function updateMediaViewerSlot() {
+    return updateSlot('media-viewer-slot', renderMediaViewer());
+  }
+
+  function updateRecommendationsSection() {
+    const current = document.querySelector('.suggestion-section');
+    if (!current) return false;
+    const template = document.createElement('template');
+    template.innerHTML = renderRecommendations().trim();
+    const next = template.content.firstElementChild;
+    if (!next) return false;
+    current.replaceWith(next);
+    return true;
   }
 
   function renderSidebar() {
@@ -563,7 +644,7 @@
   }
 
   function renderSearchProfilePage(user) {
-    const story = user.stories?.[0];
+    const story = activeProfileStory(user);
     return `
       <section class="search-profile-page">
         <header class="page-header search-profile-header">
@@ -618,16 +699,19 @@
   function renderProfilePanel() {
     if (state.profileSocialView) return renderProfileSocialPage();
     const profileUrl = `${location.origin}/u/${state.me.username}`;
-    const story = state.me.stories?.[0];
+    const story = activeProfileStory(state.me);
     return `
       <section class="profile-top-actions">
         <button class="icon-btn" data-action="open-settings" aria-label="Settings">${icon('menu')}</button>
       </section>
       <section class="profile-hero">
-        <button class="avatar profile-avatar-btn" data-action="avatar-menu" title="Profile picture and story">
-          ${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}
-          ${story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : ''}
-        </button>
+        <div class="profile-avatar-wrap">
+          <button class="avatar profile-avatar-btn" data-action="${story ? 'view-story' : 'avatar-menu'}" ${story ? `data-story-id="${esc(story.id)}"` : ''} title="${story ? 'View your story' : 'Profile picture and story'}">
+            ${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}
+            ${story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : ''}
+          </button>
+          <button class="profile-avatar-add" data-action="avatar-menu" aria-label="Add story or change profile picture">+</button>
+        </div>
         <div>
           <strong>${esc(state.me.displayName)}</strong>
           <span class="profile-username">@${esc(state.me.username)} <button class="icon-inline-btn" data-action="open-profile-edit" aria-label="Edit profile">${icon('edit')}</button></span>
@@ -643,17 +727,6 @@
         <input id="avatar-input" type="file" accept="image/*" hidden>
         <input id="story-input" type="file" accept="image/*,video/*" hidden>
       </section>
-      ${story ? `
-        <section class="panel-card story-card">
-          <h2>Story</h2>
-          ${renderStoryMedia(story)}
-          ${renderStoryEngagement(story)}
-          <div class="toolbar">
-            ${story.saved ? '<span class="hint">Saved</span>' : `<button class="secondary" data-action="save-story" data-story-id="${esc(story.id)}">Save</button>`}
-            <button class="danger" data-action="delete-story" data-story-id="${esc(story.id)}">Delete forever</button>
-          </div>
-        </section>
-      ` : ''}
       ${renderHighlights(state.me, true)}
       <section class="profile-fill">
         <h2>Activity</h2>
@@ -1123,51 +1196,142 @@
     `;
   }
 
+  function storySheetHeader(title) {
+    return `<div class="story-sheet-grabber"></div><header><button data-action="story-sticker-back" aria-label="Back">${icon('back')}</button><strong>${esc(title)}</strong><span></span></header>`;
+  }
+
+  function storyMapEmbedUrl(location) {
+    if (!location || !Number.isFinite(Number(location.latitude)) || !Number.isFinite(Number(location.longitude))) return '';
+    const lat = Number(location.latitude);
+    const lon = Number(location.longitude);
+    const bbox = [lon - 0.018, lat - 0.012, lon + 0.018, lat + 0.012].join(',');
+    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lon}`)}`;
+  }
+
+  function storyLocationComposer(editor, type) {
+    const selected = editor.selectedLocation;
+    const weather = editor.weatherDraft;
+    const mapUrl = storyMapEmbedUrl(selected);
+    return `
+      <section class="story-sticker-sheet story-location-sheet" data-stop-close>
+        ${storySheetHeader(type === 'weather' ? 'Weather' : 'Location')}
+        <div class="story-native-entry">
+          ${icon('search')}
+          <input id="story-location-query" value="${esc(editor.locationQuery || '')}" placeholder="Search city, address, or postcode" enterkeyhint="search" autocomplete="street-address" autofocus>
+          <button data-action="story-current-location" data-location-type="${esc(type)}" aria-label="Use current location">${icon('location')}</button>
+        </div>
+        ${editor.locationSearching ? '<div class="story-inline-loading"><span class="spinner"></span></div>' : ''}
+        <div class="story-location-results">
+          ${(editor.locationResults || []).map((location) => `
+            <button data-action="select-story-location" data-location-type="${esc(type)}" data-latitude="${esc(location.latitude)}" data-longitude="${esc(location.longitude)}" data-name="${esc(location.name)}" data-region="${esc(location.region || '')}">
+              ${icon('location')}<span><strong>${esc(location.name)}</strong><small>${esc(location.region || '')}</small></span>
+            </button>
+          `).join('')}
+        </div>
+        ${selected ? `
+          <div class="story-map-preview">
+            ${mapUrl ? `<iframe title="Map of ${esc(selected.name)}" src="${esc(mapUrl)}" loading="lazy"></iframe>` : ''}
+            <span><strong>${esc(selected.name)}</strong><small>${esc(selected.region || '')}</small></span>
+          </div>
+          ${type === 'weather' ? `
+            <div class="story-weather-preview">
+              ${editor.weatherLoading ? '<span class="spinner"></span>' : weather ? `<strong>${esc(weather.symbol || '')} ${Math.round(Number(weather.temperature || 0))}&deg;</strong><span>${esc(weather.condition || '')}</span><small>Feels like ${Math.round(Number(weather.apparentTemperature || weather.temperature || 0))}&deg; · ${esc(weather.provider || '')}</small>` : '<small>Choose a place to load current weather.</small>'}
+            </div>
+          ` : ''}
+          <button class="story-sheet-done" data-action="add-selected-story-location" data-location-type="${esc(type)}" ${type === 'weather' && !weather ? 'disabled' : ''} aria-label="Add ${esc(type)}">${icon('check')}</button>
+        ` : (type === 'location' && editor.locationQuery?.trim() ? `<button class="story-use-typed" data-action="use-typed-story-location">Use “${esc(editor.locationQuery.trim())}”</button>` : '')}
+      </section>
+    `;
+  }
+
+  function storyGifComposer(editor) {
+    return `
+      <section class="story-sticker-sheet story-gif-sheet" data-stop-close>
+        ${storySheetHeader('GIFs')}
+        <div class="story-native-entry">
+          ${icon('search')}<input id="story-gif-search" value="${esc(editor.gifQuery || '')}" placeholder="Search approved GIFs" enterkeyhint="search" autocomplete="off">
+          <button data-action="toggle-gif-submit" aria-label="Suggest a GIF">+</button>
+        </div>
+        ${state.gifLoading ? '<div class="story-inline-loading"><span class="spinner"></span></div>' : ''}
+        ${editor.gifSubmitOpen ? `
+          <div class="story-gif-submit">
+            <input id="story-gif-title" value="${esc(editor.gifSubmissionTitle || '')}" maxlength="60" placeholder="GIF title">
+            <input id="story-gif-tags" value="${esc(editor.gifSubmissionTags || '')}" maxlength="160" placeholder="Tags, separated by commas">
+            <button data-action="story-gif-file-open">${icon('download')} Choose GIF</button>
+            <input id="story-gif-input" type="file" accept="image/gif,image/webp" hidden>
+            <small>${state.isModerator ? 'Your uploads are approved immediately.' : 'A moderator reviews submissions before everyone can use them.'}</small>
+          </div>
+        ` : ''}
+        <div class="story-gif-grid">
+          ${state.gifPool.length ? state.gifPool.map((gif) => `
+            <button data-action="add-gif-sticker" data-gif-id="${esc(gif.id)}" data-gif-url="${esc(gif.file?.url || '')}" data-gif-title="${esc(gif.title || 'GIF')}" aria-label="Add ${esc(gif.title || 'GIF')}"><img src="${esc(gif.file?.url || '')}" alt=""></button>
+          `).join('') : '<p>No approved GIFs match yet. Use + to suggest one.</p>'}
+        </div>
+      </section>
+    `;
+  }
+
+  function storyQuizComposer(editor) {
+    return `
+      <section class="story-sticker-sheet" data-stop-close>
+        ${storySheetHeader('Quiz')}
+        <input class="story-native-text" id="story-quiz-question" value="${esc(editor.quizQuestion || '')}" maxlength="80" placeholder="Ask a question" autofocus>
+        <div class="story-option-editor">
+          <label><input id="story-quiz-a" value="${esc(editor.quizOptionA || '')}" maxlength="40" placeholder="First answer"><button data-action="story-quiz-correct" data-index="0" class="${Number(editor.quizCorrect || 0) === 0 ? 'active' : ''}" aria-label="Mark first answer correct">${icon('check')}</button></label>
+          <label><input id="story-quiz-b" value="${esc(editor.quizOptionB || '')}" maxlength="40" placeholder="Second answer"><button data-action="story-quiz-correct" data-index="1" class="${Number(editor.quizCorrect || 0) === 1 ? 'active' : ''}" aria-label="Mark second answer correct">${icon('check')}</button></label>
+        </div>
+        <button class="story-sheet-done" data-action="finish-story-quiz" aria-label="Add quiz">${icon('check')}</button>
+      </section>
+    `;
+  }
+
   function storyStickerToolPanel(editor) {
     const composer = editor.stickerComposer || '';
+    if (composer === 'location' || composer === 'weather') return storyLocationComposer(editor, composer);
+    if (composer === 'gif') return storyGifComposer(editor);
+    if (composer === 'quiz') return storyQuizComposer(editor);
     if (composer === 'poll') {
       return `
         <section class="story-sticker-sheet" data-stop-close>
-          <div class="story-sheet-grabber"></div>
-          <header><button data-action="story-sticker-back" aria-label="Back">${icon('back')}</button><strong>Poll</strong><span></span></header>
-          <input class="story-sheet-input" id="story-poll-question" value="${esc(editor.pollQuestion || '')}" maxlength="80" placeholder="Ask a question">
+          ${storySheetHeader('Poll')}
+          <input class="story-native-text" id="story-poll-question" value="${esc(editor.pollQuestion || '')}" maxlength="80" placeholder="Ask a question" autofocus>
           <div class="story-poll-options">
             <input id="story-poll-a" value="${esc(editor.pollOptionA || 'Yes')}" maxlength="40" aria-label="First poll option">
             <input id="story-poll-b" value="${esc(editor.pollOptionB || 'No')}" maxlength="40" aria-label="Second poll option">
           </div>
-          <button class="story-sheet-confirm" data-action="finish-story-poll">Add poll</button>
+          <button class="story-sheet-done" data-action="finish-story-poll" aria-label="Add poll">${icon('check')}</button>
+        </section>
+      `;
+    }
+    if (composer === 'emoji_slider') {
+      return `
+        <section class="story-sticker-sheet" data-stop-close>
+          ${storySheetHeader('Emoji slider')}
+          <input class="story-native-text" id="story-slider-question" value="${esc(editor.sliderQuestion || '')}" maxlength="80" placeholder="Ask a question" autofocus>
+          <label class="story-emoji-choice"><span>Emoji</span><input id="story-slider-emoji" value="${esc(editor.sliderEmoji || '\ud83d\ude0d')}" maxlength="8"></label>
+          <div class="story-slider-preview"><span>${esc(editor.sliderEmoji || '\ud83d\ude0d')}</span><i></i></div>
+          <button class="story-sheet-done" data-action="finish-story-slider" aria-label="Add slider">${icon('check')}</button>
+        </section>
+      `;
+    }
+    if (composer === 'countdown') {
+      return `
+        <section class="story-sticker-sheet" data-stop-close>
+          ${storySheetHeader('Countdown')}
+          <input class="story-native-text" id="story-countdown-title" value="${esc(editor.countdownTitle || '')}" maxlength="60" placeholder="Countdown name" autofocus>
+          <input class="story-native-text" id="story-countdown-at" type="datetime-local" value="${esc(editor.countdownAt || '')}">
+          <button class="story-sheet-done" data-action="finish-story-countdown" aria-label="Add countdown">${icon('check')}</button>
         </section>
       `;
     }
     if (composer) {
-      const labels = {
-        mention: 'Mention',
-        question: 'Question',
-        hashtag: 'Hashtag',
-        countdown: 'Countdown',
-        location: 'Location',
-        link: 'Link',
-        add_yours: 'Add Yours',
-        quiz: 'Quiz',
-        emoji_slider: 'Emoji slider',
-        weather: 'Weather',
-        captions: 'Captions'
-      };
-      const placeholders = {
-        mention: '@username',
-        link: 'https://example.com',
-        add_yours: 'Share a prompt',
-        quiz: 'Ask a quiz question',
-        emoji_slider: 'How do you feel?',
-        weather: 'Weather and temperature',
-        captions: 'Add a caption'
-      };
+      const labels = { mention: 'Mention', question: 'Questions', hashtag: 'Hashtag', link: 'Link', add_yours: 'Add Yours', captions: 'Captions' };
+      const placeholders = { mention: '@username', question: 'Ask me a question', hashtag: '#hashtag', link: 'https://example.com', add_yours: 'Write a prompt', captions: 'Add a caption' };
       return `
         <section class="story-sticker-sheet" data-stop-close>
-          <div class="story-sheet-grabber"></div>
-          <header><button data-action="story-sticker-back" aria-label="Back">${icon('back')}</button><strong>${esc(labels[composer] || 'Sticker')}</strong><span></span></header>
-          <input class="story-sheet-input" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="160" placeholder="${esc(placeholders[composer] || 'Type here')}" ${composer === 'link' ? 'inputmode="url"' : ''} autofocus>
-          <button class="story-sheet-confirm" data-action="commit-story-sticker" data-sticker-type="${esc(composer)}">Add sticker</button>
+          ${storySheetHeader(labels[composer] || 'Sticker')}
+          <input class="story-native-text" id="story-sticker-text" value="${esc(editor.stickerDraft || '')}" maxlength="160" placeholder="${esc(placeholders[composer] || 'Write something')}" ${composer === 'link' ? 'inputmode="url" autocapitalize="none"' : ''} autofocus>
+          <button class="story-sheet-done" data-action="commit-story-sticker" data-sticker-type="${esc(composer)}" aria-label="Add sticker">${icon('check')}</button>
         </section>
       `;
     }
@@ -1181,7 +1345,7 @@
           <button data-search="mention tag user" data-action="choose-story-sticker" data-sticker-type="mention"><span class="mention-sticker">@MENTION</span></button>
           <button data-search="location place map" data-action="choose-story-sticker" data-sticker-type="location"><span class="location-sticker">${icon('location')} LOCATION</span></button>
           <button data-search="link website url" data-action="choose-story-sticker" data-sticker-type="link"><span class="link-sticker">${icon('link')} LINK</span></button>
-          <button data-search="gif animated" data-action="add-story-sticker" data-sticker-type="gif" data-sticker-label="GIF"><span class="gif-sticker">GIF</span></button>
+          <button data-search="gif animated" data-action="choose-story-sticker" data-sticker-type="gif"><span class="gif-sticker">GIF</span></button>
           <button data-search="music audio song" data-action="story-tool" data-tool="audio"><span class="music-sticker">${icon('music')} MUSIC</span></button>
           <button data-search="poll vote" data-action="choose-story-sticker" data-sticker-type="poll"><span class="poll-choice">POLL</span></button>
           <button data-search="emoji slider reaction" data-action="choose-story-sticker" data-sticker-type="emoji_slider"><span class="emoji-slider-sticker">&#x1F60D; SLIDER</span></button>
@@ -1225,21 +1389,22 @@
   }
 
   function storyAudioToolPanel(editor) {
+    const duration = Math.max(1, Number(editor.audio?.duration || 30));
+    const maxStart = Math.max(0, duration - 1);
     return `
       <section class="story-sticker-sheet story-audio-sheet" data-stop-close>
         <div class="story-sheet-grabber"></div>
         <header><span></span><strong>Music</strong><button data-action="finish-story-tool" aria-label="Close music">${icon('x')}</button></header>
-        <button class="story-audio-pick" data-action="story-audio-open">${icon('music')} Choose audio from device</button>
+        <button class="story-audio-pick" data-action="story-audio-open">${icon('music')}<span>${editor.audio ? 'Choose another track' : 'Choose audio from device'}</span></button>
         <input id="story-audio-input" type="file" accept="audio/*" hidden>
         ${editor.audio ? `
           <div class="story-audio-edit">
-            <strong>${esc(editor.audio.name || 'Audio')}</strong>
-            <audio src="${esc(editor.audio.dataUrl)}#t=${esc(editor.audioStart || 0)},${esc(editor.audioEnd || 30)}" controls></audio>
-            <div class="story-mini-grid">
-              <label>Start <input id="story-audio-start" type="number" min="0" step="0.1" value="${esc(editor.audioStart || 0)}"></label>
-              <label>End <input id="story-audio-end" type="number" min="0" step="0.1" value="${esc(editor.audioEnd || 30)}"></label>
+            ${renderStoryAudioPlayer(`${editor.audio.dataUrl}#t=${Number(editor.audioStart || 0)},${Number(editor.audioEnd || 30)}`, editor.audio.name || 'Audio', Math.max(1, Number(editor.audioEnd || 30) - Number(editor.audioStart || 0)), 'editor-audio')}
+            <div class="story-audio-trim">
+              <label><span>Start <output>${esc(formatClipTime(editor.audioStart || 0))}</output></span><input id="story-audio-start" type="range" min="0" max="${esc(maxStart)}" step="0.1" value="${esc(editor.audioStart || 0)}"></label>
+              <label><span>End <output>${esc(formatClipTime(editor.audioEnd || Math.min(duration, 30)))}</output></span><input id="story-audio-end" type="range" min="1" max="${esc(duration)}" step="0.1" value="${esc(editor.audioEnd || Math.min(duration, 30))}"></label>
             </div>
-            <small>Choose a clip up to 30 seconds.</small>
+            <small>The selected clip is limited to 30 seconds.</small>
           </div>
         ` : '<p class="story-sheet-empty">Choose a song or recording to add it to this story.</p>'}
       </section>
@@ -1332,9 +1497,9 @@
           : `<img src="${esc(mediaUrl)}" alt="" style="${esc(style)}">`}
         ${renderStoryEffectLayers(edits, compact)}
         ${renderOverlays ? renderStoryDrawings(edits) : ''}
-        ${renderOverlays ? renderStoryStickers(edits) : ''}
+        ${renderOverlays ? renderStoryStickers(edits, viewer ? story : null, compact) : ''}
         ${renderOverlays && edits.text ? `<span class="story-text-overlay ${esc(storyTextClass(edits))}" style="${esc(storyTextStyle(edits))}">${esc(edits.text)}</span>` : ''}
-        ${renderOverlays && edits.pollQuestion ? renderPollSticker(edits, compact) : ''}
+        ${renderOverlays && edits.pollQuestion ? renderPollSticker(edits, compact, viewer ? story : null) : ''}
         ${story.audio && !compact ? renderStoryAudio(story) : ''}
       </div>
     `;
@@ -1357,26 +1522,92 @@
     return `left:${x}%;top:${y}%;transform:translate(-50%,-50%) rotate(${rotation}deg) scale(${size});`;
   }
 
-  function renderStoryStickers(edits = {}) {
-    const stickers = Array.isArray(edits.stickers) ? edits.stickers : [];
-    return stickers.map((sticker) => {
-      const href = sticker.type === 'link' ? normalizeStoryLink(sticker.href) : '';
-      if (href) {
-        return `<a class="story-sticker story-sticker-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer" style="${esc(storyStickerStyle(sticker))}">${icon('link')}${esc(sticker.label || 'Link')}</a>`;
-      }
+  function storyStickerResponse(story, stickerId) {
+    return story?.stickerResponses?.[stickerId] || { count: 0, optionCounts: {}, myValue: null, average: null };
+  }
+
+  function storyStickerPercent(response, value) {
+    const count = Math.max(0, Number(response?.count || 0));
+    if (!count) return 0;
+    return Math.round((Number(response?.optionCounts?.[String(value)] || 0) / count) * 100);
+  }
+
+  function renderStoryStickerContent(sticker, story = null, editor = false) {
+    const data = sticker.data || {};
+    const response = storyStickerResponse(story, sticker.id);
+    const type = sticker.type || 'emoji';
+    if (type === 'gif' && data.gifUrl) {
+      return `<img class="story-gif-media" src="${esc(data.gifUrl)}" alt="${esc(sticker.label || 'GIF')}" loading="eager">`;
+    }
+    if (type === 'location') {
+      return `${icon('location')}<span><strong>${esc(data.placeName || sticker.label || 'Location')}</strong>${data.region ? `<small>${esc(data.region)}</small>` : ''}</span>`;
+    }
+    if (type === 'weather') {
+      return `<span class="story-weather-symbol">${esc(data.symbol || '')}</span><span><strong>${Math.round(Number(data.temperature || 0))}&deg;</strong><small>${esc(data.condition || data.placeName || 'Weather')}</small></span>`;
+    }
+    if (type === 'countdown') {
+      return `<strong>${esc(sticker.label || 'Countdown')}</strong><time data-countdown-at="${esc(data.targetAt || '')}">${esc(formatStoryCountdown(data.targetAt))}</time>`;
+    }
+    if (type === 'quiz') {
+      const options = Array.isArray(data.options) ? data.options : [];
       return `
-        <span class="story-sticker story-sticker-${esc(sticker.type || 'emoji')}" style="${esc(storyStickerStyle(sticker))}">
-          ${esc(sticker.label || '')}
+        <strong>${esc(sticker.label || 'Quiz')}</strong>
+        <span class="story-choice-list">
+          ${options.map((option) => editor || !story
+            ? `<span>${esc(option)}</span>`
+            : `<button type="button" class="${String(response.myValue) === String(option) ? 'selected' : ''}" data-action="respond-story-sticker" data-story-id="${esc(story.id)}" data-sticker-id="${esc(sticker.id)}" data-value="${esc(option)}"><span>${esc(option)}</span>${response.count ? `<small>${storyStickerPercent(response, option)}%</small>` : ''}</button>`).join('')}
         </span>
       `;
+    }
+    if (type === 'emoji_slider') {
+      const current = response.myValue ?? response.average ?? 50;
+      return `
+        <strong>${esc(sticker.label || 'How do you feel?')}</strong>
+        <label class="story-live-slider">
+          <span>${esc(data.emoji || '\ud83d\ude0d')}</span>
+          <input type="range" min="0" max="100" step="1" value="${esc(Math.round(Number(current)))}" ${story && !editor ? `data-story-slider data-story-id="${esc(story.id)}" data-sticker-id="${esc(sticker.id)}"` : 'disabled'} aria-label="Emoji slider">
+        </label>
+        ${response.count ? `<small>${response.count} response${response.count === 1 ? '' : 's'}</small>` : ''}
+      `;
+    }
+    if (type === 'question' || type === 'add_yours') {
+      return `
+        <strong>${esc(sticker.label || (type === 'question' ? 'Ask me a question' : 'Add yours'))}</strong>
+        ${story && !editor ? `<button type="button" class="story-sticker-reply" data-action="respond-story-text" data-story-id="${esc(story.id)}" data-sticker-id="${esc(sticker.id)}">${response.myValue ? 'Edit reply' : 'Reply'}</button>` : ''}
+      `;
+    }
+    return esc(sticker.label || '');
+  }
+
+  function storyMapLink(sticker) {
+    const latitude = Number(sticker?.data?.latitude);
+    const longitude = Number(sticker?.data?.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || (!latitude && !longitude)) return '';
+    return `https://www.openstreetmap.org/?mlat=${encodeURIComponent(latitude)}&mlon=${encodeURIComponent(longitude)}#map=14/${encodeURIComponent(latitude)}/${encodeURIComponent(longitude)}`;
+  }
+
+  function renderStoryStickers(edits = {}, story = null, compact = false) {
+    const stickers = Array.isArray(edits.stickers) ? edits.stickers : [];
+    return stickers.map((sticker) => {
+      const type = sticker.type || 'emoji';
+      const href = type === 'link' ? normalizeStoryLink(sticker.href) : '';
+      const mapHref = ['location', 'weather'].includes(type) ? storyMapLink(sticker) : '';
+      const content = renderStoryStickerContent(sticker, story, false);
+      const className = `story-sticker story-sticker-${esc(type)} ${story ? 'story-viewer-sticker' : ''} ${compact ? 'compact' : ''}`;
+      if (href || mapHref) {
+        return `<a class="${className}" href="${esc(href || mapHref)}" target="_blank" rel="noopener noreferrer" style="${esc(storyStickerStyle(sticker))}">${type === 'link' ? icon('link') : ''}${content}</a>`;
+      }
+      const interactive = Boolean(story && ['quiz', 'emoji_slider', 'question', 'add_yours'].includes(type));
+      const tag = interactive ? 'div' : 'span';
+      return `<${tag} class="${className} ${interactive ? 'story-sticker-interactive' : ''}" style="${esc(storyStickerStyle(sticker))}">${content}</${tag}>`;
     }).join('');
   }
 
   function renderStoryEditorStickers(editor = {}) {
     const stickers = Array.isArray(editor.stickers) ? editor.stickers : [];
     return stickers.map((sticker) => `
-      <button class="story-sticker story-editor-sticker story-sticker-${esc(sticker.type || 'emoji')}" data-action="story-sticker-drag" data-sticker-id="${esc(sticker.id)}" style="${esc(storyStickerStyle(sticker))}" aria-label="Move ${esc(sticker.label || 'sticker')}">
-        ${esc(sticker.label || '')}
+      <button type="button" class="story-sticker story-editor-sticker story-sticker-${esc(sticker.type || 'emoji')}" data-action="story-sticker-drag" data-sticker-id="${esc(sticker.id)}" style="${esc(storyStickerStyle(sticker))}" aria-label="Move ${esc(sticker.label || 'sticker')}">
+        ${renderStoryStickerContent(sticker, null, true)}
       </button>
     `).join('');
   }
@@ -1399,28 +1630,46 @@
     `;
   }
 
+  function renderAudioBars(seed = '', count = 26) {
+    let hash = Array.from(String(seed)).reduce((value, char) => ((value * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
+    return Array.from({ length: count }, (_, index) => {
+      hash = (Math.imul(hash ^ (index + 1), 16777619)) >>> 0;
+      const height = 22 + (hash % 72);
+      return `<i style="--bar-height:${height}%"></i>`;
+    }).join('');
+  }
+
+  function renderStoryAudioPlayer(source, name, duration = 30, extraClass = '') {
+    if (!source) return '';
+    return `
+      <div class="story-audio-ui ${esc(extraClass)}">
+        <button type="button" data-action="toggle-story-audio" aria-label="Play audio">${icon('play')}</button>
+        <span class="story-audio-copy"><strong>${esc(name || 'Audio')}</strong><small>${Math.max(1, Math.round(Number(duration || 30)))} sec</small></span>
+        <span class="story-audio-wave" aria-hidden="true">${renderAudioBars(name)}</span>
+        <audio src="${esc(source)}" preload="metadata"></audio>
+      </div>
+    `;
+  }
+
   function renderStoryAudio(story) {
     const edits = story.edits || {};
     const start = Number(edits.audioStart || 0);
     const end = Number(edits.audioEnd || 30);
     const source = story.audio?.url ? `${story.audio.url}#t=${start},${end}` : '';
     if (!source) return '';
-    return `
-      <div class="story-audio-sticker">
-        ${icon('music')}
-        <span>${esc(story.audio.name || 'Audio')}</span>
-        <audio src="${esc(source)}" controls></audio>
-      </div>
-    `;
+    return `<div class="story-audio-sticker">${renderStoryAudioPlayer(source, story.audio.name || 'Audio', Math.max(1, end - start), 'viewer-audio')}</div>`;
   }
 
-  function renderPollSticker(edits = {}, compact = false) {
+  function renderPollSticker(edits = {}, compact = false, story = null) {
     if (compact) return '';
+    const response = storyStickerResponse(story, 'poll');
+    const options = [edits.pollOptionA || 'Yes', edits.pollOptionB || 'No'];
     return `
       <div class="story-poll-sticker">
         <strong>${esc(edits.pollQuestion || '')}</strong>
-        <span>${esc(edits.pollOptionA || 'Yes')}</span>
-        <span>${esc(edits.pollOptionB || 'No')}</span>
+        ${options.map((option) => story
+          ? `<button type="button" class="${String(response.myValue) === String(option) ? 'selected' : ''}" data-action="respond-story-poll" data-story-id="${esc(story.id)}" data-value="${esc(option)}"><span>${esc(option)}</span>${response.count ? `<small>${storyStickerPercent(response, option)}%</small>` : ''}</button>`
+          : `<span>${esc(option)}</span>`).join('')}
       </div>
     `;
   }
@@ -2043,7 +2292,7 @@
 
   function renderChatProfilePane() {
     const peer = state.activePeer;
-    const story = peer.stories?.[0];
+    const story = activeProfileStory(peer);
     if (state.chatProfileSocialView) return renderChatProfileSocialPage(peer);
     return `
       <main class="chat-pane profile-pane">
@@ -2411,32 +2660,46 @@
     if (sheet.type === 'story-comments') {
       const story = storyById(sheet.storyId);
       body = story ? `
-        <div class="sheet-note">
+        <header class="story-comments-head">
           <strong>Comments</strong>
-          <small>${esc(shortTime(story.createdAt))}</small>
-        </div>
+          <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close comments">${icon('x')}</button>
+        </header>
         <div class="story-comment-list">
           ${(story.comments || []).length ? story.comments.map((comment) => `
             <article>
               ${avatarHtml(comment.user)}
               <span>
-                <strong>${esc(comment.user?.displayName || 'User')}</strong>
+                <strong>@${esc(comment.user?.username || 'user')} <time>${esc(shortTime(comment.createdAt))}</time></strong>
                 <small>${esc(comment.text)}</small>
               </span>
             </article>
-          `).join('') : '<p class="hint">No comments yet.</p>'}
+          `).join('') : '<p class="story-comments-empty">No comments yet.</p>'}
         </div>
         <div class="story-comment-box">
-          <input class="search-input" id="story-comment-input" maxlength="280" placeholder="Add a comment">
-          <button data-action="submit-story-comment" data-story-id="${esc(story.id)}">${icon('send')}</button>
+          <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." autocomplete="off">
+          <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
         </div>
       ` : '<p class="hint">Story not found.</p>';
     }
+    if (sheet.type === 'story-owner') {
+      const story = storyById(sheet.storyId);
+      body = story ? `
+        <header class="story-owner-menu-head">
+          <strong>Story</strong>
+          <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close story menu">${icon('x')}</button>
+        </header>
+        ${story.saved
+          ? '<span class="story-owner-saved">Saved to highlights</span>'
+          : `<button class="story-owner-action" data-action="save-story" data-story-id="${esc(story.id)}">${icon('download')}<span>Save to highlights</span></button>`}
+        <button class="story-owner-action danger-text" data-action="delete-story" data-story-id="${esc(story.id)}">${icon('trash')}<span>Delete story</span></button>
+      ` : '';
+    }
+    const compact = ['story-comments', 'story-owner'].includes(sheet.type);
     return `
       <div class="overlay ${state.storyViewer ? 'over-story' : ''} ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
-        <section class="action-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
+        <section class="action-sheet ${compact ? `compact-sheet ${sheet.type}-sheet` : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           ${body || '<p class="hint">No actions available.</p>'}
-          <button data-action="close-overlays">Cancel</button>
+          ${compact ? '' : '<button data-action="close-overlays">Cancel</button>'}
         </section>
       </div>
     `;
@@ -2486,9 +2749,7 @@
             ${editor.pollQuestion ? renderPollSticker(editor) : ''}
             ${editor.audio ? `
               <div class="story-audio-sticker">
-                ${icon('music')}
-                <span>${esc(editor.audio.name || 'Audio')}</span>
-                <audio src="${esc(editor.audio.dataUrl)}" controls></audio>
+                ${renderStoryAudioPlayer(`${editor.audio.dataUrl}#t=${Number(editor.audioStart || 0)},${Number(editor.audioEnd || 30)}`, editor.audio.name || 'Audio', Math.max(1, Number(editor.audioEnd || 30) - Number(editor.audioStart || 0)), 'editor-audio')}
               </div>
             ` : ''}
           </div>
@@ -2512,11 +2773,12 @@
         ${renderStoryFloatingTray(editor)}
         ${editor.activeTool ? '' : `
           <div class="story-share-bar" data-stop-close>
-            <button class="story-share-pill" data-action="publish-story">
+            ${state.storyPublishing ? '<span class="story-upload-progress" aria-label="Posting story"><i></i></span>' : ''}
+            <button class="story-share-pill" data-action="publish-story" ${state.storyPublishing ? 'disabled' : ''}>
               ${avatarHtml(state.me)}
-              <strong>Your story</strong>
+              <strong>${state.storyPublishing ? 'Posting...' : 'Your story'}</strong>
             </button>
-            <button class="story-share-send" data-action="publish-story" aria-label="Share story">${icon('send')}</button>
+            <button class="story-share-send" data-action="publish-story" aria-label="Share story" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : icon('send')}</button>
           </div>
         `}
       </div>
@@ -2533,9 +2795,14 @@
     const story = storyById(storyId);
     const owner = storyOwnerById(storyId);
     if (!story || !owner) return '';
-    const stories = (owner.stories || []).filter((item) => item.file);
+    const stories = (owner.stories || []).filter((item) => (
+      item.file && (story.saved
+        ? item.saved
+        : !item.saved && new Date(item.expiresAt || 0).getTime() > Date.now())
+    ));
     const index = Math.max(0, stories.findIndex((item) => item.id === story.id));
     const isVideo = story.file?.mime?.startsWith('video/');
+    const ownStory = owner.id === state.me?.id;
     return `
       <section class="story-viewer-page" style="--story-duration:${isVideo ? 12 : 7}s">
         <div class="story-viewer-stage">
@@ -2551,16 +2818,26 @@
               <strong>${esc(owner.username)}</strong>
               <small>${esc(shortTime(story.createdAt))}</small>
             </div>
-            <button data-action="close-story-viewer" aria-label="Close story">${icon('x')}</button>
+            <div class="story-viewer-head-actions">
+              ${ownStory ? `<button data-action="open-story-owner-menu" data-story-id="${esc(story.id)}" aria-label="Story options">${icon('more')}</button>` : ''}
+              <button data-action="close-story-viewer" aria-label="Close story">${icon('x')}</button>
+            </div>
           </div>
         </div>
         <button class="story-tap-zone story-tap-prev" data-action="story-viewer-prev" aria-label="Previous story"></button>
         <button class="story-tap-zone story-tap-next" data-action="story-viewer-next" aria-label="Next story"></button>
-        <div class="story-viewer-actions">
-          <input id="story-viewer-comment" maxlength="280" placeholder="Add a comment...">
-          <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="Like story">${icon('heart')}</button>
-          <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}</button>
-          <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
+        <div class="story-viewer-actions ${ownStory ? 'own-story-actions' : ''}">
+          ${ownStory ? `
+            <span class="story-owner-metric">${icon('heart')} ${story.likeCount || 0}</span>
+            <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}<small>${story.commentCount || 0}</small></button>
+          ` : `
+            <div class="story-reply-pill">
+              <input id="story-viewer-comment" maxlength="280" placeholder="Reply..." autocomplete="off">
+              <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
+            </div>
+            <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="Like story">${icon('heart')}</button>
+            <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}</button>
+          `}
         </div>
       </section>
     `;
@@ -2568,7 +2845,7 @@
 
   function renderStoryMenu() {
     if (!state.storyMenuOpen) return '';
-    const currentStory = state.me?.stories?.[0];
+    const currentStory = activeProfileStory(state.me);
     return `
       <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
         <section class="action-sheet story-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
@@ -2641,11 +2918,30 @@
             </label>
           </section>
           ${renderTwoFactorPanel()}
+          ${state.isModerator ? renderGifModeration() : ''}
           <section class="settings-block danger-zone">
             <button class="danger logout-btn" data-action="logout">Log out</button>
           </section>
         </section>
       </div>
+    `;
+  }
+
+  function renderGifModeration() {
+    return `
+      <section class="settings-block gif-moderation">
+        <h3>${icon('stickers')} GIF submissions</h3>
+        <div class="gif-review-list">
+          ${state.pendingGifs.length ? state.pendingGifs.map((gif) => `
+            <article class="gif-review-row">
+              <img src="${esc(gif.file?.url || '')}" alt="">
+              <span><strong>${esc(gif.title || 'GIF')}</strong><small>@${esc(gif.submitter?.username || 'user')}</small></span>
+              <button data-action="review-gif" data-gif-id="${esc(gif.id)}" data-decision="approve" aria-label="Approve GIF">${icon('check')}</button>
+              <button data-action="review-gif" data-gif-id="${esc(gif.id)}" data-decision="reject" aria-label="Reject GIF">${icon('x')}</button>
+            </article>
+          `).join('') : '<small class="settings-empty">No GIFs waiting for review.</small>'}
+        </div>
+      </section>
     `;
   }
 
@@ -2713,6 +3009,7 @@
     ]);
     state.me = me.user;
     state.twoFactorEnabled = me.twoFactorEnabled;
+    state.isModerator = Boolean(me.isModerator);
     state.contacts = contacts.users;
     state.chats = chats.chats;
     state.pendingRequestCount = notifications.pendingRequestCount || 0;
@@ -2722,6 +3019,47 @@
     if (state.activePeer) {
       state.activePeer = userById(state.activePeer.id) || state.activePeer;
     }
+  }
+
+  async function loadGifPool(query = '') {
+    state.gifLoading = true;
+    try {
+      const [approved, pending] = await Promise.all([
+        api(`/api/gifs${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ''}`),
+        state.isModerator ? api('/api/gifs?status=pending') : Promise.resolve({ gifs: [] })
+      ]);
+      state.gifPool = approved.gifs || [];
+      state.pendingGifs = pending.gifs || [];
+    } finally {
+      state.gifLoading = false;
+    }
+  }
+
+  async function submitGif(file) {
+    if (!file) return;
+    const dataUrl = await fileToDataUrl(file);
+    const data = await api('/api/gifs', {
+      method: 'POST',
+      body: {
+        title: state.storyEditor?.gifSubmissionTitle || file.name.replace(/\.[^.]+$/, ''),
+        tags: state.storyEditor?.gifSubmissionTags || '',
+        file: {
+          name: file.name || 'animation.gif',
+          type: file.type || mimeFromDataUrl(dataUrl),
+          dataUrl,
+          lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null
+        }
+      }
+    });
+    await loadGifPool(state.storyEditor?.gifQuery || '');
+    if (data.pending) alert('GIF submitted for moderator review.');
+    if (state.storyEditor) updateStoryEditorView();
+  }
+
+  async function reviewGif(gifId, decision) {
+    await api(`/api/gifs/${encodeURIComponent(gifId)}/${decision === 'approve' ? 'approve' : 'reject'}`, { method: 'POST' });
+    await loadGifPool();
+    updateProfileModalSlots();
   }
 
   async function openChat(userId, highlightMessageId = null) {
@@ -2952,7 +3290,9 @@
     state.me = data.user;
     state.storyMenuOpen = false;
     state.avatarCrop = null;
-    renderApp();
+    updateStoryMenuSlot();
+    updateProfileModalSlots();
+    updateSidebar();
   }
 
   async function beginAvatarCrop(file) {
@@ -2968,7 +3308,7 @@
       zoom: 1,
       drag: null
     };
-    renderApp();
+    updateProfileModalSlots();
   }
 
   function mimeFromDataUrl(dataUrl) {
@@ -3121,6 +3461,24 @@
       stickerDraft: '',
       stickerSearch: '',
       stickerComposer: null,
+      locationQuery: '',
+      locationResults: [],
+      locationSearching: false,
+      selectedLocation: null,
+      weatherDraft: null,
+      weatherLoading: false,
+      gifQuery: '',
+      gifSubmitOpen: false,
+      gifSubmissionTitle: '',
+      gifSubmissionTags: '',
+      quizQuestion: '',
+      quizOptionA: '',
+      quizOptionB: '',
+      quizCorrect: 0,
+      sliderQuestion: '',
+      sliderEmoji: '\ud83d\ude0d',
+      countdownTitle: '',
+      countdownAt: '',
       pollQuestion: '',
       pollOptionA: 'Yes',
       pollOptionB: 'No',
@@ -3188,7 +3546,8 @@
       lastModified: file.lastModified || Date.now()
     });
     state.storyMenuOpen = false;
-    renderApp();
+    updateStoryMenuSlot();
+    updateStoryEditorView();
   }
 
   function beginBlankStoryEditor() {
@@ -3201,7 +3560,8 @@
       isBlankStory: true
     });
     state.storyMenuOpen = false;
-    renderApp();
+    updateStoryMenuSlot();
+    updateStoryEditorView();
   }
 
   async function beginStoryAudio(file) {
@@ -3210,15 +3570,146 @@
       alert('Choose an audio file.');
       return;
     }
+    const dataUrl = await fileToDataUrl(file);
+    const duration = await new Promise((resolve) => {
+      const audio = new Audio();
+      audio.preload = 'metadata';
+      audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : 30);
+      audio.onerror = () => resolve(30);
+      audio.src = dataUrl;
+    });
     state.storyEditor.audio = {
-      dataUrl: await fileToDataUrl(file),
+      dataUrl,
       name: file.name || 'story-audio',
       type: file.type || 'audio/mpeg',
-      lastModified: file.lastModified || Date.now()
+      lastModified: file.lastModified || Date.now(),
+      duration
     };
     state.storyEditor.audioStart = 0;
-    state.storyEditor.audioEnd = 30;
-    renderApp();
+    state.storyEditor.audioEnd = Math.min(30, duration);
+    updateStoryEditorView();
+  }
+
+  function formatStoryCountdown(value) {
+    const target = new Date(value || '').getTime();
+    if (!Number.isFinite(target)) return 'Set a time';
+    const remaining = Math.max(0, target - Date.now());
+    if (!remaining) return 'Finished';
+    const totalSeconds = Math.floor(remaining / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days) return `${days}d ${String(hours).padStart(2, '0')}h`;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  function updateStoryCountdowns() {
+    document.querySelectorAll('[data-countdown-at]').forEach((item) => {
+      item.textContent = formatStoryCountdown(item.dataset.countdownAt);
+    });
+  }
+
+  function startStoryCountdownClock() {
+    clearInterval(storyCountdownTimer);
+    storyCountdownTimer = null;
+    updateStoryCountdowns();
+    if (state.storyViewer && document.querySelector('[data-countdown-at]')) {
+      storyCountdownTimer = setInterval(updateStoryCountdowns, 1000);
+    }
+  }
+
+  function focusStorySheetInput(id) {
+    requestAnimationFrame(() => {
+      const input = document.getElementById(id);
+      if (!input) return;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange?.(input.value.length, input.value.length);
+    });
+  }
+
+  async function searchStoryLocations(query, requestId) {
+    const editor = state.storyEditor;
+    const term = String(query || '').trim();
+    if (!editor || term.length < 2) return;
+    editor.locationSearching = true;
+    updateStoryEditorView();
+    focusStorySheetInput('story-location-query');
+    try {
+      const data = await api(`/api/locations?q=${encodeURIComponent(term)}`);
+      if (requestId !== storyLocationRequestId || state.storyEditor !== editor) return;
+      editor.locationResults = data.locations || [];
+    } finally {
+      if (requestId === storyLocationRequestId && state.storyEditor === editor) {
+        editor.locationSearching = false;
+        updateStoryEditorView();
+        focusStorySheetInput('story-location-query');
+      }
+    }
+  }
+
+  async function loadStoryWeather(location) {
+    const editor = state.storyEditor;
+    if (!editor || !location) return;
+    editor.selectedLocation = location;
+    editor.weatherDraft = null;
+    editor.weatherLoading = true;
+    updateStoryEditorView();
+    try {
+      const data = await api(`/api/weather?lat=${encodeURIComponent(location.latitude)}&lon=${encodeURIComponent(location.longitude)}`);
+      if (state.storyEditor !== editor) return;
+      editor.weatherDraft = data.weather || null;
+    } finally {
+      if (state.storyEditor === editor) {
+        editor.weatherLoading = false;
+        updateStoryEditorView();
+      }
+    }
+  }
+
+  async function selectStoryLocation(location, type = 'location') {
+    const editor = state.storyEditor;
+    if (!editor || !location) return;
+    editor.selectedLocation = location;
+    editor.locationResults = [];
+    editor.locationQuery = location.name || editor.locationQuery;
+    if (type === 'weather') await loadStoryWeather(location);
+    else updateStoryEditorView();
+  }
+
+  async function useCurrentStoryLocation(type = 'location') {
+    if (!state.storyEditor) return;
+    if (!navigator.geolocation) throw new Error('Location is not available in this browser.');
+    const position = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+    });
+    const location = {
+      name: 'Current location',
+      region: `${position.coords.latitude.toFixed(4)}, ${position.coords.longitude.toFixed(4)}`,
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude
+    };
+    await selectStoryLocation(location, type);
+  }
+
+  async function searchStoryGifs(query, requestId) {
+    const editor = state.storyEditor;
+    if (!editor) return;
+    state.gifLoading = true;
+    updateStoryEditorView();
+    focusStorySheetInput('story-gif-search');
+    try {
+      const term = String(query || '').trim();
+      const data = await api(`/api/gifs${term ? `?q=${encodeURIComponent(term)}` : ''}`);
+      if (requestId !== storyGifRequestId || state.storyEditor !== editor) return;
+      state.gifPool = data.gifs || [];
+    } finally {
+      if (requestId === storyGifRequestId && state.storyEditor === editor) {
+        state.gifLoading = false;
+        updateStoryEditorView();
+        focusStorySheetInput('story-gif-search');
+      }
+    }
   }
 
   function normalizeStoryLink(value) {
@@ -3232,7 +3723,7 @@
     }
   }
 
-  function addStorySticker(type = 'emoji', suppliedLabel = '') {
+  function addStorySticker(type = 'emoji', suppliedLabel = '', suppliedData = {}) {
     const editor = state.storyEditor;
     if (!editor) return;
     const draft = String(suppliedLabel || editor.stickerDraft || '').trim();
@@ -3262,6 +3753,7 @@
       type,
       label: type === 'link' ? defaults.link : (draft || defaults[type] || 'Sticker'),
       href,
+      data: suppliedData && typeof suppliedData === 'object' ? suppliedData : {},
       x: 50,
       y: 42,
       rotation: 0,
@@ -3271,7 +3763,7 @@
     editor.stickerDraft = '';
     editor.stickerComposer = null;
     editor.activeTool = null;
-    renderApp();
+    updateStoryEditorView();
   }
 
   async function downloadStoryEdit() {
@@ -3624,41 +4116,60 @@
 
   async function publishStory() {
     const editor = state.storyEditor;
-    if (!editor) return;
-    const data = await api('/api/me/story', {
-      method: 'POST',
-      body: {
-        file: {
-          name: editor.name,
-          type: editor.type,
-          dataUrl: editor.dataUrl,
-          lastModified: editor.lastModified ? new Date(editor.lastModified).toISOString() : null
-        },
-        edits: storyEditPayload(editor),
-        audio: editor.audio ? {
-          name: editor.audio.name,
-          type: editor.audio.type,
-          dataUrl: editor.audio.dataUrl,
-          lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
-        } : null
-      }
-    });
-    state.me = data.user;
-    state.storyMenuOpen = false;
-    state.storyEditor = null;
-    renderApp();
+    if (!editor || state.storyPublishing) return;
+    state.storyPublishing = true;
+    updateStoryEditorView();
+    try {
+      const data = await api('/api/me/story', {
+        method: 'POST',
+        body: {
+          file: {
+            name: editor.name,
+            type: editor.type,
+            dataUrl: editor.dataUrl,
+            lastModified: editor.lastModified ? new Date(editor.lastModified).toISOString() : null
+          },
+          edits: storyEditPayload(editor),
+          audio: editor.audio ? {
+            name: editor.audio.name,
+            type: editor.audio.type,
+            dataUrl: editor.audio.dataUrl,
+            lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
+          } : null
+        }
+      });
+      state.me = data.user;
+      state.storyMenuOpen = false;
+      state.storyEditor = null;
+      updateStoryEditorView();
+      updateStoryMenuSlot();
+      updateSidebar();
+    } finally {
+      state.storyPublishing = false;
+      if (state.storyEditor === editor) updateStoryEditorView();
+    }
   }
 
   async function saveStory(storyId) {
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/save`, { method: 'POST' });
     state.me = data.user;
-    renderApp();
+    state.actionSheet = null;
+    updateActionSheetSlot();
+    updateStoryViewerView();
+    updateSidebar();
   }
 
   async function deleteStory(storyId) {
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}`, { method: 'DELETE' });
     state.me = data.user;
-    renderApp();
+    if (state.storyViewer?.storyId === storyId) {
+      clearStoryAdvance();
+      state.storyViewer = null;
+    }
+    state.actionSheet = null;
+    updateActionSheetSlot();
+    updateStoryViewerView();
+    updateSidebar();
   }
 
   function storyUsers() {
@@ -3701,20 +4212,27 @@
     state.storyViewer = data.story?.file ? { storyId: data.story.id } : null;
     state.storyMenuOpen = false;
     state.mediaViewer = null;
-    renderApp();
+    updateStoryMenuSlot();
+    updateMediaViewerSlot();
+    updateStoryViewerView();
     scheduleStoryAdvance(data.story);
   }
 
   async function navigateStory(direction) {
     const storyId = state.storyViewer?.storyId;
     const owner = storyOwnerById(storyId);
-    const stories = (owner?.stories || []).filter((story) => story.file);
+    const currentStory = storyById(storyId);
+    const stories = (owner?.stories || []).filter((story) => (
+      story.file && (currentStory?.saved
+        ? story.saved
+        : !story.saved && new Date(story.expiresAt || 0).getTime() > Date.now())
+    ));
     const index = stories.findIndex((story) => story.id === storyId);
     const next = stories[index + direction];
     if (!next) {
       clearStoryAdvance();
       state.storyViewer = null;
-      renderApp();
+      updateStoryViewerView();
       return;
     }
     await viewStory(next.id);
@@ -3723,7 +4241,11 @@
   async function toggleStoryLike(storyId) {
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/like`, { method: 'POST' });
     replaceStory(data.story);
-    renderApp();
+    document.querySelectorAll(`[data-action="like-story"][data-story-id="${window.CSS?.escape ? CSS.escape(storyId) : storyId}"]`).forEach((button) => {
+      button.classList.toggle('active', data.story.likedByMe);
+      const count = button.querySelector('span');
+      if (count) count.textContent = String(data.story.likeCount || 0);
+    });
     if (state.storyViewer?.storyId === storyId) scheduleStoryAdvance(data.story);
   }
 
@@ -3731,13 +4253,57 @@
     const input = document.getElementById('story-viewer-comment') || document.getElementById('story-comment-input');
     const text = (input?.value || '').trim();
     if (!text) return;
+    const commentsOpen = state.actionSheet?.type === 'story-comments' && state.actionSheet.storyId === storyId;
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments`, {
       method: 'POST',
       body: { text }
     });
     replaceStory(data.story);
-    state.actionSheet = { type: 'story-comments', storyId };
-    renderApp();
+    if (commentsOpen) {
+      state.actionSheet = { type: 'story-comments', storyId };
+      updateActionSheetSlot();
+    } else {
+      updateStoryViewerView();
+      scheduleStoryAdvance(data.story);
+    }
+  }
+
+  async function respondToStorySticker(storyId, stickerId, value) {
+    clearStoryAdvance();
+    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/stickers/${encodeURIComponent(stickerId)}/respond`, {
+      method: 'POST',
+      body: { value }
+    });
+    replaceStory(data.story);
+    updateStoryViewerView();
+    scheduleStoryAdvance(data.story);
+  }
+
+  async function toggleStoryAudio(button) {
+    const player = button?.closest('.story-audio-ui');
+    const audio = player?.querySelector('audio');
+    if (!audio) return;
+    document.querySelectorAll('.story-audio-ui audio').forEach((other) => {
+      if (other === audio) return;
+      other.pause();
+      const otherPlayer = other.closest('.story-audio-ui');
+      otherPlayer?.classList.remove('playing');
+      const otherButton = otherPlayer?.querySelector('[data-action="toggle-story-audio"]');
+      if (otherButton) otherButton.innerHTML = icon('play');
+    });
+    if (audio.paused) {
+      await audio.play();
+      player.classList.add('playing');
+      button.innerHTML = icon('pause');
+      audio.onended = () => {
+        player.classList.remove('playing');
+        button.innerHTML = icon('play');
+      };
+    } else {
+      audio.pause();
+      player.classList.remove('playing');
+      button.innerHTML = icon('play');
+    }
   }
 
   async function sendCurrentText() {
@@ -4526,19 +5092,22 @@
     state.overlayClosing = false;
     state.storyMenuOpen = false;
     state.actionSheet = sheet;
-    renderApp();
+    updateStoryMenuSlot();
+    updateActionSheetSlot();
   }
 
   function closeOverlays() {
     if (!state.actionSheet && !state.storyMenuOpen) return;
     clearTimeout(overlayCloseTimer);
     state.overlayClosing = true;
-    renderApp();
+    updateActionSheetSlot();
+    updateStoryMenuSlot();
     overlayCloseTimer = setTimeout(() => {
       state.actionSheet = null;
       state.storyMenuOpen = false;
       state.overlayClosing = false;
-      renderApp();
+      updateActionSheetSlot();
+      updateStoryMenuSlot();
       if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
     }, 190);
   }
@@ -4642,6 +5211,7 @@
         state.profileSocialView = null;
         state.chatProfileSocialView = null;
         await loadContactsAndChats();
+        await loadGifPool();
         renderApp();
         connectWs();
       }
@@ -4653,7 +5223,7 @@
         };
         const data = await api('/api/me/profile', { method: 'PATCH', body });
         state.me = data.user;
-        renderApp();
+        updateSidebar();
       }
       if (form.dataset.form === 'profile-edit') {
         await updateProfilePatch({
@@ -4662,7 +5232,8 @@
           bio: formValue(form, 'bio')
         });
         state.profileEditOpen = false;
-        renderApp();
+        updateProfileModalSlots();
+        updateSidebar();
       }
     } catch (error) {
       if (error.data?.requiresTwoFactor) {
@@ -4679,6 +5250,7 @@
   document.addEventListener('click', async (event) => {
     const target = event.target.closest('[data-action]');
     if (!target) return;
+    if (target.matches('button, a[href="#"]')) event.preventDefault();
     const action = target.dataset.action;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
@@ -4783,11 +5355,11 @@
       }
       if (action === 'open-media') {
         state.mediaViewer = { src: target.dataset.src, name: target.dataset.name || '', type: target.dataset.type || '' };
-        renderApp();
+        updateMediaViewerSlot();
       }
       if (action === 'close-media') {
         state.mediaViewer = null;
-        renderApp();
+        updateMediaViewerSlot();
       }
       if (action === 'close-story-editor') {
         state.storyEditor = null;
@@ -4795,15 +5367,15 @@
         storyTextPointers.clear();
         storyMediaPointers.clear();
         storyStickerPointers.clear();
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'story-filter-panel') {
         if (state.storyEditor) state.storyEditor.filterPanel = target.dataset.panel || 'filters';
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'story-adjustment-select') {
         if (state.storyEditor) state.storyEditor.activeAdjustment = target.dataset.adjustment || 'brightness';
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'story-filter') {
         if (state.storyEditor) state.storyEditor.filter = target.dataset.filter || 'normal';
@@ -4835,7 +5407,7 @@
           }
           if (tool !== 'stickers') state.storyEditor.stickerComposer = null;
         }
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'story-video-play') {
         await toggleStoryVideoPlayback();
@@ -4880,7 +5452,7 @@
           state.storyEditor.activeTool = null;
           state.storyEditor.stickerComposer = null;
         }
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'cycle-story-text-align') {
         if (state.storyEditor) {
@@ -4958,11 +5530,11 @@
       }
       if (action === 'story-draw-color') {
         if (state.storyEditor) state.storyEditor.drawColor = target.dataset.color || '#ffffff';
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'story-draw-brush') {
         if (state.storyEditor) state.storyEditor.drawBrush = target.dataset.brush || 'pen';
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'undo-story-draw') {
         if (state.storyEditor) {
@@ -4977,25 +5549,102 @@
         if (state.storyEditor) {
           state.storyEditor.stickerComposer = target.dataset.stickerType || null;
           state.storyEditor.stickerDraft = '';
+          if (state.storyEditor.stickerComposer === 'gif' && !state.gifPool.length) {
+            loadGifPool().then(updateStoryEditorView).catch((error) => alert(error.message));
+          }
         }
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'story-sticker-back') {
         if (state.storyEditor) state.storyEditor.stickerComposer = null;
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'commit-story-sticker') {
         addStorySticker(target.dataset.stickerType);
+      }
+      if (action === 'toggle-gif-submit' && state.storyEditor) {
+        state.storyEditor.gifSubmitOpen = !state.storyEditor.gifSubmitOpen;
+        updateStoryEditorView();
+      }
+      if (action === 'story-gif-file-open') {
+        document.getElementById('story-gif-input')?.click();
+      }
+      if (action === 'add-gif-sticker') {
+        addStorySticker('gif', target.dataset.gifTitle || 'GIF', {
+          gifId: target.dataset.gifId || '',
+          gifUrl: target.dataset.gifUrl || ''
+        });
+      }
+      if (action === 'review-gif') {
+        await reviewGif(target.dataset.gifId, target.dataset.decision);
+      }
+      if (action === 'select-story-location') {
+        await selectStoryLocation({
+          name: target.dataset.name || 'Location',
+          region: target.dataset.region || '',
+          latitude: Number(target.dataset.latitude),
+          longitude: Number(target.dataset.longitude)
+        }, target.dataset.locationType || 'location');
+      }
+      if (action === 'story-current-location') {
+        await useCurrentStoryLocation(target.dataset.locationType || 'location');
+      }
+      if (action === 'use-typed-story-location' && state.storyEditor) {
+        const label = state.storyEditor.locationQuery.trim();
+        if (label) addStorySticker('location', label, { placeName: label });
+      }
+      if (action === 'add-selected-story-location' && state.storyEditor?.selectedLocation) {
+        const location = state.storyEditor.selectedLocation;
+        const locationData = {
+          placeName: location.name || 'Location',
+          region: location.region || '',
+          latitude: Number(location.latitude || 0),
+          longitude: Number(location.longitude || 0)
+        };
+        if (target.dataset.locationType === 'weather' && state.storyEditor.weatherDraft) {
+          const weather = state.storyEditor.weatherDraft;
+          addStorySticker('weather', `${Math.round(Number(weather.temperature || 0))} degrees`, { ...locationData, ...weather });
+        } else {
+          addStorySticker('location', location.name || 'Location', locationData);
+        }
+      }
+      if (action === 'story-quiz-correct' && state.storyEditor) {
+        state.storyEditor.quizCorrect = Number(target.dataset.index || 0);
+        target.closest('.story-option-editor')?.querySelectorAll('[data-action="story-quiz-correct"]').forEach((button) => {
+          button.classList.toggle('active', button === target);
+        });
+      }
+      if (action === 'finish-story-quiz' && state.storyEditor) {
+        const question = state.storyEditor.quizQuestion.trim();
+        const options = [state.storyEditor.quizOptionA.trim(), state.storyEditor.quizOptionB.trim()].filter(Boolean);
+        if (!question || options.length < 2) throw new Error('Add a question and two answers.');
+        addStorySticker('quiz', question, { options, correctIndex: state.storyEditor.quizCorrect || 0 });
+      }
+      if (action === 'finish-story-slider' && state.storyEditor) {
+        const question = state.storyEditor.sliderQuestion.trim();
+        if (!question) throw new Error('Add a question for the slider.');
+        addStorySticker('emoji_slider', question, { emoji: state.storyEditor.sliderEmoji || '\ud83d\ude0d' });
+      }
+      if (action === 'finish-story-countdown' && state.storyEditor) {
+        const title = state.storyEditor.countdownTitle.trim();
+        if (!title) throw new Error('Name the countdown.');
+        const targetTime = new Date(state.storyEditor.countdownAt || '').getTime();
+        if (!Number.isFinite(targetTime)) throw new Error('Choose a date and time.');
+        const targetAt = new Date(targetTime).toISOString();
+        addStorySticker('countdown', title, { targetAt });
       }
       if (action === 'finish-story-poll') {
         if (state.storyEditor) {
           state.storyEditor.stickerComposer = null;
           state.storyEditor.activeTool = null;
         }
-        renderApp();
+        updateStoryEditorView();
       }
       if (action === 'story-audio-open') {
         document.getElementById('story-audio-input')?.click();
+      }
+      if (action === 'toggle-story-audio') {
+        await toggleStoryAudio(target);
       }
       if (action === 'download-story-edit') {
         await downloadStoryEdit();
@@ -5009,7 +5658,14 @@
       if (action === 'close-story-viewer') {
         clearStoryAdvance();
         state.storyViewer = null;
-        renderApp();
+        state.actionSheet = null;
+        updateActionSheetSlot();
+        updateStoryViewerView();
+        updateSidebar();
+      }
+      if (action === 'open-story-owner-menu') {
+        clearStoryAdvance();
+        openActionSheet({ type: 'story-owner', storyId: target.dataset.storyId });
       }
       if (action === 'story-viewer-prev') {
         await navigateStory(-1);
@@ -5026,6 +5682,18 @@
       }
       if (action === 'submit-story-comment') {
         await submitStoryComment(target.dataset.storyId);
+      }
+      if (action === 'respond-story-poll') {
+        await respondToStorySticker(target.dataset.storyId, 'poll', target.dataset.value);
+      }
+      if (action === 'respond-story-sticker') {
+        await respondToStorySticker(target.dataset.storyId, target.dataset.stickerId, target.dataset.value);
+      }
+      if (action === 'respond-story-text') {
+        const story = storyById(target.dataset.storyId);
+        const current = storyStickerResponse(story, target.dataset.stickerId).myValue || '';
+        const response = prompt('Write your reply', current);
+        if (response?.trim()) await respondToStorySticker(target.dataset.storyId, target.dataset.stickerId, response.trim());
       }
       if (action === 'toggle-voice') {
         const button = target.closest('.voice-note');
@@ -5155,35 +5823,35 @@
       }
       if (action === 'open-profile-edit') {
         state.profileEditOpen = true;
-        renderApp();
+        updateProfileModalSlots();
       }
       if (action === 'open-settings') {
         state.settingsOpen = true;
-        renderApp();
+        updateProfileModalSlots();
       }
       if (action === 'close-modal') {
         state.profileEditOpen = false;
         state.settingsOpen = false;
-        renderApp();
+        updateProfileModalSlots();
       }
       if (action === 'toggle-recommendations') {
         state.recommendationsOpen = !state.recommendationsOpen;
-        renderApp();
+        updateRecommendationsSection();
       }
       if (action === 'dismiss-recommendation') {
         if (confirm('Never show this recommendation again?')) {
           state.hiddenRecommendations = Array.from(new Set([...(state.hiddenRecommendations || []), target.dataset.userId]));
           localStorage.setItem('hiddenRecommendations', JSON.stringify(state.hiddenRecommendations));
-          renderApp();
+          updateRecommendationsSection();
         }
       }
       if (action === 'toggle-profile-privacy') {
         await updateProfilePatch({ socialPublic: target.checked });
-        renderApp();
+        updateProfileModalSlots();
       }
       if (action === 'toggle-profile-searchable') {
         await updateProfilePatch({ searchable: target.checked });
-        renderApp();
+        updateProfileModalSlots();
       }
       if (action === 'toggle-message-notifications') {
         await setMessageNotifications(target.checked);
@@ -5194,7 +5862,7 @@
       if (action === 'dismiss-notification-prompt') {
         state.notificationPromptDismissed = true;
         sessionStorage.setItem('notificationPromptDismissed', '1');
-        renderApp();
+        updateSidebar();
       }
       if (action === 'dismiss-toast') {
         dismissToast(target.dataset.toastId);
@@ -5234,31 +5902,33 @@
         state.actionSheet = null;
         state.storyMenuOpen = true;
         state.overlayClosing = false;
-        renderApp();
+        updateActionSheetSlot();
+        updateStoryMenuSlot();
       }
       if (action === 'open-story-create') {
         clearTimeout(overlayCloseTimer);
         state.actionSheet = null;
         state.storyMenuOpen = true;
         state.overlayClosing = false;
-        renderApp();
+        updateActionSheetSlot();
+        updateStoryMenuSlot();
       }
       if (action === 'create-story') {
         beginBlankStoryEditor();
       }
       if (action === 'post-story') {
         state.storyMenuOpen = false;
-        renderApp();
+        updateStoryMenuSlot();
         document.getElementById('story-input')?.click();
       }
       if (action === 'change-profile-picture') {
         state.storyMenuOpen = false;
-        renderApp();
+        updateStoryMenuSlot();
         document.getElementById('avatar-input')?.click();
       }
       if (action === 'cancel-avatar-crop') {
         state.avatarCrop = null;
-        renderApp();
+        updateProfileModalSlots();
       }
       if (action === 'confirm-avatar-crop') {
         await confirmAvatarCrop();
@@ -5349,6 +6019,14 @@
         event.target.value = '';
         if (file) await beginStoryAudio(file);
       }
+      if (event.target.id === 'story-gif-input') {
+        const file = event.target.files[0];
+        event.target.value = '';
+        if (file) await submitGif(file);
+      }
+      if (event.target.matches('[data-story-slider]')) {
+        await respondToStorySticker(event.target.dataset.storyId, event.target.dataset.stickerId, Number(event.target.value));
+      }
     } catch (error) {
       alert(error.message);
     }
@@ -5425,6 +6103,73 @@
       });
       return;
     }
+    if (event.target.id === 'story-location-query' && state.storyEditor) {
+      const editor = state.storyEditor;
+      editor.locationQuery = event.target.value.slice(0, 100);
+      editor.selectedLocation = null;
+      editor.weatherDraft = null;
+      clearTimeout(storyLocationTimer);
+      const requestId = ++storyLocationRequestId;
+      if (editor.locationQuery.trim().length < 2) {
+        editor.locationResults = [];
+        editor.locationSearching = false;
+        const results = document.querySelector('.story-location-results');
+        if (results) results.innerHTML = '';
+        return;
+      }
+      storyLocationTimer = setTimeout(() => {
+        searchStoryLocations(editor.locationQuery, requestId).catch((error) => alert(error.message));
+      }, 280);
+      return;
+    }
+    if (event.target.id === 'story-gif-search' && state.storyEditor) {
+      const editor = state.storyEditor;
+      editor.gifQuery = event.target.value.slice(0, 80);
+      clearTimeout(storyGifTimer);
+      const requestId = ++storyGifRequestId;
+      storyGifTimer = setTimeout(() => {
+        searchStoryGifs(editor.gifQuery, requestId).catch((error) => alert(error.message));
+      }, 260);
+      return;
+    }
+    if (event.target.id === 'story-gif-title' && state.storyEditor) {
+      state.storyEditor.gifSubmissionTitle = event.target.value.slice(0, 60);
+      return;
+    }
+    if (event.target.id === 'story-gif-tags' && state.storyEditor) {
+      state.storyEditor.gifSubmissionTags = event.target.value.slice(0, 160);
+      return;
+    }
+    if (event.target.id === 'story-quiz-question' && state.storyEditor) {
+      state.storyEditor.quizQuestion = event.target.value.slice(0, 80);
+      return;
+    }
+    if (event.target.id === 'story-quiz-a' && state.storyEditor) {
+      state.storyEditor.quizOptionA = event.target.value.slice(0, 40);
+      return;
+    }
+    if (event.target.id === 'story-quiz-b' && state.storyEditor) {
+      state.storyEditor.quizOptionB = event.target.value.slice(0, 40);
+      return;
+    }
+    if (event.target.id === 'story-slider-question' && state.storyEditor) {
+      state.storyEditor.sliderQuestion = event.target.value.slice(0, 80);
+      return;
+    }
+    if (event.target.id === 'story-slider-emoji' && state.storyEditor) {
+      state.storyEditor.sliderEmoji = event.target.value.slice(0, 8) || '\ud83d\ude0d';
+      const preview = document.querySelector('.story-slider-preview > span');
+      if (preview) preview.textContent = state.storyEditor.sliderEmoji;
+      return;
+    }
+    if (event.target.id === 'story-countdown-title' && state.storyEditor) {
+      state.storyEditor.countdownTitle = event.target.value.slice(0, 60);
+      return;
+    }
+    if (event.target.id === 'story-countdown-at' && state.storyEditor) {
+      state.storyEditor.countdownAt = event.target.value;
+      return;
+    }
     if (event.target.id === 'story-editor-zoom' && state.storyEditor) {
       state.storyEditor.zoom = Number(event.target.value || 1);
       updateStoryMediaTransformUi();
@@ -5476,12 +6221,16 @@
     if (event.target.id === 'story-audio-start' && state.storyEditor) {
       state.storyEditor.audioStart = Math.max(0, Number(event.target.value || 0));
       state.storyEditor.audioEnd = Math.min(Math.max(state.storyEditor.audioEnd || 30, state.storyEditor.audioStart), state.storyEditor.audioStart + 30);
+      const output = event.target.closest('label')?.querySelector('output');
+      if (output) output.textContent = formatClipTime(state.storyEditor.audioStart);
       return;
     }
     if (event.target.id === 'story-audio-end' && state.storyEditor) {
       const start = Math.max(0, Number(state.storyEditor.audioStart || 0));
       state.storyEditor.audioEnd = Math.min(Math.max(start, Number(event.target.value || start + 30)), start + 30);
       event.target.value = String(state.storyEditor.audioEnd);
+      const output = event.target.closest('label')?.querySelector('output');
+      if (output) output.textContent = formatClipTime(state.storyEditor.audioEnd);
       return;
     }
     if (event.target.id === 'user-search') {
@@ -5548,6 +6297,11 @@
   });
 
   document.addEventListener('pointerdown', async (event) => {
+    if (event.target.matches('[data-story-slider]')) {
+      clearStoryAdvance();
+      state.edgeSwipe = null;
+      return;
+    }
     const videoTrimHandle = event.target.closest('[data-story-video-trim]');
     const videoTimeline = event.target.closest('.story-video-timeline');
     if (state.storyEditor?.isVideo && videoTimeline) {
@@ -5982,7 +6736,7 @@
       trash?.classList.remove('visible', 'active');
       if (removeSticker && stickerId && state.storyEditor) {
         state.storyEditor.stickers = (state.storyEditor.stickers || []).filter((sticker) => sticker.id !== stickerId);
-        renderApp();
+        updateStoryEditorView();
       }
       state.edgeSwipe = null;
       return;
@@ -5998,7 +6752,7 @@
       if (removeText && state.storyEditor) {
         state.storyEditor.text = '';
         storyTextPointers.clear();
-        renderApp();
+        updateStoryEditorView();
       } else if (wasGesture) continueStoryTextDrag();
       state.edgeSwipe = null;
       return;

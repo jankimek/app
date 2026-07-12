@@ -12,7 +12,8 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Optional authenticator-app 2FA.
 - Public user pages at `/u/username`.
 - Profile tab with profile picture, bio, 24-hour stories, saved highlights, and profile-link sharing.
-- Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, polls, mentions, audio clips, and downloads.
+- Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, interactive polls/quizzes/sliders, mentions, maps, live weather, audio clips, and downloads.
+- Shared GIF pool with moderator approval; the usernames in `MODERATOR_USERNAMES` can approve submissions.
 - Full-screen story/highlight viewer with progress, navigation, likes, comments, and private-account access control.
 - Bottom navigation tabs for messages, search, and profile.
 - Username search, friend requests, and a notification center for accepting or declining requests.
@@ -208,6 +209,8 @@ Copy the environment template:
 sudo cp deploy/oracle/chat-app.env.example /etc/chat-app/chat-app.env
 sudo nano /etc/chat-app/chat-app.env
 ```
+
+Set `MODERATOR_USERNAMES` to your website username. Weather uses Open-Meteo automatically; adding a `GOOGLE_WEATHER_API_KEY` makes the server try Google Weather first and fall back when it is unavailable. Keep API keys only in this server environment file, never in GitHub.
 
 Copy the service template:
 
