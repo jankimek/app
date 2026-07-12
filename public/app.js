@@ -1,19 +1,37 @@
 (function () {
   const app = document.getElementById('app');
 
-  function setViewportHeight() {
-    const viewport = window.visualViewport;
-    const height = Math.round(viewport?.height || window.innerHeight);
-    const top = Math.max(0, Math.round(viewport?.offsetTop || 0));
-    document.documentElement.style.setProperty('--app-height', `${height}px`);
-    document.documentElement.style.setProperty('--viewport-top', `${top}px`);
+  let stableViewportHeight = 0;
+
+  function focusedEditable() {
+    return document.activeElement?.matches?.('input, textarea, [contenteditable="true"]');
   }
 
-  setViewportHeight();
-  window.addEventListener('resize', setViewportHeight);
-  window.addEventListener('orientationchange', () => setTimeout(setViewportHeight, 120));
-  window.visualViewport?.addEventListener('resize', setViewportHeight);
-  window.visualViewport?.addEventListener('scroll', setViewportHeight);
+  function setViewportHeight(forceStable = false) {
+    const viewport = window.visualViewport;
+    const visualHeight = Math.max(1, Math.round(viewport?.height || window.innerHeight));
+    const layoutHeight = Math.max(visualHeight, Math.round(window.innerHeight || visualHeight));
+    const visualTop = Math.max(0, Math.round(viewport?.offsetTop || 0));
+    const root = document.documentElement;
+    const keyboardSized = Boolean(stableViewportHeight && stableViewportHeight - visualHeight > 90);
+    const keyboardOpen = Boolean(
+      keyboardSized &&
+      (focusedEditable() || root.classList.contains('keyboard-open'))
+    );
+
+    if (forceStable || !stableViewportHeight || !keyboardOpen) stableViewportHeight = layoutHeight;
+
+    root.style.setProperty('--app-height', `${stableViewportHeight}px`);
+    root.style.setProperty('--visual-height', `${visualHeight}px`);
+    root.style.setProperty('--visual-top', `${visualTop}px`);
+    root.classList.toggle('keyboard-open', keyboardOpen);
+  }
+
+  setViewportHeight(true);
+  window.addEventListener('resize', () => setViewportHeight());
+  window.addEventListener('orientationchange', () => setTimeout(() => setViewportHeight(true), 180));
+  window.visualViewport?.addEventListener('resize', () => setViewportHeight());
+  window.visualViewport?.addEventListener('scroll', () => setViewportHeight());
 
   const state = {
     authMode: 'login',
@@ -84,6 +102,7 @@
     storyStickerDrag: null,
     storyStickerGesture: null,
     storyDraw: null,
+    storyVideoTrimDrag: null,
     edgeSwipe: null,
     longPressTimer: null,
     longPressTriggered: false,
@@ -229,7 +248,11 @@
       sparkle: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>',
       location: '<svg viewBox="0 0 24 24"><path d="M12 22s7-5.3 7-12a7 7 0 0 0-14 0c0 6.7 7 12 7 12Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
       more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
-      undo: '<svg viewBox="0 0 24 24"><path d="m9 8-5 4 5 4"/><path d="M20 18a7 7 0 0 0-7-7H4"/></svg>'
+      undo: '<svg viewBox="0 0 24 24"><path d="m9 8-5 4 5 4"/><path d="M20 18a7 7 0 0 0-7-7H4"/></svg>',
+      pause: '<svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>',
+      scissors: '<svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="m8.6 8.5 11.4 7M8.6 15.5 20 8.5"/></svg>',
+      volume: '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg>',
+      fit: '<svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -427,6 +450,8 @@
       else if (scrollMode === 'bottom') scrollMessagesToBottom();
       else restoreMessagesScroll(scrollSnapshot);
       attachCallStreams();
+      attachStoryEditorVideo();
+      attachStoryViewerVideo();
       state.chatReturnAnimation = false;
     }, 0);
   }
@@ -664,6 +689,7 @@
                 <strong>${esc(item.displayName)}</strong>
                 <small>@${esc(item.username)}${item.bio ? ' - ' + esc(item.bio) : ''}</small>
               </span>
+              <button class="mini-btn" data-action="${view === 'followers' ? 'remove-follower' : 'unfollow-user'}" data-user-id="${esc(item.id)}">${view === 'followers' ? 'Remove' : 'Unfollow'}</button>
             </article>
           `).join('') : `<div class="empty-state">${empty}</div>`}
         </div>
@@ -742,7 +768,12 @@
     const offsetX = clamp(Number(edits.mediaOffsetX ?? 0), -40, 40);
     const offsetY = clamp(Number(edits.mediaOffsetY ?? 0), -40, 40);
     const zoom = clamp(Number(edits.zoom ?? 1), 1, 3);
-    return `translate(${offsetX}%,${offsetY}%) scale(${zoom})`;
+    const rotation = [0, 90, 180, 270].includes(Number(edits.mediaRotation)) ? Number(edits.mediaRotation) : 0;
+    return `translate(${offsetX}%,${offsetY}%) rotate(${rotation}deg) scale(${zoom})`;
+  }
+
+  function storyMediaFit(edits = {}) {
+    return edits.mediaFit === 'contain' ? 'contain' : 'cover';
   }
 
   function storyTextFontCss(font) {
@@ -1042,6 +1073,56 @@
     `;
   }
 
+  function formatClipTime(value) {
+    const seconds = Math.max(0, Number(value || 0));
+    const minutes = Math.floor(seconds / 60);
+    const wholeSeconds = Math.floor(seconds % 60);
+    const tenths = Math.floor((seconds % 1) * 10);
+    return `${minutes}:${String(wholeSeconds).padStart(2, '0')}.${tenths}`;
+  }
+
+  function storyVideoToolPanel(editor) {
+    const duration = Math.max(0.1, Number(editor.videoDuration || editor.trimEnd || 1));
+    const start = clamp(Number(editor.trimStart || 0), 0, duration);
+    const end = clamp(Number(editor.trimEnd || Math.min(duration, 60)), start, duration);
+    const current = clamp(Number(editor.videoCurrentTime ?? start), 0, duration);
+    const startPercent = (start / duration) * 100;
+    const endPercent = (end / duration) * 100;
+    const playheadPercent = (current / duration) * 100;
+    const frames = editor.videoThumbnails?.length
+      ? editor.videoThumbnails
+      : Array.from({ length: 8 }, () => '');
+    return `
+      <section class="story-video-editor" data-stop-close>
+        <div class="story-video-time-row">
+          <strong data-video-current>${esc(formatClipTime(current))}</strong>
+          <span data-video-selection>${esc(formatClipTime(Math.max(0, end - start)))} selected</span>
+          <small>${esc(formatClipTime(duration))}</small>
+        </div>
+        <div class="story-video-timeline" data-action="story-video-scrub" data-duration="${esc(duration)}" aria-label="Video timeline">
+          <div class="story-video-filmstrip">
+            ${frames.map((frame) => `<span class="story-video-frame" ${frame ? `style="background-image:url('${esc(frame)}')"` : ''}></span>`).join('')}
+          </div>
+          <span class="story-video-dim story-video-dim-start" style="width:${esc(startPercent)}%"></span>
+          <span class="story-video-dim story-video-dim-end" style="left:${esc(endPercent)}%"></span>
+          <span class="story-video-trim-window" style="left:${esc(startPercent)}%;width:${esc(Math.max(0, endPercent - startPercent))}%">
+            <button type="button" class="story-video-trim-handle start" data-story-video-trim="start" aria-label="Trim start"></button>
+            <button type="button" class="story-video-trim-handle end" data-story-video-trim="end" aria-label="Trim end"></button>
+          </span>
+          <span class="story-video-playhead" style="left:${esc(playheadPercent)}%"></span>
+        </div>
+        <div class="story-video-controls" aria-label="Video editing controls">
+          <button type="button" data-action="story-video-play" aria-label="Play or pause">${icon(editor.videoPlaying ? 'pause' : 'play')}<small>${editor.videoPlaying ? 'Pause' : 'Play'}</small></button>
+          <button type="button" class="${editor.videoMuted ? 'active' : ''}" data-action="story-video-mute" aria-label="Mute or unmute">${icon(editor.videoMuted ? 'mute' : 'volume')}<small>${editor.videoMuted ? 'Muted' : 'Sound'}</small></button>
+          <button type="button" data-action="story-video-speed" aria-label="Playback speed"><strong>${esc(Number(editor.videoSpeed || 1))}x</strong><small>Speed</small></button>
+          <button type="button" class="${storyMediaFit(editor) === 'contain' ? 'active' : ''}" data-action="story-video-fit" aria-label="Fit or fill video">${icon('fit')}<small>${storyMediaFit(editor) === 'contain' ? 'Fit' : 'Fill'}</small></button>
+          <button type="button" data-action="story-video-rotate" aria-label="Rotate video">${icon('rotate')}<small>Rotate</small></button>
+          <button type="button" data-action="story-video-reset-trim" aria-label="Reset trim">${icon('scissors')}<small>Reset</small></button>
+        </div>
+      </section>
+    `;
+  }
+
   function storyStickerToolPanel(editor) {
     const composer = editor.stickerComposer || '';
     if (composer === 'poll') {
@@ -1170,17 +1251,12 @@
       <section class="story-more-menu" data-stop-close>
         <button data-action="download-story-edit">${icon('download')} Save</button>
         <label>Zoom <input id="story-editor-zoom" type="range" min="1" max="3" step="0.01" value="${esc(editor.zoom || 1)}"></label>
-        ${editor.isVideo ? `
-          <div class="story-mini-grid">
-            <label>Start <input id="story-trim-start" type="number" min="0" step="0.1" value="${esc(editor.trimStart || 0)}"></label>
-            <label>End <input id="story-trim-end" type="number" min="0" step="0.1" value="${esc(editor.trimEnd || 0)}"></label>
-          </div>
-        ` : ''}
       </section>
     `;
   }
 
   function storyToolPanel(editor) {
+    if (editor.activeTool === 'video') return storyVideoToolPanel(editor);
     if (editor.activeTool === 'filter') return storyFilterToolPanel(editor);
     if (editor.activeTool === 'stickers') return storyStickerToolPanel(editor);
     if (editor.activeTool === 'draw') return storyDrawToolPanel(editor);
@@ -1245,14 +1321,14 @@
     const edits = story.edits || {};
     const isVideo = story.file?.mime?.startsWith('video/');
     const renderOverlays = isVideo || Number(edits.compositionVersion || 0) >= 2;
-    const style = `filter:${storyFilterCss(edits.filter, edits)}; transform:${storyMediaTransformCss(edits)};`;
+    const style = `filter:${storyFilterCss(edits.filter, edits)}; transform:${storyMediaTransformCss(edits)}; object-fit:${storyMediaFit(edits)};`;
     const mediaUrl = isVideo && (edits.trimStart || edits.trimEnd)
       ? `${story.file.url}#t=${Number(edits.trimStart || 0)},${Number(edits.trimEnd || '') || ''}`
       : story.file.url;
     return `
       <div class="story-preview ${compact ? 'compact' : ''}">
         ${isVideo
-          ? `<video src="${esc(mediaUrl)}" ${compact ? 'muted' : viewer ? 'autoplay' : 'controls'} playsinline style="${esc(style)}"></video>`
+          ? `<video src="${esc(mediaUrl)}" ${compact || edits.videoMuted ? 'muted' : ''} ${viewer ? 'autoplay' : compact ? '' : 'controls'} playsinline preload="metadata" style="${esc(style)}"></video>`
           : `<img src="${esc(mediaUrl)}" alt="" style="${esc(style)}">`}
         ${renderStoryEffectLayers(edits, compact)}
         ${renderOverlays ? renderStoryDrawings(edits) : ''}
@@ -1443,9 +1519,235 @@
       const media = document.querySelector('.story-editor-preview img, .story-editor-preview video');
       if (!editor || !media) return;
       media.style.transform = storyMediaTransformCss(editor);
+      media.style.objectFit = storyMediaFit(editor);
       const zoom = document.getElementById('story-editor-zoom');
       if (zoom) zoom.value = String(editor.zoom || 1);
     });
+  }
+
+  function normalizeStoryVideoBounds(editor, duration = editor?.videoDuration) {
+    if (!editor) return;
+    const safeDuration = Math.max(0, Number(duration || 0));
+    editor.videoDuration = safeDuration;
+    if (!safeDuration) return;
+    const start = clamp(Number(editor.trimStart || 0), 0, Math.max(0, safeDuration - 0.1));
+    const requestedEnd = Number(editor.trimEnd || 0);
+    const end = clamp(requestedEnd > start ? requestedEnd : Math.min(safeDuration, start + 60), start + 0.1, Math.min(safeDuration, start + 60));
+    editor.trimStart = start;
+    editor.trimEnd = end;
+    editor.videoCurrentTime = clamp(Number(editor.videoCurrentTime ?? start), start, end);
+  }
+
+  function updateStoryVideoToolUi(updateControls = false) {
+    const editor = state.storyEditor;
+    const panel = document.querySelector('.story-video-editor');
+    if (!editor?.isVideo || !panel) return;
+    const duration = Math.max(0.1, Number(editor.videoDuration || editor.trimEnd || 1));
+    normalizeStoryVideoBounds(editor, duration);
+    const startPercent = (editor.trimStart / duration) * 100;
+    const endPercent = (editor.trimEnd / duration) * 100;
+    const currentPercent = (clamp(Number(editor.videoCurrentTime || 0), 0, duration) / duration) * 100;
+    const startDim = panel.querySelector('.story-video-dim-start');
+    const endDim = panel.querySelector('.story-video-dim-end');
+    const windowEl = panel.querySelector('.story-video-trim-window');
+    const playhead = panel.querySelector('.story-video-playhead');
+    if (startDim) startDim.style.width = `${startPercent}%`;
+    if (endDim) endDim.style.left = `${endPercent}%`;
+    if (windowEl) {
+      windowEl.style.left = `${startPercent}%`;
+      windowEl.style.width = `${Math.max(0, endPercent - startPercent)}%`;
+    }
+    if (playhead) playhead.style.left = `${currentPercent}%`;
+    const currentLabel = panel.querySelector('[data-video-current]');
+    const selectionLabel = panel.querySelector('[data-video-selection]');
+    if (currentLabel) currentLabel.textContent = formatClipTime(editor.videoCurrentTime);
+    if (selectionLabel) selectionLabel.textContent = `${formatClipTime(editor.trimEnd - editor.trimStart)} selected`;
+    if (!updateControls) return;
+    const play = panel.querySelector('[data-action="story-video-play"]');
+    const mute = panel.querySelector('[data-action="story-video-mute"]');
+    const speed = panel.querySelector('[data-action="story-video-speed"] strong');
+    const fit = panel.querySelector('[data-action="story-video-fit"]');
+    if (play) play.innerHTML = `${icon(editor.videoPlaying ? 'pause' : 'play')}<small>${editor.videoPlaying ? 'Pause' : 'Play'}</small>`;
+    if (mute) {
+      mute.classList.toggle('active', editor.videoMuted);
+      mute.innerHTML = `${icon(editor.videoMuted ? 'mute' : 'volume')}<small>${editor.videoMuted ? 'Muted' : 'Sound'}</small>`;
+    }
+    if (speed) speed.textContent = `${Number(editor.videoSpeed || 1)}x`;
+    if (fit) {
+      fit.classList.toggle('active', storyMediaFit(editor) === 'contain');
+      const label = fit.querySelector('small');
+      if (label) label.textContent = storyMediaFit(editor) === 'contain' ? 'Fit' : 'Fill';
+    }
+  }
+
+  function waitForMedia(video, eventName) {
+    return new Promise((resolve, reject) => {
+      const done = () => {
+        cleanup();
+        resolve();
+      };
+      const failed = () => {
+        cleanup();
+        reject(new Error('Video could not be decoded.'));
+      };
+      const cleanup = () => {
+        video.removeEventListener(eventName, done);
+        video.removeEventListener('error', failed);
+      };
+      video.addEventListener(eventName, done, { once: true });
+      video.addEventListener('error', failed, { once: true });
+    });
+  }
+
+  async function generateStoryVideoThumbnails(editor) {
+    if (!editor?.isVideo || editor.videoThumbLoading || editor.videoThumbnails?.length) return;
+    editor.videoThumbLoading = true;
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.src = editor.dataUrl;
+    try {
+      if (video.readyState < 1) await waitForMedia(video, 'loadedmetadata');
+      if (video.readyState < 2) await waitForMedia(video, 'loadeddata');
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      if (!duration) return;
+      normalizeStoryVideoBounds(editor, duration);
+      const canvas = document.createElement('canvas');
+      canvas.width = 72;
+      canvas.height = 112;
+      const context = canvas.getContext('2d');
+      const thumbnails = [];
+      const count = 8;
+      for (let index = 0; index < count; index += 1) {
+        const time = Math.min(Math.max(0, duration - 0.05), (duration * index) / Math.max(1, count - 1));
+        if (Math.abs(video.currentTime - time) > 0.02) {
+          video.currentTime = time;
+          await waitForMedia(video, 'seeked');
+        }
+        if (!video.videoWidth || !video.videoHeight) throw new Error('Video has no display frame.');
+        const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+        const sourceWidth = canvas.width / scale;
+        const sourceHeight = canvas.height / scale;
+        const sourceX = (video.videoWidth - sourceWidth) / 2;
+        const sourceY = (video.videoHeight - sourceHeight) / 2;
+        context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
+        thumbnails.push(canvas.toDataURL('image/jpeg', 0.58));
+      }
+      if (state.storyEditor === editor) {
+        editor.videoThumbnails = thumbnails;
+        document.querySelectorAll('.story-video-frame').forEach((frame, index) => {
+          if (thumbnails[index]) frame.style.backgroundImage = `url("${thumbnails[index]}")`;
+        });
+      }
+    } catch {
+      // The timeline remains usable with neutral frames when a browser cannot seek the source codec.
+    } finally {
+      editor.videoThumbLoading = false;
+      video.removeAttribute('src');
+      video.load();
+    }
+  }
+
+  function attachStoryEditorVideo() {
+    const editor = state.storyEditor;
+    const video = document.getElementById('story-editor-video');
+    if (!editor?.isVideo || !video) return;
+    editor.videoPlaying = false;
+    video.muted = Boolean(editor.videoMuted);
+    video.volume = clamp(Number(editor.videoVolume ?? 1), 0, 1);
+    video.playbackRate = [0.5, 1, 1.5, 2].includes(Number(editor.videoSpeed)) ? Number(editor.videoSpeed) : 1;
+    const prepare = () => {
+      if (state.storyEditor !== editor) return;
+      normalizeStoryVideoBounds(editor, Number.isFinite(video.duration) ? video.duration : 0);
+      if (Math.abs(video.currentTime - editor.videoCurrentTime) > 0.08) video.currentTime = editor.videoCurrentTime;
+      updateStoryVideoToolUi(true);
+      if (editor.activeTool === 'video') generateStoryVideoThumbnails(editor);
+    };
+    if (video.readyState >= 1) prepare();
+    else video.addEventListener('loadedmetadata', prepare, { once: true });
+    video.addEventListener('play', () => {
+      if (state.storyEditor !== editor) return;
+      editor.videoPlaying = true;
+      updateStoryVideoToolUi(true);
+    });
+    video.addEventListener('pause', () => {
+      if (state.storyEditor !== editor) return;
+      editor.videoPlaying = false;
+      updateStoryVideoToolUi(true);
+    });
+    video.addEventListener('timeupdate', () => {
+      if (state.storyEditor !== editor) return;
+      if (editor.trimEnd && video.currentTime >= editor.trimEnd) {
+        video.pause();
+        video.currentTime = editor.trimStart;
+      }
+      editor.videoCurrentTime = video.currentTime;
+      updateStoryVideoToolUi();
+    });
+  }
+
+  function attachStoryViewerVideo() {
+    const story = storyById(state.storyViewer?.storyId);
+    const video = document.querySelector('.story-viewer-stage video');
+    if (!story || !video) return;
+    const edits = story.edits || {};
+    const speed = [0.5, 1, 1.5, 2].includes(Number(edits.videoSpeed)) ? Number(edits.videoSpeed) : 1;
+    video.playbackRate = speed;
+    video.muted = Boolean(edits.videoMuted);
+    video.volume = clamp(Number(edits.videoVolume ?? 1), 0, 1);
+    const start = Math.max(0, Number(edits.trimStart || 0));
+    const end = Math.max(start, Number(edits.trimEnd || 0));
+    const prepare = () => {
+      if (start && Math.abs(video.currentTime - start) > 0.08) video.currentTime = start;
+      video.play().catch(() => {});
+    };
+    if (video.readyState >= 1) prepare();
+    else video.addEventListener('loadedmetadata', prepare, { once: true });
+    if (end > start) {
+      video.addEventListener('timeupdate', () => {
+        if (video.currentTime < end) return;
+        video.pause();
+        clearStoryAdvance();
+        navigateStory(1).catch((error) => alert(error.message));
+      });
+    }
+  }
+
+  async function toggleStoryVideoPlayback() {
+    const editor = state.storyEditor;
+    const video = document.getElementById('story-editor-video');
+    if (!editor?.isVideo || !video) return;
+    if (!video.paused) {
+      video.pause();
+      return;
+    }
+    if (video.currentTime < editor.trimStart || video.currentTime >= editor.trimEnd - 0.04) {
+      video.currentTime = editor.trimStart;
+    }
+    await video.play();
+  }
+
+  function updateStoryVideoFromPointer(drag, clientX) {
+    const editor = state.storyEditor;
+    if (!editor?.isVideo || !drag?.rect?.width) return;
+    const duration = Math.max(0.1, Number(editor.videoDuration || 0.1));
+    const point = clamp(((clientX - drag.rect.left) / drag.rect.width) * duration, 0, duration);
+    if (drag.edge === 'start') {
+      editor.trimStart = clamp(point, Math.max(0, editor.trimEnd - 60), Math.max(0, editor.trimEnd - 0.1));
+      editor.videoCurrentTime = editor.trimStart;
+    } else if (drag.edge === 'end') {
+      editor.trimEnd = clamp(point, Math.min(duration, editor.trimStart + 0.1), Math.min(duration, editor.trimStart + 60));
+      editor.videoCurrentTime = Math.max(editor.trimStart, editor.trimEnd - 0.03);
+    } else {
+      editor.videoCurrentTime = clamp(point, editor.trimStart, editor.trimEnd);
+    }
+    const video = document.getElementById('story-editor-video');
+    if (video) {
+      video.pause();
+      if (Math.abs(video.currentTime - editor.videoCurrentTime) > 0.01) video.currentTime = editor.videoCurrentTime;
+    }
+    updateStoryVideoToolUi();
   }
 
   function updateStoryDrawPreview() {
@@ -1602,7 +1904,9 @@
   function renderAccountAction(user) {
     const knownUser = userById(user?.id) || user;
     if (!knownUser || knownUser.id === state.me?.id) return '<button class="mini-btn account-action" disabled>You</button>';
+    if (knownUser.isContact && !knownUser.isFollowing) return `<button class="mini-btn account-action primary-action" data-action="follow-user" data-user-id="${esc(knownUser.id)}">Follow</button>`;
     if (knownUser.isContact) return `<button class="mini-btn account-action" data-action="open-chat" data-user-id="${esc(knownUser.id)}">Message</button>`;
+    if (knownUser.isFollowing) return `<button class="mini-btn account-action" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button>`;
     if (knownUser.incomingRequest) return `<button class="mini-btn account-action primary-action" data-action="accept-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Accept</button>`;
     if (knownUser.outgoingRequest) return '<button class="mini-btn account-action" disabled>Requested</button>';
     if (knownUser.hasBlocked || knownUser.blockedBy) return '<button class="mini-btn account-action" disabled>Blocked</button>';
@@ -1633,8 +1937,13 @@
     if (knownUser.isContact) {
       return `
         <button class="mini-btn profile-primary-action" data-action="open-chat" data-user-id="${esc(knownUser.id)}">Message</button>
-        <button class="mini-btn" data-action="remove-friend" data-user-id="${esc(knownUser.id)}">Unfollow</button>
+        ${knownUser.isFollowing
+          ? `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button>`
+          : `<button class="mini-btn" data-action="follow-user" data-user-id="${esc(knownUser.id)}">Follow</button>`}
       `;
+    }
+    if (knownUser.isFollowing) {
+      return `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}">Unfollow</button><button class="mini-btn profile-primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Add friend</button>`;
     }
     if (knownUser.incomingRequest) {
       return `
@@ -1652,7 +1961,8 @@
     let controls = '<button class="mini-btn" disabled>You</button>';
     const reportControl = !isMe ? `<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>` : '';
     if (!isMe) {
-      if (user.isContact) controls = `<button class="mini-btn" disabled>Following</button><button class="mini-btn" data-action="open-chat" data-user-id="${esc(user.id)}">Message</button><button class="mini-btn danger" data-action="remove-friend" data-user-id="${esc(user.id)}">Unfollow</button>`;
+      if (user.isContact) controls = `<button class="mini-btn" data-action="open-chat" data-user-id="${esc(user.id)}">Message</button>${user.isFollowing ? `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button>` : `<button class="mini-btn follow-btn" data-action="follow-user" data-user-id="${esc(user.id)}">Follow</button>`}`;
+      else if (user.isFollowing) controls = `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button><button class="mini-btn" data-action="add-contact" data-username="${esc(user.username)}">Add friend</button>`;
       else if (user.incomingRequest) controls = `<button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button><button class="mini-btn" data-action="decline-request" data-request-id="${esc(user.incomingRequest.id)}">Decline</button>`;
       else if (user.outgoingRequest) controls = '<button class="mini-btn" disabled>Requested</button>';
       else if (user.hasBlocked || user.blockedBy) controls = '<button class="mini-btn" disabled>Blocked</button>';
@@ -1780,7 +2090,7 @@
             <h2>Controls</h2>
             <div class="profile-control-list">
               <button class="secondary" data-action="mute-menu" data-user-id="${esc(peer.id)}">${icon('mute')} Mute</button>
-              <button class="danger" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Unfollow</button>
+              <button class="danger" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Remove friend</button>
               <button class="secondary" data-action="open-report" data-report-type="user" data-user-id="${esc(peer.id)}">Report user</button>
               ${peer.hasBlocked
                 ? `<button class="secondary" data-action="unblock-user" data-user-id="${esc(peer.id)}">Unblock</button>`
@@ -1875,7 +2185,8 @@
 
   function renderRelationshipButton(user) {
     if (!user || user.id === state.me?.id) return '<button class="mini-btn" disabled>You</button>';
-    if (user.isContact) return `<button class="mini-btn" disabled>Following</button><button class="mini-btn danger" data-action="remove-friend" data-user-id="${esc(user.id)}">Unfollow</button><button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
+    if (user.isContact) return `${user.isFollowing ? `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button>` : `<button class="mini-btn follow-btn" data-action="follow-user" data-user-id="${esc(user.id)}">Follow</button>`}<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
+    if (user.isFollowing) return `<button class="mini-btn" data-action="unfollow-user" data-user-id="${esc(user.id)}">Unfollow</button><button class="mini-btn" data-action="add-contact" data-username="${esc(user.username)}">Add friend</button><button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
     if (user.incomingRequest) {
       return `
         <button class="mini-btn" data-action="accept-request" data-request-id="${esc(user.incomingRequest.id)}">Accept</button>
@@ -1969,7 +2280,7 @@
         </span>
       </article>
     `).join('') : '<p class="hint">No unanswered requests.</p>';
-    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'mention'].includes(note.type));
+    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention'].includes(note.type));
     const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
         ${avatarHtml(note.actor)}
@@ -2042,7 +2353,7 @@
     if (sheet.type === 'chat-user' && peer) {
       body = `
         <button data-action="mute-menu" data-user-id="${esc(peer.id)}">${icon('mute')} Mute</button>
-        <button class="danger-text" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Unfollow</button>
+        <button class="danger-text" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Remove friend</button>
         <button data-action="open-report" data-report-type="user" data-user-id="${esc(peer.id)}">Report user</button>
         ${peer.hasBlocked
           ? `<button data-action="unblock-user" data-user-id="${esc(peer.id)}">Unblock</button>`
@@ -2147,8 +2458,9 @@
   function renderStoryEditor() {
     const editor = state.storyEditor;
     if (!editor) return '';
-    const style = `filter:${storyFilterCss(editor.filter, editor)}; transform:${storyMediaTransformCss(editor)};`;
+    const style = `filter:${storyFilterCss(editor.filter, editor)}; transform:${storyMediaTransformCss(editor)}; object-fit:${storyMediaFit(editor)};`;
     const tools = [
+      ...(editor.isVideo ? [['video', 'Edit video', 'scissors']] : []),
       ['audio', 'Music', 'music'],
       ['stickers', 'Stickers', 'stickers'],
       ['text', 'Text', 'text'],
@@ -2161,7 +2473,7 @@
         <div class="story-editor-canvas" data-stop-close>
           <div class="story-editor-preview">
             ${editor.isVideo
-              ? `<video src="${esc(editor.dataUrl)}" controls playsinline style="${esc(style)}"></video>`
+              ? `<video id="story-editor-video" src="${esc(editor.dataUrl)}" playsinline preload="metadata" style="${esc(style)}"></video>`
               : `<img src="${esc(editor.dataUrl)}" alt="" style="${esc(style)}">`}
             ${renderStoryEffectLayers(editor)}
             ${renderStoryDrawings(editor)}
@@ -2392,12 +2704,15 @@
   }
 
   async function loadContactsAndChats() {
-    const [contacts, chats, notifications, recommendations] = await Promise.all([
+    const [me, contacts, chats, notifications, recommendations] = await Promise.all([
+      api('/api/me'),
       api('/api/contacts'),
       api('/api/chats'),
       api('/api/notifications').catch(() => ({ pendingRequestCount: 0, requests: [], notifications: [] })),
       api('/api/users/recommendations').catch(() => ({ users: [] }))
     ]);
+    state.me = me.user;
+    state.twoFactorEnabled = me.twoFactorEnabled;
     state.contacts = contacts.users;
     state.chats = chats.chats;
     state.pendingRequestCount = notifications.pendingRequestCount || 0;
@@ -2527,6 +2842,34 @@
     }
     await loadContactsAndChats();
     state.actionSheet = null;
+    renderApp();
+  }
+
+  function mergeKnownUser(updatedUser) {
+    if (!updatedUser) return;
+    const merge = (item) => item?.id === updatedUser.id ? { ...item, ...updatedUser } : item;
+    state.contacts = state.contacts.map(merge);
+    state.chats = state.chats.map((chat) => chat.peer?.id === updatedUser.id ? { ...chat, peer: merge(chat.peer) } : chat);
+    state.searchResults = state.searchResults.map(merge);
+    state.recommendations = state.recommendations.map(merge);
+    if (state.publicProfile?.id === updatedUser.id) state.publicProfile = merge(state.publicProfile);
+    if (state.activePeer?.id === updatedUser.id) state.activePeer = merge(state.activePeer);
+  }
+
+  async function setFollowing(userId, following) {
+    const data = await api(`/api/follows/${encodeURIComponent(userId)}`, { method: following ? 'POST' : 'DELETE' });
+    mergeKnownUser(data.user);
+    if (data.me) state.me = data.me;
+    await loadContactsAndChats();
+    state.actionSheet = null;
+    renderApp();
+  }
+
+  async function removeFollower(userId) {
+    const data = await api(`/api/followers/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    mergeKnownUser(data.user);
+    if (data.me) state.me = data.me;
+    await loadContactsAndChats();
     renderApp();
   }
 
@@ -2786,7 +3129,17 @@
       audioEnd: 30,
       zoom: 1,
       trimStart: 0,
-      trimEnd: 0
+      trimEnd: 0,
+      videoDuration: 0,
+      videoCurrentTime: 0,
+      videoThumbnails: [],
+      videoThumbLoading: false,
+      videoPlaying: false,
+      videoMuted: false,
+      videoVolume: 1,
+      videoSpeed: 1,
+      mediaFit: 'cover',
+      mediaRotation: 0
     };
   }
 
@@ -2954,6 +3307,8 @@
       backgroundPreset: editor.backgroundPreset,
       mediaOffsetX: editor.mediaOffsetX,
       mediaOffsetY: editor.mediaOffsetY,
+      mediaFit: storyMediaFit(editor),
+      mediaRotation: editor.mediaRotation,
       text: editor.text,
       zoom: editor.zoom,
       textX: editor.textX,
@@ -2976,7 +3331,10 @@
       audioStart: editor.audioStart,
       audioEnd: Math.min(Number(editor.audioEnd || 30), Number(editor.audioStart || 0) + 30),
       trimStart: editor.trimStart,
-      trimEnd: editor.trimEnd
+      trimEnd: editor.trimEnd,
+      videoMuted: Boolean(editor.videoMuted),
+      videoVolume: clamp(Number(editor.videoVolume ?? 1), 0, 1),
+      videoSpeed: [0.5, 1, 1.5, 2].includes(Number(editor.videoSpeed)) ? Number(editor.videoSpeed) : 1
     };
   }
 
@@ -3407,8 +3765,10 @@
       body
     });
     upsertMessage(data.message);
+    updateMessagesList({ scroll: 'bottom' });
+    updateChatFooter({ focus: true });
     await refreshChatsOnly();
-    renderApp({ scroll: 'bottom' });
+    updateSidebar();
   }
 
   function classifyFile(file) {
@@ -3507,7 +3867,8 @@
       message.attachment = null;
     }
     await refreshChatsOnly();
-    renderApp();
+    updateMessagesList({ scroll: 'preserve' });
+    updateSidebar();
   }
 
   let userSearchId = 0;
@@ -3713,7 +4074,7 @@
         showIncomingMessageNotification(event.message);
       }
       await refreshChatsOnly();
-      if (state.tab === 'chats') renderApp();
+      updateSidebar();
     }
     if (event.type === 'message:deleted') {
       const message = state.messages.find((item) => item.id === event.messageId);
@@ -3722,24 +4083,36 @@
         message.deletedBy = event.deletedBy;
         message.text = '';
         message.attachment = null;
-        renderApp();
+        updateMessagesList({ scroll: 'preserve' });
       }
       await refreshChatsOnly();
+      updateSidebar();
     }
     if (event.type === 'message:hidden') {
       state.messages = state.messages.filter((item) => item.id !== event.messageId);
-      renderApp();
+      updateMessagesList({ scroll: 'preserve' });
+      await refreshChatsOnly();
+      updateSidebar();
     }
     if (event.type === 'notification:new') {
       state.pendingRequestCount = event.pendingRequestCount ?? state.pendingRequestCount;
       showSocialNotification(event);
       await refreshChatsOnly();
-      renderApp();
+      updateSidebar();
     }
     if (event.type === 'relationship:updated') {
+      const activePeerId = state.activePeer?.id || null;
       await loadContactsAndChats();
-      if (state.activePeer) state.activePeer = userById(state.activePeer.id) || state.activePeer;
-      renderApp();
+      if (activePeerId && !state.contacts.some((contact) => contact.id === activePeerId)) {
+        state.activePeer = null;
+        state.chatProfileOpen = false;
+        state.chatProfileSocialView = null;
+        renderApp();
+      } else {
+        if (activePeerId) state.activePeer = userById(activePeerId) || state.activePeer;
+        if (state.chatProfileOpen) renderApp();
+        else updateSidebar();
+      }
     }
     if (event.type === 'typing') {
       if (event.from === state.activePeer?.id) {
@@ -4137,7 +4510,12 @@
   function scheduleStoryAdvance(story) {
     clearStoryAdvance();
     if (!story || !state.storyViewer) return;
-    const delay = story.file?.mime?.startsWith('video/') ? 12000 : 7000;
+    const edits = story.edits || {};
+    const trimStart = Math.max(0, Number(edits.trimStart || 0));
+    const trimEnd = Math.max(trimStart, Number(edits.trimEnd || 0));
+    const speed = [0.5, 1, 1.5, 2].includes(Number(edits.videoSpeed)) ? Number(edits.videoSpeed) : 1;
+    const clipSeconds = trimEnd > trimStart ? (trimEnd - trimStart) / speed : 12;
+    const delay = story.file?.mime?.startsWith('video/') ? clamp(clipSeconds * 1000, 1000, 60000) : 7000;
     storyAdvanceTimer = setTimeout(() => {
       navigateStory(1).catch((error) => alert(error.message));
     }, delay);
@@ -4185,6 +4563,39 @@
     messages.innerHTML = renderMessagesList();
     if (options.scroll === 'bottom' || (!options.scroll && wasNearBottom)) scrollMessagesToBottom();
     if (options.scroll === 'preserve') messages.scrollTop = previousTop;
+    return true;
+  }
+
+  function updateSidebar() {
+    const current = document.querySelector('.sidebar');
+    if (!current || !state.me) return false;
+    const template = document.createElement('template');
+    template.innerHTML = renderSidebar().trim();
+    const next = template.content.firstElementChild;
+    if (!next) return false;
+    current.replaceWith(next);
+    return true;
+  }
+
+  function updateChatFooter(options = {}) {
+    const pane = document.querySelector('.chat-pane');
+    const current = pane?.querySelector('footer');
+    if (!current || !state.activePeer || state.chatProfileOpen) return false;
+    const input = current.querySelector('#composer-text');
+    const hadFocus = document.activeElement === input;
+    const selectionStart = input?.selectionStart || 0;
+    const template = document.createElement('template');
+    template.innerHTML = renderChatPane().trim();
+    const next = template.content.firstElementChild?.querySelector('footer');
+    if (!next) return false;
+    current.replaceWith(next);
+    resizeComposerInput();
+    if (hadFocus || options.focus) {
+      const nextInput = document.getElementById('composer-text');
+      nextInput?.focus({ preventScroll: true });
+      const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
+      nextInput?.setSelectionRange?.(cursor, cursor);
+    }
     return true;
   }
 
@@ -4348,7 +4759,7 @@
       }
       if (action === 'sticker-toggle') {
         state.stickerPanel = !state.stickerPanel;
-        renderApp();
+        updateChatFooter();
       }
       if (action === 'sticker-file-open') {
         document.getElementById('sticker-file-input')?.click();
@@ -4380,6 +4791,7 @@
       }
       if (action === 'close-story-editor') {
         state.storyEditor = null;
+        state.storyVideoTrimDrag = null;
         storyTextPointers.clear();
         storyMediaPointers.clear();
         storyStickerPointers.clear();
@@ -4424,6 +4836,43 @@
           if (tool !== 'stickers') state.storyEditor.stickerComposer = null;
         }
         renderApp();
+      }
+      if (action === 'story-video-play') {
+        await toggleStoryVideoPlayback();
+      }
+      if (action === 'story-video-mute' && state.storyEditor?.isVideo) {
+        state.storyEditor.videoMuted = !state.storyEditor.videoMuted;
+        const video = document.getElementById('story-editor-video');
+        if (video) video.muted = state.storyEditor.videoMuted;
+        updateStoryVideoToolUi(true);
+      }
+      if (action === 'story-video-speed' && state.storyEditor?.isVideo) {
+        const speeds = [0.5, 1, 1.5, 2];
+        const current = speeds.indexOf(Number(state.storyEditor.videoSpeed || 1));
+        state.storyEditor.videoSpeed = speeds[(current + 1) % speeds.length];
+        const video = document.getElementById('story-editor-video');
+        if (video) video.playbackRate = state.storyEditor.videoSpeed;
+        updateStoryVideoToolUi(true);
+      }
+      if (action === 'story-video-fit' && state.storyEditor?.isVideo) {
+        state.storyEditor.mediaFit = storyMediaFit(state.storyEditor) === 'cover' ? 'contain' : 'cover';
+        updateStoryMediaTransformUi();
+        updateStoryVideoToolUi(true);
+      }
+      if (action === 'story-video-rotate' && state.storyEditor?.isVideo) {
+        state.storyEditor.mediaRotation = (Number(state.storyEditor.mediaRotation || 0) + 90) % 360;
+        updateStoryMediaTransformUi();
+      }
+      if (action === 'story-video-reset-trim' && state.storyEditor?.isVideo) {
+        state.storyEditor.trimStart = 0;
+        state.storyEditor.trimEnd = Math.min(Number(state.storyEditor.videoDuration || 60), 60);
+        state.storyEditor.videoCurrentTime = 0;
+        const video = document.getElementById('story-editor-video');
+        if (video) {
+          video.pause();
+          video.currentTime = 0;
+        }
+        updateStoryVideoToolUi(true);
       }
       if (action === 'finish-story-tool') {
         if (state.storyEditor) {
@@ -4600,11 +5049,11 @@
       }
       if (action === 'reply-message') {
         state.replyTo = state.messages.find((message) => message.id === target.dataset.messageId) || null;
-        renderApp();
+        updateChatFooter({ focus: true });
       }
       if (action === 'clear-reply') {
         state.replyTo = null;
-        renderApp();
+        updateChatFooter({ focus: true });
       }
       if (action === 'delete-message') {
         state.actionSheet = null;
@@ -4827,7 +5276,16 @@
         await setMuteFor(target.dataset.userId, target.dataset.minutes);
       }
       if (action === 'remove-friend') {
-        if (confirm('Unfollow this user? The chat stays archived on the server and will return if you add each other again.')) await removeFriend(target.dataset.userId);
+        if (confirm('Remove this friend? The chat stays archived on the server and returns if you add each other again. Following and followers stay unchanged.')) await removeFriend(target.dataset.userId);
+      }
+      if (action === 'follow-user') {
+        await setFollowing(target.dataset.userId, true);
+      }
+      if (action === 'unfollow-user') {
+        if (confirm('Unfollow this user? They stay in your friends and followers unless you remove those separately.')) await setFollowing(target.dataset.userId, false);
+      }
+      if (action === 'remove-follower') {
+        if (confirm('Remove this follower? You will still follow them unless you unfollow separately.')) await removeFollower(target.dataset.userId);
       }
       if (action === 'block-user') {
         if (confirm('Block this user? Messaging will be blocked until you unblock them.')) await blockUser(target.dataset.userId);
@@ -5070,17 +5528,40 @@
 
   document.addEventListener('focusin', (event) => {
     if (event.target.closest('.story-viewer-actions')) clearStoryAdvance();
+    if (event.target.matches('input, textarea, [contenteditable="true"]')) {
+      requestAnimationFrame(() => setViewportHeight());
+      setTimeout(() => setViewportHeight(), 260);
+    }
   });
 
   document.addEventListener('focusout', (event) => {
-    if (!event.target.closest('.story-viewer-actions')) return;
-    setTimeout(() => {
-      if (!state.storyViewer || document.activeElement?.closest('.story-viewer-actions')) return;
-      scheduleStoryAdvance(storyById(state.storyViewer.storyId));
-    }, 0);
+    if (event.target.matches('input, textarea, [contenteditable="true"]')) {
+      setTimeout(() => setViewportHeight(), 120);
+      setTimeout(() => setViewportHeight(), 420);
+    }
+    if (event.target.closest('.story-viewer-actions')) {
+      setTimeout(() => {
+        if (!state.storyViewer || document.activeElement?.closest('.story-viewer-actions')) return;
+        scheduleStoryAdvance(storyById(state.storyViewer.storyId));
+      }, 0);
+    }
   });
 
   document.addEventListener('pointerdown', async (event) => {
+    const videoTrimHandle = event.target.closest('[data-story-video-trim]');
+    const videoTimeline = event.target.closest('.story-video-timeline');
+    if (state.storyEditor?.isVideo && videoTimeline) {
+      event.preventDefault();
+      state.edgeSwipe = null;
+      state.storyVideoTrimDrag = {
+        pointerId: event.pointerId,
+        edge: videoTrimHandle?.dataset.storyVideoTrim || 'playhead',
+        rect: videoTimeline.getBoundingClientRect()
+      };
+      videoTimeline.setPointerCapture?.(event.pointerId);
+      updateStoryVideoFromPointer(state.storyVideoTrimDrag, event.clientX);
+      return;
+    }
     if (event.target.closest('.story-size-slider')) {
       state.edgeSwipe = null;
       return;
@@ -5140,7 +5621,7 @@
       state.storyMediaGesture = null;
     }
     const continuingTextGesture = storyTextPointers.size > 0 && storyPreview &&
-      !event.target.closest('button,input,textarea,a,audio,video');
+      !event.target.closest('button,input,textarea,a,audio');
     const storyText = directStoryText || (continuingTextGesture
       ? document.querySelector('.story-draggable-text, .story-live-text')
       : null);
@@ -5193,7 +5674,7 @@
       return;
     }
 
-    if (state.storyEditor?.activeTool === 'draw' && storyPreview && !event.target.closest('button,input,textarea,a,audio,video')) {
+    if (state.storyEditor?.activeTool === 'draw' && storyPreview && !event.target.closest('button,input,textarea,a,audio')) {
       event.preventDefault();
       const rect = storyPreview.getBoundingClientRect();
       const point = {
@@ -5219,7 +5700,7 @@
       return;
     }
 
-    if (state.storyEditor && storyPreview && state.storyEditor.activeTool !== 'draw' && !event.target.closest('button,input,textarea,a,audio,video')) {
+    if (state.storyEditor && storyPreview && state.storyEditor.activeTool !== 'draw' && !event.target.closest('button,input,textarea,a,audio')) {
       event.preventDefault();
       const rect = storyPreview.getBoundingClientRect();
       storyMediaPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -5325,6 +5806,11 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.storyVideoTrimDrag?.pointerId === event.pointerId) {
+      event.preventDefault();
+      updateStoryVideoFromPointer(state.storyVideoTrimDrag, event.clientX);
+      return;
+    }
     if (state.storyEditor && storyStickerPointers.has(event.pointerId)) {
       const pointer = storyStickerPointers.get(event.pointerId);
       storyStickerPointers.set(event.pointerId, { ...pointer, x: event.clientX, y: event.clientY });
@@ -5480,6 +5966,12 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.storyVideoTrimDrag?.pointerId === event.pointerId) {
+      updateStoryVideoFromPointer(state.storyVideoTrimDrag, event.clientX);
+      state.storyVideoTrimDrag = null;
+      state.edgeSwipe = null;
+      return;
+    }
     if (storyStickerPointers.has(event.pointerId)) {
       const trash = document.getElementById('story-object-trash');
       const removeSticker = Boolean(trash?.classList.contains('active'));
@@ -5572,7 +6064,7 @@
       state.drag.el.classList.remove('reveal-time');
       if (replySwipe) {
         state.replyTo = draggedMessage || null;
-        renderApp();
+        updateChatFooter({ focus: true });
       }
       state.drag = null;
     }
@@ -5595,6 +6087,7 @@
     state.storyStickerDrag = null;
     state.storyStickerGesture = null;
     state.storyDraw = null;
+    state.storyVideoTrimDrag = null;
     storyTextPointers.clear();
     storyMediaPointers.clear();
     storyStickerPointers.clear();
@@ -5618,7 +6111,7 @@
       updateCropUi();
       return;
     }
-    if (state.storyEditor && state.storyEditor.activeTool !== 'draw' && event.target.closest('.story-editor-preview') && !event.target.closest('textarea,input,button,a,video,audio')) {
+    if (state.storyEditor && state.storyEditor.activeTool !== 'draw' && event.target.closest('.story-editor-preview') && !event.target.closest('textarea,input,button,a,audio')) {
       event.preventDefault();
       state.storyEditor.zoom = clamp((state.storyEditor.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
       updateStoryMediaTransformUi();

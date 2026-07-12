@@ -104,7 +104,7 @@ async function sendMessage(client, peerId, body) {
   });
 }
 
-test('story size controls stay inside the editor gesture boundary', () => {
+test('mobile viewport and story editing controls stay inside their gesture boundaries', () => {
   const clientSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
   const styleSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
@@ -125,7 +125,14 @@ test('story size controls stay inside the editor gesture boundary', () => {
   assert.match(clientSource, /initialTool = null/);
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
   assert.match(clientSource, /class="story-effects-panel"/);
-  assert.match(styleSource, /\.story-editor-page \{[\s\S]*?top: var\(--viewport-top\)/);
+  assert.match(clientSource, /let stableViewportHeight = 0/);
+  assert.match(clientSource, /root\.classList\.toggle\('keyboard-open', keyboardOpen\)/);
+  assert.match(clientSource, /class="story-video-timeline"/);
+  assert.match(clientSource, /data-story-video-trim="start"/);
+  assert.match(clientSource, /data-action="story-video-speed"/);
+  assert.match(styleSource, /\.story-editor-page \{[\s\S]*?top: var\(--visual-top\)/);
+  assert.match(styleSource, /html\.keyboard-open \.bottom-tabs/);
+  assert.match(styleSource, /\.story-video-filmstrip/);
   assert.match(styleSource, /\.story-floating-tray \{[\s\S]*?position: absolute/);
 });
 
@@ -228,6 +235,30 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
     notification.type === 'request_accepted' && notification.actor.id === bobUser.id
   )));
 
+  const connectedBob = await alice.request('/api/users/bob_test');
+  assert.equal(connectedBob.data.user.isContact, true);
+  assert.equal(connectedBob.data.user.isFollowing, true);
+  assert.equal(connectedBob.data.user.followsViewer, true);
+
+  const unfollowBob = await alice.request(`/api/follows/${bobUser.id}`, { method: 'DELETE' });
+  assert.equal(unfollowBob.status, 200);
+  assert.equal(unfollowBob.data.user.isContact, true);
+  assert.equal(unfollowBob.data.user.isFollowing, false);
+  assert.equal(unfollowBob.data.user.followsViewer, true);
+  assert.ok((await alice.request('/api/contacts')).data.users.some((user) => user.id === bobUser.id));
+  assert.ok(!unfollowBob.data.me.following.some((user) => user.id === bobUser.id));
+  assert.ok(unfollowBob.data.me.followers.some((user) => user.id === bobUser.id));
+
+  assert.equal((await alice.request(`/api/follows/${bobUser.id}`, { method: 'POST' })).status, 200);
+  const removeAliceFollower = await bob.request(`/api/followers/${aliceUser.id}`, { method: 'DELETE' });
+  assert.equal(removeAliceFollower.status, 200);
+  assert.equal(removeAliceFollower.data.user.isContact, true);
+  assert.equal(removeAliceFollower.data.user.isFollowing, true);
+  assert.equal(removeAliceFollower.data.user.followsViewer, false);
+  assert.ok(removeAliceFollower.data.me.following.some((user) => user.id === aliceUser.id));
+  assert.ok(!removeAliceFollower.data.me.followers.some((user) => user.id === aliceUser.id));
+  assert.equal((await alice.request(`/api/follows/${bobUser.id}`, { method: 'POST' })).status, 200);
+
   const charlieRequest = await charlie.request('/api/contacts/bob_test', { method: 'POST' });
   assert.equal(charlieRequest.status, 201);
   assert.equal((await bob.request(`/api/requests/${charlieRequest.data.request.id}/accept`, { method: 'POST' })).status, 200);
@@ -322,6 +353,10 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
 
   assert.equal((await alice.request(`/api/contacts/${bobUser.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await alice.request(`/api/chats/${bobUser.id}/messages?limit=200`)).status, 404);
+  const removedFriendProfile = await alice.request('/api/users/bob_test');
+  assert.equal(removedFriendProfile.data.user.isContact, false);
+  assert.equal(removedFriendProfile.data.user.isFollowing, true);
+  assert.equal(removedFriendProfile.data.user.followsViewer, true);
   const reconnect = await alice.request('/api/contacts/bob_test', { method: 'POST' });
   assert.equal(reconnect.status, 201);
   assert.equal((await bob.request(`/api/requests/${reconnect.data.request.id}/accept`, { method: 'POST' })).status, 200);
@@ -354,6 +389,8 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
         backgroundPreset: 'dusk',
         mediaOffsetX: 12,
         mediaOffsetY: -8,
+        mediaFit: 'contain',
+        mediaRotation: 90,
         text: 'Hello @bob_test',
         textX: 52,
         textY: 44,
@@ -371,7 +408,12 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
           { type: 'add_yours', label: 'Show your setup', x: 52, y: 32, rotation: 0, size: 1 }
         ],
         audioStart: 0,
-        audioEnd: 30
+        audioEnd: 30,
+        trimStart: 4,
+        trimEnd: 90,
+        videoMuted: true,
+        videoVolume: 0.4,
+        videoSpeed: 1.5
       }
     }
   });
@@ -382,9 +424,16 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(storyResponse.data.story.edits.brightness, 112);
   assert.equal(storyResponse.data.story.edits.mediaOffsetX, 12);
   assert.equal(storyResponse.data.story.edits.mediaOffsetY, -8);
+  assert.equal(storyResponse.data.story.edits.mediaFit, 'contain');
+  assert.equal(storyResponse.data.story.edits.mediaRotation, 90);
   assert.equal(storyResponse.data.story.edits.textFont, 'poster');
   assert.equal(storyResponse.data.story.edits.textEffect, 'shimmer');
   assert.equal(storyResponse.data.story.edits.textAnimation, 'bounce');
+  assert.equal(storyResponse.data.story.edits.trimStart, 4);
+  assert.equal(storyResponse.data.story.edits.trimEnd, 64);
+  assert.equal(storyResponse.data.story.edits.videoMuted, true);
+  assert.equal(storyResponse.data.story.edits.videoVolume, 0.4);
+  assert.equal(storyResponse.data.story.edits.videoSpeed, 1.5);
   assert.equal(storyResponse.data.story.edits.drawings[0].brush, 'neon');
   assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.type === 'link').href, 'https://example.com/path');
   assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.label === 'Unsafe').href, '');

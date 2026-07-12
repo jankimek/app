@@ -26,6 +26,7 @@ const REPORT_REASONS = [
   'Other'
 ];
 const reportReasonsSet = new Set(REPORT_REASONS);
+const followsFileExists = fs.existsSync(path.join(DATA_DIR, 'follows.json'));
 
 for (const dir of [PUBLIC_DIR, DATA_DIR, UPLOAD_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -35,6 +36,7 @@ const db = {
   users: readJson('users.json', {}),
   sessions: readJson('sessions.json', {}),
   contacts: readJson('contacts.json', {}),
+  follows: readJson('follows.json', {}),
   messages: readJson('messages.json', {}),
   files: readJson('files.json', {}),
   friendRequests: readJson('friendRequests.json', {}),
@@ -45,6 +47,13 @@ const db = {
   reports: readJson('reports.json', []),
   userMeta: readJson('userMeta.json', {})
 };
+
+if (!followsFileExists) {
+  for (const [userId, contacts] of Object.entries(db.contacts)) {
+    db.follows[userId] = Array.from(new Set((contacts || []).filter((contactId) => db.users[contactId])));
+  }
+  fs.writeFileSync(path.join(DATA_DIR, 'follows.json'), JSON.stringify(db.follows, null, 2));
+}
 
 const socketsByUser = new Map();
 
@@ -73,6 +82,10 @@ function saveSessions() {
 
 function saveContacts() {
   return saveJson('contacts.json', db.contacts);
+}
+
+function saveFollows() {
+  return saveJson('follows.json', db.follows);
 }
 
 function saveMessages() {
@@ -266,27 +279,15 @@ function publicUser(user, viewerId = null) {
     ...basicPublicUser(user, viewerId),
     ...follow,
     isContact: Boolean(viewerId && (db.contacts[viewerId] || []).includes(user.id)),
+    isFollowing: Boolean(viewerId && isFollowing(viewerId, user.id)),
+    followsViewer: Boolean(viewerId && isFollowing(user.id, viewerId)),
     ...relation
   };
 }
 
 function followStatsFor(user, viewerId = null) {
-  const accepted = Object.values(db.friendRequests).filter((request) => (
-    request.status === 'accepted' &&
-    (db.contacts[request.fromId] || []).includes(request.toId) &&
-    (db.contacts[request.toId] || []).includes(request.fromId)
-  ));
-  const contacts = db.contacts[user.id] || [];
-  let followers = [
-    ...accepted.filter((request) => request.toId === user.id).map((request) => request.fromId),
-    ...contacts
-  ];
-  let following = [
-    ...accepted.filter((request) => request.fromId === user.id).map((request) => request.toId),
-    ...contacts
-  ];
-  followers = Array.from(new Set(followers)).filter((id) => db.users[id]);
-  following = Array.from(new Set(following)).filter((id) => db.users[id]);
+  const followers = Object.keys(db.users).filter((id) => isFollowing(id, user.id));
+  const following = Array.from(new Set(db.follows[user.id] || [])).filter((id) => db.users[id]);
   const visible = user.profile?.socialPublic !== false || viewerId === user.id;
   return {
     socialPublic: user.profile?.socialPublic !== false,
@@ -305,6 +306,29 @@ function chatIdFor(a, b) {
 function ensureContactList(userId) {
   if (!db.contacts[userId]) db.contacts[userId] = [];
   return db.contacts[userId];
+}
+
+function ensureFollowList(userId) {
+  if (!db.follows[userId]) db.follows[userId] = [];
+  return db.follows[userId];
+}
+
+function isFollowing(userId, targetId) {
+  return (db.follows[userId] || []).includes(targetId);
+}
+
+function addFollow(userId, targetId) {
+  if (userId === targetId || !db.users[userId] || !db.users[targetId]) return false;
+  const list = ensureFollowList(userId);
+  if (list.includes(targetId)) return false;
+  list.push(targetId);
+  return true;
+}
+
+function removeFollow(userId, targetId) {
+  const before = (db.follows[userId] || []).length;
+  db.follows[userId] = (db.follows[userId] || []).filter((id) => id !== targetId);
+  return db.follows[userId].length !== before;
 }
 
 function addContact(a, b) {
@@ -443,8 +467,7 @@ function canViewStories(ownerId, viewerId = null) {
   if (owner.profile?.socialPublic !== false) return true;
   if (!viewerId) return false;
   if (viewerId === ownerId) return true;
-  return (db.contacts[ownerId] || []).includes(viewerId) &&
-    (db.contacts[viewerId] || []).includes(ownerId);
+  return isFollowing(viewerId, ownerId);
 }
 
 function canViewStory(story, viewerId = null) {
@@ -986,10 +1009,11 @@ async function handleApi(req, res, pathname, query) {
     };
     db.users[user.id] = user;
     db.contacts[user.id] = [];
+    db.follows[user.id] = [];
     db.notifications[user.id] = [];
     db.blocks[user.id] = [];
     db.mutes[user.id] = {};
-    await Promise.all([saveUsers(), saveContacts(), saveNotifications(), saveBlocks(), saveMutes()]);
+    await Promise.all([saveUsers(), saveContacts(), saveFollows(), saveNotifications(), saveBlocks(), saveMutes()]);
     await createSession(res, user.id);
     rememberUserRequest(user.id, req);
     return sendJson(res, 201, { user: publicUser(user, user.id) });
@@ -1073,6 +1097,9 @@ async function handleApi(req, res, pathname, query) {
     }
     const audioStart = Math.max(0, Number(body.edits?.audioStart || 0));
     const audioEnd = Math.min(Math.max(audioStart, Number(body.edits?.audioEnd || audioStart + 30)), audioStart + 30);
+    const trimStart = storyNumber(body.edits?.trimStart, 0, 3600, 0);
+    const requestedTrimEnd = storyNumber(body.edits?.trimEnd, 0, 3600, 0);
+    const trimEnd = requestedTrimEnd > trimStart ? Math.min(requestedTrimEnd, trimStart + 60) : 0;
     const story = {
       id: id('story'),
       ownerId: user.id,
@@ -1101,6 +1128,8 @@ async function handleApi(req, res, pathname, query) {
         ].includes(body.edits?.backgroundPreset) ? body.edits.backgroundPreset : '',
         mediaOffsetX: storyNumber(body.edits?.mediaOffsetX, -40, 40, 0),
         mediaOffsetY: storyNumber(body.edits?.mediaOffsetY, -40, 40, 0),
+        mediaFit: body.edits?.mediaFit === 'contain' ? 'contain' : 'cover',
+        mediaRotation: [0, 90, 180, 270].includes(Number(body.edits?.mediaRotation)) ? Number(body.edits.mediaRotation) : 0,
         text: cleanText(body.edits?.text || '', 120),
         zoom: Math.max(1, Math.min(3, Number(body.edits?.zoom || 1))),
         textX: Math.max(5, Math.min(95, Number(body.edits?.textX || 50))),
@@ -1125,8 +1154,11 @@ async function handleApi(req, res, pathname, query) {
         pollOptionB: cleanText(body.edits?.pollOptionB || 'No', 40),
         audioStart,
         audioEnd,
-        trimStart: Math.max(0, Number(body.edits?.trimStart || 0)),
-        trimEnd: Math.max(0, Number(body.edits?.trimEnd || 0))
+        trimStart,
+        trimEnd,
+        videoMuted: Boolean(body.edits?.videoMuted),
+        videoVolume: storyNumber(body.edits?.videoVolume, 0, 1, 1),
+        videoSpeed: [0.5, 1, 1.5, 2].includes(Number(body.edits?.videoSpeed)) ? Number(body.edits.videoSpeed) : 1
       },
       views: [],
       likes: [],
@@ -1333,8 +1365,10 @@ async function handleApi(req, res, pathname, query) {
       reverse.status = 'accepted';
       reverse.respondedAt = nowIso();
       addContact(user.id, other.id);
+      addFollow(user.id, other.id);
+      addFollow(other.id, user.id);
       const notification = addNotification(other.id, 'request_accepted', user.id, reverse.id, `${user.username} accepted your request.`);
-      await Promise.all([saveFriendRequests(), saveContacts(), saveNotifications()]);
+      await Promise.all([saveFriendRequests(), saveContacts(), saveFollows(), saveNotifications()]);
       if (notification) {
         pushToUser(other.id, {
           type: 'notification:new',
@@ -1379,6 +1413,53 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { ok: true, user: publicUser(peer, user.id) });
   }
 
+  const followMatch = /^\/api\/follows\/([^/]+)$/.exec(pathname);
+  if ((req.method === 'POST' || req.method === 'DELETE') && followMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const peer = db.users[decodeURIComponent(followMatch[1])] || userByUsername(decodeURIComponent(followMatch[1]));
+    if (!peer || peer.id === user.id) return sendError(res, 404, 'User not found.');
+    if (isBlockedBetween(user.id, peer.id)) return sendError(res, 403, 'This user cannot be followed right now.');
+    if (req.method === 'POST' && !(db.contacts[user.id] || []).includes(peer.id)) {
+      return sendError(res, 409, 'Send a follow request first.');
+    }
+    const changed = req.method === 'POST' ? addFollow(user.id, peer.id) : removeFollow(user.id, peer.id);
+    let notification = null;
+    if (req.method === 'POST' && changed) {
+      notification = addNotification(peer.id, 'new_follower', user.id, null, `${user.username} followed you.`);
+    }
+    await Promise.all([saveFollows(), notification ? saveNotifications() : Promise.resolve()]);
+    if (notification) {
+      pushToUser(peer.id, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(peer.id).length,
+        notification: publicNotification(notification, peer.id)
+      });
+    }
+    pushToUsers([user.id, peer.id], { type: 'relationship:updated' });
+    return sendJson(res, 200, {
+      ok: true,
+      user: publicUser(peer, user.id),
+      me: publicUser(user, user.id)
+    });
+  }
+
+  const followerMatch = /^\/api\/followers\/([^/]+)$/.exec(pathname);
+  if (req.method === 'DELETE' && followerMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const peer = db.users[decodeURIComponent(followerMatch[1])] || userByUsername(decodeURIComponent(followerMatch[1]));
+    if (!peer || peer.id === user.id) return sendError(res, 404, 'User not found.');
+    removeFollow(peer.id, user.id);
+    await saveFollows();
+    pushToUsers([user.id, peer.id], { type: 'relationship:updated' });
+    return sendJson(res, 200, {
+      ok: true,
+      user: publicUser(peer, user.id),
+      me: publicUser(user, user.id)
+    });
+  }
+
   if (req.method === 'GET' && pathname === '/api/notifications') {
     const user = await requireAuth(req, res);
     if (!user) return;
@@ -1405,8 +1486,10 @@ async function handleApi(req, res, pathname, query) {
     let responseNotification = null;
     if (action === 'accept') {
       addContact(request.fromId, request.toId);
+      addFollow(request.fromId, request.toId);
+      addFollow(request.toId, request.fromId);
       responseNotification = addNotification(request.fromId, 'request_accepted', user.id, request.id, `${user.username} accepted your request.`);
-      await Promise.all([saveFriendRequests(), saveContacts(), saveNotifications()]);
+      await Promise.all([saveFriendRequests(), saveContacts(), saveFollows(), saveNotifications()]);
     } else {
       addNotification(request.fromId, 'request_declined', user.id, request.id, `${user.username} declined your request.`);
       await Promise.all([saveFriendRequests(), saveNotifications()]);
