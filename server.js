@@ -601,6 +601,7 @@ function publicStory(story, viewerId = null) {
   const views = Array.isArray(story.views) ? story.views : [];
   const likes = Array.isArray(story.likes) ? story.likes : [];
   const comments = Array.isArray(story.comments) ? story.comments : [];
+  const commentById = new Map(comments.map((comment) => [comment.id, comment]));
   const stickerResponses = story.stickerResponses && typeof story.stickerResponses === 'object' ? story.stickerResponses : {};
   const responseSummary = Object.fromEntries(Object.entries(stickerResponses).map(([stickerId, rawResponses]) => {
     const responses = Array.isArray(rawResponses) ? rawResponses : [];
@@ -638,12 +639,24 @@ function publicStory(story, viewerId = null) {
     canReply: canReplyToStory(story, viewerId),
     commentCount: comments.length,
     stickerResponses: responseSummary,
-    comments: comments.slice(-30).map((comment) => ({
-      id: comment.id,
-      text: comment.text,
-      createdAt: comment.createdAt,
-      user: storyActor(db.users[comment.userId])
-    }))
+    comments: comments.slice(-80).map((comment) => {
+      const commentLikes = Array.isArray(comment.likes) ? comment.likes : [];
+      const parent = comment.replyTo ? commentById.get(comment.replyTo) : null;
+      return {
+        id: comment.id,
+        text: comment.text,
+        createdAt: comment.createdAt,
+        user: storyActor(db.users[comment.userId]),
+        replyTo: parent?.id || null,
+        replyPreview: parent ? {
+          id: parent.id,
+          text: parent.text,
+          user: storyActor(db.users[parent.userId])
+        } : null,
+        likeCount: commentLikes.length,
+        likedByMe: Boolean(viewerId && commentLikes.includes(viewerId))
+      };
+    })
   };
 }
 
@@ -1591,16 +1604,53 @@ async function handleApi(req, res, pathname, query) {
     const text = cleanText(body.text || '', 280);
     if (!text) return sendError(res, 400, 'Write a comment first.');
     if (!Array.isArray(story.comments)) story.comments = [];
-    story.comments.push({
+    const parent = body.replyTo
+      ? story.comments.find((comment) => comment.id === cleanText(body.replyTo, 120))
+      : null;
+    const comment = {
       id: id('comment'),
       userId: user.id,
       text,
+      replyTo: parent?.id || null,
+      likes: [],
       createdAt: nowIso()
-    });
+    };
+    story.comments.push(comment);
     story.comments = story.comments.slice(-200);
-    notifyMentions(user, text, 'in a story comment');
+    const mentionNotes = notifyMentions(user, text, 'in a story comment');
+    if (parent && parent.userId !== user.id && !mentionNotes.some(({ target }) => target.id === parent.userId)) {
+      const note = addNotification(parent.userId, 'comment_reply', user.id, null, `${user.username} replied to your comment.`);
+      if (note) pushToUser(parent.userId, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(parent.userId).length,
+        notification: publicNotification(note, parent.userId)
+      });
+    }
     await Promise.all([saveStories(), saveNotifications()]);
     return sendJson(res, 201, { story: publicStory(story, user.id) });
+  }
+
+  const storyCommentLikeMatch = /^\/api\/stories\/([^/]+)\/comments\/([^/]+)\/like$/.exec(pathname);
+  if (req.method === 'POST' && storyCommentLikeMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const story = db.stories[decodeURIComponent(storyCommentLikeMatch[1])];
+    if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
+    const comment = (story.comments || []).find((item) => item.id === decodeURIComponent(storyCommentLikeMatch[2]));
+    if (!comment) return sendError(res, 404, 'Comment not found.');
+    if (!Array.isArray(comment.likes)) comment.likes = [];
+    const wasLiked = comment.likes.includes(user.id);
+    comment.likes = wasLiked ? comment.likes.filter((id) => id !== user.id) : [...comment.likes, user.id];
+    if (!wasLiked && comment.userId !== user.id) {
+      const note = addNotification(comment.userId, 'comment_like', user.id, null, `${user.username} liked your comment.`);
+      if (note) pushToUser(comment.userId, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(comment.userId).length,
+        notification: publicNotification(note, comment.userId)
+      });
+    }
+    await Promise.all([saveStories(), saveNotifications()]);
+    return sendJson(res, 200, { story: publicStory(story, user.id) });
   }
 
   const storyStickerResponseMatch = /^\/api\/stories\/([^/]+)\/stickers\/([^/]+)\/respond$/.exec(pathname);

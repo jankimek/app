@@ -49,6 +49,8 @@
     activePeer: null,
     chatProfileOpen: false,
     chatReturnAnimation: false,
+    chatOpening: false,
+    chatOpenToken: 0,
     messages: [],
     hasOlderMessages: false,
     loadingOlderMessages: false,
@@ -80,6 +82,8 @@
     actionSheet: null,
     messageFocus: null,
     messageFocusClosing: false,
+    messageFocusNeedsRefresh: false,
+    messageFocusNeedsRefresh: false,
     lastMessageTap: null,
     storyPublishing: false,
     gifPool: [],
@@ -99,6 +103,10 @@
     chatTrayTab: 'stickers',
     chatGifQuery: '',
     stickerCreator: null,
+    stickerSets: [],
+    activeStickerSet: 'all',
+    stickerSetEditor: null,
+    stickerSavePrompt: null,
     chatCustomizationOpen: false,
     chatAppearance: defaultChatAppearance(),
     stickers: [],
@@ -164,6 +172,13 @@
       '"': '&quot;',
       "'": '&#39;'
     }[char]));
+  }
+
+  function renderMentionText(value) {
+    return String(value || '').split(/(@[a-zA-Z0-9_.]{3,24})/g).map((part) => {
+      if (!/^@[a-zA-Z0-9_.]{3,24}$/.test(part)) return esc(part);
+      return `<button class="inline-mention" data-action="view-user-profile" data-username="${esc(part.slice(1))}">${esc(part)}</button>`;
+    }).join('');
   }
 
   function formValue(form, name) {
@@ -342,13 +357,13 @@
     return { chats: 0, search: 1, notifications: 0, profile: 2 }[tab] ?? 0;
   }
 
-  function switchMainTab(nextTab) {
+  function switchMainTab(nextTab, options = {}) {
     if (!['chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
     const leavingPublicProfile = state.searchProfileOpen;
     const profileReturnScroll = state.profileReturnScroll;
     const wasChatProfileOpen = state.chatProfileOpen;
     state.lastTab = state.tab;
-    state.tabTransition = true;
+    state.tabTransition = options.animate !== false;
     state.tabDirection = tabIndex(nextTab) < tabIndex(state.tab) ? 'left' : 'right';
     state.tab = nextTab;
     if (leavingPublicProfile) {
@@ -373,6 +388,37 @@
     if (leavingPublicProfile) state.profileReturnScroll = null;
   }
 
+  function tabSwipeTarget(dx) {
+    const tabs = ['chats', 'search', 'profile'];
+    const index = tabIndex(state.tab);
+    const targetIndex = index + (dx < 0 ? 1 : -1);
+    return tabs[targetIndex] || null;
+  }
+
+  function ensureTabSwipePreview(swipe, dx) {
+    const targetTab = tabSwipeTarget(dx);
+    if (!targetTab) return null;
+    if (swipe.preview?.isConnected && swipe.targetTab === targetTab) return swipe.preview;
+    swipe.preview?.remove();
+    const preview = document.createElement('div');
+    preview.className = 'side-content tab-content tab-swipe-preview';
+    preview.dataset.tab = targetTab;
+    preview.innerHTML = renderTabContent(targetTab);
+    const sidebar = swipe.surface.closest('.sidebar');
+    sidebar?.insertBefore(preview, sidebar.querySelector('.bottom-tabs'));
+    swipe.preview = preview;
+    swipe.targetTab = targetTab;
+    return preview;
+  }
+
+  function clearTabSwipePreview(swipe) {
+    if (!swipe) return;
+    swipe.surface.style.transform = '';
+    swipe.surface.style.opacity = '';
+    swipe.surface.style.transition = '';
+    swipe.preview?.remove();
+  }
+
   function describeMessage(message) {
     if (!message) return '';
     if (message.deletedAt) return 'Deleted message';
@@ -383,6 +429,7 @@
 
   async function init() {
     await loadStickers();
+    loadStickerSets();
     const publicName = publicUsernameFromPath();
     try {
       const me = await api('/api/me');
@@ -630,12 +677,32 @@
   }
 
   function stabilizeBottomScroll() {
-    requestAnimationFrame(scrollMessagesToBottom);
-    setTimeout(scrollMessagesToBottom, 120);
-    setTimeout(scrollMessagesToBottom, 360);
+    const token = state.chatOpenToken;
+    const messages = document.getElementById('messages');
+    if (!messages) return;
+    let lastTop = messages.scrollTop;
+    let cancelled = false;
+    const settle = () => {
+      if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
+      if (Math.abs(messages.scrollTop - lastTop) > 5) {
+        cancelled = true;
+        return;
+      }
+      messages.scrollTop = messages.scrollHeight;
+      lastTop = messages.scrollTop;
+      updateBubbleViewportColors();
+    };
+    requestAnimationFrame(settle);
+    [90, 220, 480, 820, 1200].forEach((delay) => setTimeout(settle, delay));
+    if (window.ResizeObserver) {
+      const observer = new ResizeObserver(settle);
+      observer.observe(messages);
+      setTimeout(() => observer.disconnect(), 1300);
+    }
   }
 
   function renderApp(options = {}) {
+    if (state.messageFocus) closeMessageFocus({ immediate: true, skipRefresh: true });
     capturePersistentScroll();
     const scrollSnapshot = Object.prototype.hasOwnProperty.call(options, 'scrollSnapshot')
       ? options.scrollSnapshot
@@ -658,6 +725,7 @@
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
       <div id="chat-customization-slot">${renderChatCustomization()}</div>
       <div id="sticker-creator-slot">${renderStickerCreator()}</div>
+      <div id="sticker-manager-slot">${renderStickerManager()}</div>
       <input id="avatar-input" type="file" accept="image/*" hidden>
       <input id="story-input" type="file" accept="image/*,video/*" hidden>
     `;
@@ -665,6 +733,7 @@
     resizeComposerInput();
     applyRenderScroll(scrollMode, scrollSnapshot);
     restorePersistentScroll();
+    updateBubbleViewportColors();
     setTimeout(() => {
       resizeComposerInput();
       if (state.storyEditor?.textEditing) {
@@ -676,11 +745,13 @@
       }
       applyRenderScroll(scrollMode, scrollSnapshot);
       restorePersistentScroll();
+      updateBubbleViewportColors();
       if (scrollMode === 'bottom') stabilizeBottomScroll();
       attachCallStreams();
       attachStoryEditorVideo();
       attachStoryViewerVideo();
       state.chatReturnAnimation = false;
+      state.chatOpening = false;
     }, 0);
   }
 
@@ -744,6 +815,10 @@
     return updateSlot('sticker-creator-slot', renderStickerCreator());
   }
 
+  function updateStickerManagerSlot() {
+    return updateSlot('sticker-manager-slot', renderStickerManager());
+  }
+
   function updateRecommendationsSection() {
     capturePersistentScroll();
     const current = document.querySelector('.suggestion-section');
@@ -764,7 +839,7 @@
     return `
       <aside class="sidebar">
         <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}" data-scroll-memory="${esc(scrollKey)}">
-          ${state.tab === 'chats' ? renderChatsPanel() : state.tab === 'search' ? renderSearchPanel() : state.tab === 'notifications' ? renderNotificationsPage() : renderProfilePanel()}
+          ${renderTabContent(state.tab)}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
           ${navButton('chats', 'Messages', 'messages')}
@@ -773,6 +848,13 @@
         </nav>
       </aside>
     `;
+  }
+
+  function renderTabContent(tab) {
+    if (tab === 'chats') return renderChatsPanel();
+    if (tab === 'search') return renderSearchPanel();
+    if (tab === 'notifications') return renderNotificationsPage();
+    return renderProfilePanel();
   }
 
   function renderChatsPanel() {
@@ -1094,7 +1176,7 @@
     return `
       <section class="profile-suggestion-section">
         <div class="section-heading"><h2>Suggested for you</h2><small>Related and recently viewed</small></div>
-        <div class="recommendation-row profile-recommendation-row" data-scroll-memory="profile-network:${esc(user?.username || state.me?.username || 'profile')}">
+        <div class="recommendation-row profile-recommendation-row" data-scroll-memory="profile-network:${esc(profile?.username || state.me?.username || 'profile')}">
           ${suggestions.map((user) => `
             <article class="recommend-card">
               ${renderRecommendationIdentity(user)}
@@ -2757,6 +2839,33 @@
     return `--chat-bg:${backgroundColor};--chat-bubble-top:${mineColor};--chat-bubble-bottom:${theirsColor};--chat-bubble-text:${readableTextColor(mineColor)};--chat-mine:${mineColor};--chat-mine-text:${readableTextColor(mineColor)};--chat-theirs:${theirsColor};--chat-theirs-text:${readableTextColor(theirsColor)};`;
   }
 
+  function chatRgb(hex, fallback) {
+    const match = /^#([0-9a-f]{6})$/i.exec(chatColor(hex, fallback));
+    const value = parseInt(match[1], 16);
+    return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+  }
+
+  let bubbleColorFrame = 0;
+  function updateBubbleViewportColors() {
+    cancelAnimationFrame(bubbleColorFrame);
+    bubbleColorFrame = requestAnimationFrame(() => {
+      const pane = document.querySelector('.chat-pane.active-chat');
+      const messages = document.getElementById('messages');
+      if (!pane || !messages) return;
+      const topColor = chatRgb(state.chatAppearance?.mineColor, defaultChatAppearance().mineColor);
+      const bottomColor = chatRgb(state.chatAppearance?.theirsColor, defaultChatAppearance().theirsColor);
+      const bounds = messages.getBoundingClientRect();
+      const height = Math.max(1, bounds.height);
+      messages.querySelectorAll('.message:not(.media-message):not(.sticker-message) .bubble').forEach((bubble) => {
+        const rect = bubble.getBoundingClientRect();
+        const center = rect.top + Math.min(rect.height, height) / 2;
+        const ratio = clamp((center - bounds.top) / height, 0, 1);
+        const rgb = topColor.map((value, index) => Math.round(value + (bottomColor[index] - value) * ratio));
+        bubble.style.setProperty('--message-bubble-color', `rgb(${rgb.join(',')})`);
+      });
+    });
+  }
+
   function renderChatCustomization() {
     if (!state.chatCustomizationOpen || !state.activePeer) return '';
     const settings = { ...defaultChatAppearance(), ...(state.chatAppearance || {}) };
@@ -2817,6 +2926,7 @@
       pane.classList.toggle(`chat-background-${name}`, state.chatAppearance?.background === name);
     }
     pane.setAttribute('style', chatAppearanceStyle());
+    updateBubbleViewportColors();
   }
 
   function renderChatPane() {
@@ -2847,7 +2957,7 @@
     if (state.chatProfileOpen) return renderChatProfilePane();
 
     return `
-      <main class="chat-pane active-chat chat-background-${esc(state.chatAppearance?.background || 'midnight')} ${state.chatReturnAnimation ? 'chat-returning' : ''}" style="${esc(chatAppearanceStyle())}">
+      <main class="chat-pane active-chat chat-background-${esc(state.chatAppearance?.background || 'midnight')} ${state.chatReturnAnimation ? 'chat-returning' : ''} ${state.chatOpening ? 'chat-opening' : ''}" style="${esc(chatAppearanceStyle())}">
         <header class="chat-header">
           <button class="icon-btn back-btn" title="Back" aria-label="Back" data-action="back">${icon('back')}</button>
           <button class="chat-profile-button" data-action="open-chat-profile">
@@ -2858,7 +2968,6 @@
             <small>@${esc(state.activePeer.username)}</small>
           </button>
           <div class="toolbar" style="margin-left:auto">
-            <button class="icon-btn" title="Chat appearance" aria-label="Chat appearance" data-action="open-chat-customization">${icon('palette')}</button>
             <button class="icon-btn" title="Voice call" aria-label="Voice call" data-action="audio-call">${icon('phone')}</button>
             <button class="icon-btn" title="Video call" aria-label="Video call" data-action="video-call">${icon('video')}</button>
           </div>
@@ -2922,6 +3031,13 @@
               <button class="secondary" data-action="export-chat" data-format="json">Save chatlog JSON</button>
               <button class="secondary" data-action="export-chat" data-format="html">Save chatlog HTML</button>
             </div>
+          </section>
+          <section class="panel-card chat-profile-appearance">
+            <button class="profile-setting-link" data-action="open-chat-customization">
+              <span class="profile-setting-icon">${icon('palette')}</span>
+              <span><strong>Chat appearance</strong><small>Background and message colors</small></span>
+              ${icon('chevron')}
+            </button>
           </section>
           <section class="panel-card">
             <h2>Controls</h2>
@@ -3015,43 +3131,15 @@
     const message = state.messages.find((item) => item.id === focus.messageId);
     if (!message) return '';
     const mine = message.senderId === state.me.id;
-    let panel = '';
-    if (focus.mode === 'forward') {
-      panel = `
-        <section class="message-focus-picker">
-          <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Forward to</strong></header>
-          <div class="message-focus-list">
-            ${state.chats.length ? state.chats.map((chat) => `
-              <button data-action="forward-message" data-message-id="${esc(message.id)}" data-user-id="${esc(chat.peer.id)}">
-                ${avatarHtml(chat.peer)}<span><strong>${esc(chat.peer.displayName)}</strong><small>@${esc(chat.peer.username)}</small></span><b>Send</b>
-              </button>
-            `).join('') : '<p>No chats available.</p>'}
-          </div>
-        </section>
-      `;
-    } else if (focus.mode === 'sticker') {
-      panel = `
-        <section class="message-focus-picker sticker-picker">
-          <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Add a sticker</strong></header>
-          <div class="message-focus-stickers">
-            ${availableChatStickers().map((sticker) => `<button data-action="attach-message-sticker" data-message-id="${esc(message.id)}" data-sticker-id="${esc(sticker.id)}"><img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}"></button>`).join('')}
-          </div>
-        </section>
-      `;
-    } else {
-      panel = `
+    return `
+      <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus">
+        <section class="message-focus-stage ${mine ? 'mine' : 'theirs'}" data-stop-close>
+          <div class="message-focus-actions">
         <div class="message-reaction-bar">
           ${messageReactionOptions().map((emoji) => `<button data-action="react-message" data-message-id="${esc(message.id)}" data-emoji="${esc(emoji)}" class="${(message.reactions || []).some((reaction) => reaction.emoji === emoji && (reaction.userIds || []).includes(state.me.id)) ? 'active' : ''}">${esc(emoji)}</button>`).join('')}
           <button data-action="message-more" data-message-id="${esc(message.id)}" aria-label="More">${icon('plus')}</button>
         </div>
-        <article class="message-focus-copy message ${mine ? 'mine' : 'theirs'} ${message.kind === 'sticker' ? 'sticker-message' : ''} ${['image', 'video', 'gif'].includes(message.kind) ? 'media-message' : ''}">
-          <div class="bubble">
-            ${message.forwardedFrom ? '<span class="forwarded-label">Forwarded</span>' : ''}
-            ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
-            ${renderMessageBody(message)}${renderMessageStickerOverlays(message)}
-          </div>
-          ${renderMessageReactions(message)}
-        </article>
+        <div class="message-focus-host"></div>
         <div class="message-action-menu">
           <button data-action="focus-reply" data-message-id="${esc(message.id)}">${icon('back')}<span>Reply</span></button>
           <button data-action="message-focus-mode" data-mode="sticker">${icon('sticker')}<span>Sticker</span></button>
@@ -3059,15 +3147,35 @@
           <button data-action="toggle-message-pin" data-message-id="${esc(message.id)}">${icon('pin')}<span>${message.pinnedAt ? 'Unpin' : 'Pin'}</span></button>
           <button data-action="hide-message" data-message-id="${esc(message.id)}">${icon('trash')}<span>Delete for me</span></button>
         </div>
-      `;
-    }
-    return `
-      <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus">
-        <section class="message-focus-stage ${mine ? 'mine' : 'theirs'} ${focus.mode !== 'actions' ? 'picker-open' : ''}" data-stop-close>
-          ${panel}
+          </div>
+          <div class="message-focus-picker-slot"></div>
         </section>
       </div>
     `;
+  }
+
+  function renderMessageFocusPicker(mode, message) {
+    if (mode === 'forward') return `
+      <section class="message-focus-picker">
+        <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Forward to</strong></header>
+        <div class="message-focus-list">
+          ${state.chats.length ? state.chats.map((chat) => `
+            <button data-action="forward-message" data-message-id="${esc(message.id)}" data-user-id="${esc(chat.peer.id)}">
+              ${avatarHtml(chat.peer)}<span><strong>${esc(chat.peer.displayName)}</strong><small>@${esc(chat.peer.username)}</small></span><b>Send</b>
+            </button>
+          `).join('') : '<p>No chats available.</p>'}
+        </div>
+      </section>
+    `;
+    if (mode === 'sticker') return `
+      <section class="message-focus-picker sticker-picker">
+        <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Add a sticker</strong></header>
+        <div class="message-focus-stickers">
+          ${availableChatStickers().map((sticker) => `<button data-action="attach-message-sticker" data-message-id="${esc(message.id)}" data-sticker-id="${esc(sticker.id)}"><img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}"></button>`).join('')}
+        </div>
+      </section>
+    `;
+    return '';
   }
 
   function renderTypingIndicator() {
@@ -3143,13 +3251,9 @@
       const local = state.stickerMap.get(message.stickerId);
       if (local) return `<img class="sticker-img" src="${esc(local.dataUrl)}" alt="${esc(local.name)}" data-action="open-sticker-save" data-message-id="${esc(message.id)}">`;
       return `
-        <div class="sticker-placeholder">
-          <span class="person">
-            <strong>Sticker waiting</strong>
-            <small>Download it to save and view on this device.</small>
-          </span>
-          <button class="mini-btn" data-action="download-sticker" data-message-id="${esc(message.id)}">Download</button>
-        </div>
+        <button class="sticker-download-placeholder" data-action="download-sticker" data-message-id="${esc(message.id)}">
+          ${icon('download')}<span>Download sticker</span>
+        </button>
       `;
     }
     return `<div class="message-text">${esc(message.text || '')}</div>`;
@@ -3176,12 +3280,87 @@
     return [...presets, ...state.stickers.filter((sticker) => !presetIds.has(sticker.id))];
   }
 
+  function loadStickerSets() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('chat-sticker-sets') || '[]');
+      state.stickerSets = Array.isArray(parsed) ? parsed.slice(0, 24).map((set) => ({
+        id: String(set.id || `set_${cryptoRandom()}`).slice(0, 80),
+        name: String(set.name || 'Sticker set').slice(0, 30),
+        stickerIds: Array.from(new Set(Array.isArray(set.stickerIds) ? set.stickerIds.map(String) : [])).slice(0, 80)
+      })) : [];
+    } catch {
+      state.stickerSets = [];
+    }
+    if (state.activeStickerSet !== 'all' && !state.stickerSets.some((set) => set.id === state.activeStickerSet)) {
+      state.activeStickerSet = 'all';
+    }
+  }
+
+  function saveStickerSets() {
+    localStorage.setItem('chat-sticker-sets', JSON.stringify(state.stickerSets));
+  }
+
+  function activeSetStickers() {
+    const all = availableChatStickers();
+    if (state.activeStickerSet === 'all') return all;
+    const set = state.stickerSets.find((item) => item.id === state.activeStickerSet);
+    const ids = new Set(set?.stickerIds || []);
+    return all.filter((sticker) => ids.has(sticker.id));
+  }
+
+  function addStickerToActiveSet(stickerId) {
+    if (state.activeStickerSet === 'all') return;
+    const set = state.stickerSets.find((item) => item.id === state.activeStickerSet);
+    if (!set || set.stickerIds.includes(stickerId)) return;
+    set.stickerIds.push(stickerId);
+    saveStickerSets();
+  }
+
+  function renderStickerManager() {
+    if (state.stickerSetEditor) {
+      const editor = state.stickerSetEditor;
+      const selected = new Set(editor.stickerIds || []);
+      return `
+        <div class="sticker-manager-overlay" data-action="close-sticker-manager">
+          <section class="sticker-manager-sheet" data-stop-close>
+            <header><button data-action="close-sticker-manager" aria-label="Close">${icon('x')}</button><strong>${editor.id ? 'Edit sticker set' : 'New sticker set'}</strong><button class="sticker-manager-save" data-action="save-sticker-set">Save</button></header>
+            <label class="sticker-set-name"><span>Name</span><input id="sticker-set-name" maxlength="30" value="${esc(editor.name || '')}" placeholder="Sticker set name" autocomplete="off"></label>
+            <div class="sticker-manager-grid">
+              ${state.stickers.length ? state.stickers.map((sticker) => `<button class="${selected.has(sticker.id) ? 'selected' : ''}" data-action="toggle-sticker-set-item" data-sticker-id="${esc(sticker.id)}"><img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}"><span>${icon('check')}</span></button>`).join('') : '<p>Create or download a sticker first.</p>'}
+            </div>
+            ${editor.id ? `<button class="sticker-set-delete" data-action="delete-sticker-set" data-set-id="${esc(editor.id)}">Delete set</button>` : ''}
+          </section>
+        </div>
+      `;
+    }
+    if (state.stickerSavePrompt) {
+      const prompt = state.stickerSavePrompt;
+      const sticker = state.stickerMap.get(prompt.stickerId);
+      if (!sticker) return '';
+      return `
+        <div class="sticker-manager-overlay sticker-save-overlay" data-action="close-sticker-save">
+          <section class="sticker-save-sheet" data-stop-close>
+            <button class="sticker-save-close" data-action="close-sticker-save" aria-label="Close">${icon('x')}</button>
+            <img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}">
+            <strong>${esc(sticker.name)}</strong>
+            <small>Saved to your device</small>
+            <div class="sticker-save-sets">
+              ${state.stickerSets.map((set) => `<button class="${set.stickerIds.includes(sticker.id) ? 'active' : ''}" data-action="toggle-sticker-in-set" data-set-id="${esc(set.id)}" data-sticker-id="${esc(sticker.id)}">${set.stickerIds.includes(sticker.id) ? icon('check') : icon('plus')}<span>${esc(set.name)}</span></button>`).join('')}
+              <button data-action="new-sticker-set" data-sticker-id="${esc(sticker.id)}">${icon('plus')}<span>New set</span></button>
+            </div>
+          </section>
+        </div>
+      `;
+    }
+    return '';
+  }
+
   function renderStickerPanel() {
     const tab = state.chatTrayTab === 'gifs' ? 'gifs' : 'stickers';
     const gifQuery = state.chatGifQuery.trim().toLowerCase();
     const gifs = state.gifPool.filter((gif) => !gifQuery || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery));
     return `
-      <section class="sticker-panel chat-media-tray">
+      <section class="sticker-panel chat-media-tray ${tab === 'stickers' ? 'stickers-tray' : 'gifs-tray'}">
         <header class="chat-tray-head">
           <div class="chat-tray-tabs" role="tablist">
             <button class="${tab === 'stickers' ? 'active' : ''}" data-action="set-chat-tray" data-tray="stickers" role="tab" aria-selected="${tab === 'stickers'}" aria-label="Stickers">${icon('sticker')}</button>
@@ -3195,12 +3374,18 @@
             <button data-action="sticker-file-open">${icon('file')}<span>Photo</span></button>
             <input id="sticker-file-input" type="file" accept="image/*" hidden>
           </div>
+          <div class="sticker-set-rail">
+            <button class="${state.activeStickerSet === 'all' ? 'active' : ''}" data-action="select-sticker-set" data-set-id="all">All</button>
+            ${state.stickerSets.map((set) => `<button class="${state.activeStickerSet === set.id ? 'active' : ''}" data-action="select-sticker-set" data-set-id="${esc(set.id)}">${esc(set.name)}</button>`).join('')}
+            <button class="sticker-set-add" data-action="new-sticker-set" aria-label="New sticker set">${icon('plus')}</button>
+            ${state.activeStickerSet !== 'all' ? `<button class="sticker-set-edit" data-action="edit-sticker-set" data-set-id="${esc(state.activeStickerSet)}" aria-label="Edit sticker set">${icon('edit')}</button>` : ''}
+          </div>
           <div class="sticker-grid">
-            ${availableChatStickers().map((sticker) => `
+            ${activeSetStickers().length ? activeSetStickers().map((sticker) => `
               <button class="sticker-tile ${sticker.animated ? 'animated-sticker' : ''}" title="${esc(sticker.name)}" data-action="send-sticker" data-sticker-id="${esc(sticker.id)}">
                 <img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}">${sticker.animated ? '<span class="animated-mark">GIF</span>' : ''}
               </button>
-            `).join('')}
+            `).join('') : '<p class="sticker-set-empty">This set is empty.</p>'}
           </div>
         ` : `
           <div class="chat-gif-search">
@@ -3233,7 +3418,7 @@
         </span>
       </article>
     `).join('') : '<p class="hint">No unanswered requests.</p>';
-    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention'].includes(note.type));
+    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention', 'comment_reply', 'comment_like'].includes(note.type));
     const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
         ${note.actor ? `
@@ -3349,16 +3534,6 @@
         `).join('')}
       `;
     }
-    if (sheet.type === 'sticker-save') {
-      const message = state.messages.find((item) => item.id === sheet.messageId);
-      body = `
-        <div class="sheet-note">
-          <strong>Sticker</strong>
-          <small>Save it to your sticker collection on this device.</small>
-        </div>
-        ${message?.attachment ? `<button data-action="save-message-sticker" data-message-id="${esc(message.id)}">Save sticker</button>` : ''}
-      `;
-    }
     if (sheet.type === 'profile-link') {
       body = `
         <input class="search-input" value="${esc(sheet.link)}" readonly>
@@ -3367,6 +3542,7 @@
     }
     if (sheet.type === 'story-comments') {
       const story = storyById(sheet.storyId);
+      const replyComment = story?.comments?.find((comment) => comment.id === sheet.replyToCommentId) || null;
       body = story ? `
         <header class="story-comments-head">
           <strong>Comments</strong>
@@ -3374,18 +3550,25 @@
         </header>
         <div class="story-comment-list">
           ${(story.comments || []).length ? story.comments.map((comment) => `
-            <article>
+            <article class="story-comment-row ${comment.replyTo ? 'reply' : ''}">
               ${avatarHtml(comment.user)}
-              <span>
-                <strong>@${esc(comment.user?.username || 'user')} <time>${esc(shortTime(comment.createdAt))}</time></strong>
-                <small>${esc(comment.text)}</small>
-              </span>
+              <div class="story-comment-content">
+                ${comment.replyPreview ? `<small class="comment-reply-context">Replying to @${esc(comment.replyPreview.user?.username || 'user')}</small>` : ''}
+                <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(comment.user?.username || '')}">${esc(comment.user?.username || 'user')}</button> ${renderMentionText(comment.text)}</p>
+                <div class="story-comment-meta">
+                  <time>${esc(shortTime(comment.createdAt))}</time>
+                  <button data-action="reply-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}">Reply</button>
+                  ${comment.likeCount ? `<span>${comment.likeCount} ${comment.likeCount === 1 ? 'like' : 'likes'}</span>` : ''}
+                </div>
+              </div>
+              <button class="story-comment-like ${comment.likedByMe ? 'active' : ''}" data-action="like-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}" aria-label="${comment.likedByMe ? 'Unlike' : 'Like'} comment">${icon('heart')}</button>
             </article>
           `).join('') : '<p class="story-comments-empty">No comments yet.</p>'}
         </div>
         ${story.canReply !== false || story.ownerId === state.me?.id ? `
+          ${replyComment ? `<div class="comment-replying"><span>Replying to <strong>@${esc(replyComment.user?.username || 'user')}</strong></span><button data-action="clear-comment-reply" aria-label="Cancel reply">${icon('x')}</button></div>` : ''}
           <div class="story-comment-box">
-            <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." autocomplete="off">
+            <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." autocomplete="off" value="${esc(sheet.commentDraft || '')}">
             <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
           </div>
         ` : '<span class="story-replies-off comments-disabled">Replies are off for this story</span>'}
@@ -3809,6 +3992,19 @@
     const peer = userById(userId);
     if (!peer) return;
     state.activePeer = peer;
+    if (state.searchProfileOpen) {
+      state.searchProfileOpen = false;
+      state.searchProfileSocialView = null;
+      state.publicProfile = null;
+      if (location.pathname !== '/') history.replaceState({ appManaged: true, route: 'app' }, '', '/');
+    }
+    if (isMobileLayout()) {
+      state.tab = 'chats';
+      state.lastTab = 'chats';
+      state.profileSocialView = null;
+    }
+    state.chatOpening = !highlightMessageId;
+    state.chatOpenToken += 1;
     state.chatProfileOpen = false;
     state.chatProfileSocialView = null;
     state.replyTo = null;
@@ -5042,16 +5238,40 @@
     const commentsOpen = state.actionSheet?.type === 'story-comments' && state.actionSheet.storyId === storyId;
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments`, {
       method: 'POST',
-      body: { text }
+      body: { text, replyTo: commentsOpen ? state.actionSheet.replyToCommentId || null : null }
     });
     replaceStory(data.story);
     if (commentsOpen) {
-      state.actionSheet = { type: 'story-comments', storyId };
-      updateActionSheetSlot();
+      state.actionSheet = { type: 'story-comments', storyId, replyToCommentId: null, commentDraft: '' };
+      updateStoryCommentsSheet({ bottom: true });
     } else {
       updateStoryViewerView();
       scheduleStoryAdvance(data.story);
     }
+  }
+
+  function updateStoryCommentsSheet(options = {}) {
+    const previous = document.querySelector('.story-comment-list');
+    const scrollTop = previous?.scrollTop || 0;
+    updateActionSheetSlot();
+    requestAnimationFrame(() => {
+      const list = document.querySelector('.story-comment-list');
+      if (list) list.scrollTop = options.bottom ? list.scrollHeight : scrollTop;
+      if (options.focus) {
+        const input = document.getElementById('story-comment-input');
+        input?.focus({ preventScroll: true });
+        input?.setSelectionRange?.(input.value.length, input.value.length);
+      }
+    });
+  }
+
+  async function toggleStoryCommentLike(storyId, commentId) {
+    const draft = document.getElementById('story-comment-input')?.value || state.actionSheet?.commentDraft || '';
+    const replyToCommentId = state.actionSheet?.replyToCommentId || null;
+    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments/${encodeURIComponent(commentId)}/like`, { method: 'POST' });
+    replaceStory(data.story);
+    state.actionSheet = { type: 'story-comments', storyId, replyToCommentId, commentDraft: draft };
+    updateStoryCommentsSheet();
   }
 
   async function respondToStorySticker(storyId, stickerId, value) {
@@ -5230,8 +5450,8 @@
       body: { emoji }
     });
     upsertMessage(data.message);
-    updateMessagesList({ scroll: 'preserve' });
-    updateMessageFocusSlot();
+    if (state.messageFocus?.messageId === messageId) syncFocusedMessageUi(data.message);
+    else updateMessagesList({ scroll: 'preserve' });
   }
 
   async function toggleMessagePin(messageId) {
@@ -5508,7 +5728,12 @@
     const note = event.notification;
     if (!note || note.type === 'message' || note.type === 'friend_request' || note.type === 'request_declined') return;
     const actor = note.actor;
-    const title = note.type === 'mention' ? 'You were mentioned' : 'New follower update';
+    const titles = {
+      mention: 'You were mentioned',
+      comment_reply: 'New comment reply',
+      comment_like: 'Someone liked your comment'
+    };
+    const title = titles[note.type] || 'New follower update';
     const body = note.text || `${actor?.displayName || actor?.username || 'Someone'} sent an update.`;
     pushToast({ key: `social-${note.id}`, kind: 'social', title, body, actor });
     showSystemNotification({ title, body, actor, tag: `social-${note.id}` });
@@ -5567,7 +5792,7 @@
       if (event.chatId === activeIds && event.message) {
         upsertMessage(event.message);
         updateMessagesList({ scroll: 'preserve' });
-        if (state.messageFocus?.messageId === event.message.id) updateMessageFocusSlot();
+        if (state.messageFocus?.messageId === event.message.id) syncFocusedMessageUi(event.message);
       }
     }
     if (event.type === 'message:hidden') {
@@ -5728,6 +5953,7 @@
       }
     };
     await saveSticker(sticker);
+    addStickerToActiveSet(sticker.id);
     state.stickerCreator = null;
     state.stickerPanel = true;
     state.chatTrayTab = 'stickers';
@@ -5754,8 +5980,9 @@
       createdAt: new Date().toISOString()
     };
     await saveSticker(sticker);
+    addStickerToActiveSet(sticker.id);
     state.stickerPanel = true;
-    renderApp();
+    updateChatFooter({ suppressFocus: true });
   }
 
   function roundedRect(ctx, x, y, width, height, radius) {
@@ -5840,13 +6067,18 @@
     if (!message?.attachment) return;
     const blob = await (await fetch(message.attachment.url, { credentials: 'same-origin' })).blob();
     const dataUrl = await blobToDataUrl(blob);
-    await saveSticker({
+    const sticker = {
       id: message.stickerId,
       name: message.attachment.name.replace(/\.[^.]+$/, '') || 'Downloaded sticker',
       dataUrl,
       createdAt: new Date().toISOString()
-    });
-    renderApp();
+    };
+    await saveSticker(sticker);
+    addStickerToActiveSet(sticker.id);
+    state.stickerSavePrompt = { messageId, stickerId: sticker.id };
+    updateMessagesList({ scroll: 'preserve' });
+    updateChatFooter({ suppressFocus: true });
+    updateStickerManagerSlot();
   }
 
   async function setupTwoFactor() {
@@ -6002,6 +6234,7 @@
 
   let overlayCloseTimer = null;
   let messageFocusCloseTimer = null;
+  let focusedMessageDom = null;
   let settingsCloseTimer = null;
   let storyAdvanceTimer = null;
 
@@ -6034,30 +6267,101 @@
   function openMessageFocus(messageId) {
     const message = state.messages.find((item) => item.id === messageId);
     if (!message || message.deletedAt) return;
+    const escapedId = window.CSS?.escape ? CSS.escape(messageId) : String(messageId).replace(/"/g, '\\"');
+    const element = document.querySelector(`.messages .message[data-message-id="${escapedId}"]`);
+    if (!element) return;
+    const sourceRect = element.getBoundingClientRect();
     clearTimeout(messageFocusCloseTimer);
     document.activeElement?.blur?.();
     state.messageFocusClosing = false;
+    state.messageFocusNeedsRefresh = false;
     state.suppressClickUntil = Date.now() + 160;
     state.messageFocus = { messageId, mode: 'actions' };
     updateMessageFocusSlot();
+    const host = document.querySelector('.message-focus-host');
+    if (!host) return;
+    const placeholder = document.createElement('div');
+    placeholder.className = `message-focus-placeholder ${element.classList.contains('mine') ? 'mine' : 'theirs'}`;
+    placeholder.style.width = `${sourceRect.width}px`;
+    placeholder.style.height = `${sourceRect.height}px`;
+    element.before(placeholder);
+    host.append(element);
+    element.classList.add('message-focus-original');
+    element.style.transition = 'none';
+    element.style.transform = '';
+    focusedMessageDom = { element, placeholder };
+    const targetRect = element.getBoundingClientRect();
+    element.style.transform = `translate3d(${sourceRect.left - targetRect.left}px, ${sourceRect.top - targetRect.top}px, 0)`;
+    element.getBoundingClientRect();
+    requestAnimationFrame(() => {
+      if (focusedMessageDom?.element !== element) return;
+      element.style.transition = 'transform 280ms cubic-bezier(.2,.82,.2,1)';
+      element.style.transform = 'translate3d(0,0,0)';
+    });
   }
 
   function closeMessageFocus(options = {}) {
     if (!state.messageFocus) return;
     clearTimeout(messageFocusCloseTimer);
-    if (options.immediate) {
+    const finish = () => {
+      const dom = focusedMessageDom;
+      if (dom?.element) {
+        dom.element.classList.remove('message-focus-original');
+        dom.element.style.transition = '';
+        dom.element.style.transform = '';
+        if (dom.placeholder?.isConnected) dom.placeholder.replaceWith(dom.element);
+      }
+      focusedMessageDom = null;
+      const refresh = state.messageFocusNeedsRefresh && !options.skipRefresh;
       state.messageFocus = null;
       state.messageFocusClosing = false;
-      updateMessageFocusSlot();
-      return;
-    }
+      state.messageFocusNeedsRefresh = false;
+      const slot = document.getElementById('message-focus-slot');
+      if (slot) slot.innerHTML = '';
+      if (refresh) updateMessagesList({ scroll: 'preserve' });
+      options.afterClose?.();
+    };
+    if (options.immediate) return finish();
     state.messageFocusClosing = true;
-    updateMessageFocusSlot();
-    messageFocusCloseTimer = setTimeout(() => {
-      state.messageFocus = null;
-      state.messageFocusClosing = false;
-      updateMessageFocusSlot();
-    }, 180);
+    document.querySelector('.message-focus-overlay')?.classList.add('closing');
+    const dom = focusedMessageDom;
+    if (dom?.element && dom.placeholder?.isConnected) {
+      const currentRect = dom.element.getBoundingClientRect();
+      const targetRect = dom.placeholder.getBoundingClientRect();
+      dom.element.style.transition = 'transform 220ms cubic-bezier(.4,0,.2,1)';
+      dom.element.style.transform = `translate3d(${targetRect.left - currentRect.left}px, ${targetRect.top - currentRect.top}px, 0)`;
+    }
+    messageFocusCloseTimer = setTimeout(finish, 220);
+  }
+
+  function setMessageFocusMode(mode) {
+    if (!state.messageFocus) return;
+    const nextMode = ['forward', 'sticker'].includes(mode) ? mode : 'actions';
+    state.messageFocus.mode = nextMode;
+    const message = state.messages.find((item) => item.id === state.messageFocus.messageId);
+    const stage = document.querySelector('.message-focus-stage');
+    const actions = document.querySelector('.message-focus-actions');
+    const slot = document.querySelector('.message-focus-picker-slot');
+    stage?.classList.toggle('picker-open', nextMode !== 'actions');
+    actions?.classList.toggle('hidden', nextMode !== 'actions');
+    if (slot) slot.innerHTML = message ? renderMessageFocusPicker(nextMode, message) : '';
+  }
+
+  function syncFocusedMessageUi(message) {
+    if (!message || state.messageFocus?.messageId !== message.id) return;
+    document.querySelectorAll('.message-reaction-bar [data-emoji]').forEach((button) => {
+      const reaction = (message.reactions || []).find((item) => item.emoji === button.dataset.emoji);
+      button.classList.toggle('active', Boolean(reaction?.userIds?.includes(state.me.id)));
+    });
+    const element = focusedMessageDom?.element;
+    if (!element) return;
+    const template = document.createElement('template');
+    template.innerHTML = renderMessageReactions(message).trim();
+    const next = template.content.firstElementChild;
+    const current = Array.from(element.children).find((child) => child.classList?.contains('message-reactions'));
+    if (current && next) current.replaceWith(next);
+    else if (current) current.remove();
+    else if (next) element.append(next);
   }
 
   function closeOverlays() {
@@ -6114,11 +6418,16 @@
   function updateMessagesList(options = {}) {
     const messages = document.getElementById('messages');
     if (!messages || !state.activePeer || state.chatProfileOpen) return false;
+    if (state.messageFocus) {
+      state.messageFocusNeedsRefresh = true;
+      return true;
+    }
     const snapshot = captureMessagesScroll();
     const wasNearBottom = snapshot && snapshot.bottom < 80;
     messages.innerHTML = renderMessagesList();
     if (options.scroll === 'bottom' || (options.scroll === 'auto' && wasNearBottom)) scrollMessagesToBottom();
     else restoreMessagesScroll(snapshot, options.anchor === 'bottom' ? { anchor: 'bottom' } : {});
+    updateBubbleViewportColors();
     return true;
   }
 
@@ -6261,6 +6570,7 @@
     if (action === 'close-media' && target.classList.contains('media-viewer') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-chat-customization' && target.classList.contains('chat-customization-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-sticker-creator' && target.classList.contains('sticker-creator-page') && event.target.closest('[data-stop-close]')) return;
+    if (['close-sticker-manager', 'close-sticker-save'].includes(action) && target.classList.contains('sticker-manager-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-message-focus' && target.classList.contains('message-focus-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
@@ -6303,6 +6613,8 @@
       }
       if (action === 'back') {
         state.activePeer = null;
+        state.tab = 'chats';
+        state.lastTab = 'chats';
         state.chatProfileOpen = false;
         state.chatProfileSocialView = null;
         renderApp();
@@ -6423,12 +6735,76 @@
         await downloadSticker(target.dataset.messageId);
       }
       if (action === 'open-sticker-save') {
-        openActionSheet({ type: 'sticker-save', messageId: target.dataset.messageId });
+        const message = state.messages.find((item) => item.id === target.dataset.messageId);
+        if (message?.stickerId && state.stickerMap.has(message.stickerId)) {
+          state.stickerSavePrompt = { messageId: message.id, stickerId: message.stickerId };
+          updateStickerManagerSlot();
+        }
       }
-      if (action === 'save-message-sticker') {
-        await downloadSticker(target.dataset.messageId);
-        state.actionSheet = null;
-        renderApp();
+      if (action === 'close-sticker-save') {
+        state.stickerSavePrompt = null;
+        updateStickerManagerSlot();
+      }
+      if (action === 'select-sticker-set') {
+        state.activeStickerSet = target.dataset.setId || 'all';
+        updateChatFooter({ suppressFocus: true });
+      }
+      if (action === 'new-sticker-set') {
+        const initialStickerId = target.dataset.stickerId || null;
+        state.stickerSavePrompt = null;
+        state.stickerSetEditor = { id: null, name: '', stickerIds: initialStickerId ? [initialStickerId] : [] };
+        updateStickerManagerSlot();
+      }
+      if (action === 'edit-sticker-set') {
+        const set = state.stickerSets.find((item) => item.id === target.dataset.setId);
+        if (set) {
+          state.stickerSetEditor = { id: set.id, name: set.name, stickerIds: [...set.stickerIds] };
+          updateStickerManagerSlot();
+        }
+      }
+      if (action === 'close-sticker-manager') {
+        state.stickerSetEditor = null;
+        updateStickerManagerSlot();
+      }
+      if (action === 'toggle-sticker-set-item' && state.stickerSetEditor) {
+        const stickerId = target.dataset.stickerId;
+        const selected = new Set(state.stickerSetEditor.stickerIds || []);
+        if (selected.has(stickerId)) selected.delete(stickerId);
+        else selected.add(stickerId);
+        state.stickerSetEditor.stickerIds = Array.from(selected);
+        updateStickerManagerSlot();
+      }
+      if (action === 'save-sticker-set' && state.stickerSetEditor) {
+        const name = (document.getElementById('sticker-set-name')?.value || state.stickerSetEditor.name || '').trim().slice(0, 30);
+        if (!name) throw new Error('Give the sticker set a name.');
+        const editor = state.stickerSetEditor;
+        const set = { id: editor.id || `set_${cryptoRandom()}`, name, stickerIds: Array.from(new Set(editor.stickerIds || [])) };
+        state.stickerSets = [set, ...state.stickerSets.filter((item) => item.id !== set.id)].slice(0, 24);
+        state.activeStickerSet = set.id;
+        saveStickerSets();
+        state.stickerSetEditor = null;
+        updateStickerManagerSlot();
+        updateChatFooter({ suppressFocus: true });
+      }
+      if (action === 'delete-sticker-set') {
+        if (confirm('Delete this sticker set? The stickers stay saved on your device.')) {
+          state.stickerSets = state.stickerSets.filter((item) => item.id !== target.dataset.setId);
+          state.activeStickerSet = 'all';
+          saveStickerSets();
+          state.stickerSetEditor = null;
+          updateStickerManagerSlot();
+          updateChatFooter({ suppressFocus: true });
+        }
+      }
+      if (action === 'toggle-sticker-in-set') {
+        const set = state.stickerSets.find((item) => item.id === target.dataset.setId);
+        if (set) {
+          if (set.stickerIds.includes(target.dataset.stickerId)) set.stickerIds = set.stickerIds.filter((id) => id !== target.dataset.stickerId);
+          else set.stickerIds.push(target.dataset.stickerId);
+          saveStickerSets();
+          updateStickerManagerSlot();
+          updateChatFooter({ suppressFocus: true });
+        }
       }
       if (action === 'open-media') {
         state.mediaViewer = { src: target.dataset.src, name: target.dataset.name || '', type: target.dataset.type || '' };
@@ -6766,10 +7142,27 @@
       }
       if (action === 'open-story-comments') {
         clearStoryAdvance();
-        openActionSheet({ type: 'story-comments', storyId: target.dataset.storyId });
+        openActionSheet({ type: 'story-comments', storyId: target.dataset.storyId, replyToCommentId: null, commentDraft: '' });
       }
       if (action === 'submit-story-comment') {
         await submitStoryComment(target.dataset.storyId);
+      }
+      if (action === 'reply-story-comment' && state.actionSheet?.type === 'story-comments') {
+        const story = storyById(target.dataset.storyId);
+        const comment = story?.comments?.find((item) => item.id === target.dataset.commentId);
+        if (comment) {
+          state.actionSheet.replyToCommentId = comment.id;
+          state.actionSheet.commentDraft = `@${comment.user?.username || ''} `;
+          updateStoryCommentsSheet({ focus: true });
+        }
+      }
+      if (action === 'clear-comment-reply' && state.actionSheet?.type === 'story-comments') {
+        state.actionSheet.replyToCommentId = null;
+        state.actionSheet.commentDraft = '';
+        updateStoryCommentsSheet();
+      }
+      if (action === 'like-story-comment') {
+        await toggleStoryCommentLike(target.dataset.storyId, target.dataset.commentId);
       }
       if (action === 'respond-story-poll') {
         await respondToStorySticker(target.dataset.storyId, 'poll', target.dataset.value);
@@ -6807,21 +7200,18 @@
         closeMessageFocus();
       }
       if (action === 'message-focus-mode' && state.messageFocus) {
-        state.messageFocus.mode = ['forward', 'sticker'].includes(target.dataset.mode) ? target.dataset.mode : 'actions';
-        updateMessageFocusSlot();
+        setMessageFocusMode(target.dataset.mode);
       }
       if (action === 'react-message') {
         await reactToMessage(target.dataset.messageId, target.dataset.emoji || '\u2764\ufe0f');
       }
       if (action === 'focus-reply') {
         state.replyTo = state.messages.find((message) => message.id === target.dataset.messageId) || null;
-        closeMessageFocus({ immediate: true });
-        updateChatFooter({ focus: true });
+        closeMessageFocus({ afterClose: () => updateChatFooter({ focus: true }) });
       }
       if (action === 'message-more') {
         const messageId = target.dataset.messageId;
-        closeMessageFocus({ immediate: true });
-        openActionSheet({ type: 'message', messageId });
+        closeMessageFocus({ afterClose: () => openActionSheet({ type: 'message', messageId }) });
       }
       if (action === 'toggle-message-pin') {
         await toggleMessagePin(target.dataset.messageId);
@@ -6886,6 +7276,13 @@
         await addContact(target.dataset.username);
       }
       if (action === 'view-user-profile') {
+        if (target.closest('.story-comment-row')) {
+          clearStoryAdvance();
+          state.actionSheet = null;
+          state.storyViewer = null;
+          updateActionSheetSlot();
+          updateStoryViewerView();
+        }
         await openSearchProfile(target.dataset.username);
       }
       if (action === 'close-search-profile') {
@@ -7160,6 +7557,14 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.id === 'sticker-set-name' && state.stickerSetEditor) {
+      state.stickerSetEditor.name = event.target.value.slice(0, 30);
+      return;
+    }
+    if (event.target.id === 'story-comment-input' && state.actionSheet?.type === 'story-comments') {
+      state.actionSheet.commentDraft = event.target.value.slice(0, 280);
+      return;
+    }
     if (event.target.id === 'sticker-creator-text' && state.stickerCreator) {
       state.stickerCreator.text = event.target.value.slice(0, 80);
       const preview = document.querySelector('.sticker-live-text');
@@ -7423,8 +7828,9 @@
   });
 
   document.addEventListener('scroll', (event) => {
-    if (event.target?.id === 'messages' && event.target.scrollTop < 80) {
-      loadOlderMessages().catch((error) => alert(error.message));
+    if (event.target?.id === 'messages') {
+      updateBubbleViewportColors();
+      if (event.target.scrollTop < 80) loadOlderMessages().catch((error) => alert(error.message));
     }
   }, true);
 
@@ -7512,6 +7918,7 @@
         surface: event.target.closest('.side-content')
       };
     }
+    if (state.edgeSwipe) return;
 
     const storySticker = event.target.closest('[data-action="story-sticker-drag"]');
     if (state.storyEditor && storySticker) {
@@ -7920,12 +8327,15 @@
       if (Math.abs(dx) > Math.abs(dy)) {
         event.preventDefault();
         if (Math.abs(dx) > 12) state.tabSwipe.moved = true;
-        const index = tabIndex(state.tab);
-        const allowed = (dx < 0 && index < 2) || (dx > 0 && index > 0);
-        const amount = allowed ? clamp(dx, -90, 90) : dx * 0.12;
+        const preview = ensureTabSwipePreview(state.tabSwipe, dx);
+        const width = state.tabSwipe.surface.getBoundingClientRect().width || window.innerWidth;
+        const amount = preview ? clamp(dx, -width, width) : dx * 0.12;
         state.tabSwipe.surface.style.transition = 'none';
         state.tabSwipe.surface.style.transform = `translateX(${amount}px)`;
-        state.tabSwipe.surface.style.opacity = String(1 - Math.min(0.18, Math.abs(amount) / 500));
+        if (preview) {
+          preview.style.transition = 'none';
+          preview.style.transform = `translateX(${amount + (dx < 0 ? width : -width)}px)`;
+        }
       }
     }
     if (state.longPressTimer) {
@@ -8039,7 +8449,13 @@
         }
         else if (state.chatProfileSocialView) state.chatProfileSocialView = null;
         else if (state.chatProfileOpen) state.chatProfileOpen = false;
-        else if (state.activePeer) state.activePeer = null;
+        else if (state.activePeer) {
+          state.activePeer = null;
+          state.tab = 'chats';
+          state.lastTab = 'chats';
+          state.replyTo = null;
+          state.stickerPanel = false;
+        }
         else if (state.lastTab && state.lastTab !== state.tab) {
           const current = state.tab;
           state.tabTransition = true;
@@ -8052,20 +8468,28 @@
       state.edgeSwipe = null;
     }
     if (state.tabSwipe) {
+      const swipe = state.tabSwipe;
       const dx = event.clientX - state.tabSwipe.startX;
       const dy = event.clientY - state.tabSwipe.startY;
-      const surface = state.tabSwipe.surface;
+      const surface = swipe.surface;
       if (state.tabSwipe.moved) state.suppressClickUntil = Date.now() + 320;
-      surface.style.transform = '';
-      surface.style.opacity = '';
-      surface.style.transition = '';
-      const tabs = ['chats', 'search', 'profile'];
-      const index = tabIndex(state.tab);
-      const nextIndex = Math.abs(dx) > 72 && Math.abs(dx) > Math.abs(dy)
-        ? clamp(index + (dx < 0 ? 1 : -1), 0, tabs.length - 1)
-        : index;
       state.tabSwipe = null;
-      if (nextIndex !== index) switchMainTab(tabs[nextIndex]);
+      const width = surface.getBoundingClientRect().width || window.innerWidth;
+      const commit = Boolean(swipe.targetTab && Math.abs(dx) > Math.min(84, width * 0.22) && Math.abs(dx) > Math.abs(dy));
+      surface.style.transition = 'transform 220ms cubic-bezier(.3,.75,.25,1)';
+      if (swipe.preview) swipe.preview.style.transition = 'transform 220ms cubic-bezier(.3,.75,.25,1)';
+      if (commit) {
+        surface.style.transform = `translateX(${dx < 0 ? -width : width}px)`;
+        if (swipe.preview) swipe.preview.style.transform = 'translateX(0)';
+        setTimeout(() => {
+          clearTabSwipePreview(swipe);
+          switchMainTab(swipe.targetTab, { animate: false });
+        }, 220);
+      } else {
+        surface.style.transform = 'translateX(0)';
+        if (swipe.preview) swipe.preview.style.transform = `translateX(${dx < 0 ? width : -width}px)`;
+        setTimeout(() => clearTabSwipePreview(swipe), 220);
+      }
     }
     if (state.drag) {
       const dx = event.clientX - state.drag.startX;
@@ -8099,6 +8523,7 @@
       state.tabSwipe.surface.style.transform = '';
       state.tabSwipe.surface.style.opacity = '';
       state.tabSwipe.surface.style.transition = '';
+      state.tabSwipe.preview?.remove();
     }
     state.edgeSwipe = null;
     state.tabSwipe = null;
@@ -8121,6 +8546,7 @@
       state.tabSwipe.surface.style.transform = '';
       state.tabSwipe.surface.style.opacity = '';
       state.tabSwipe.surface.style.transition = '';
+      state.tabSwipe.preview?.remove();
     }
     if (state.avatarCrop?.drag) state.avatarCrop.drag = null;
     if (state.avatarCrop?.pinch) state.avatarCrop.pinch = null;

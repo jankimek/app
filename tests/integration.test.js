@@ -131,8 +131,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function renderMessageFocus/);
   assert.match(clientSource, /function capturePersistentScroll/);
   assert.match(clientSource, /state\.tabSwipe = \{/);
-  assert.match(styleSource, /background-attachment: fixed/);
+  assert.match(clientSource, /function updateBubbleViewportColors/);
+  assert.match(styleSource, /--message-bubble-color/);
   assert.match(styleSource, /class="message-focus-overlay"|\.message-focus-overlay/);
+  assert.match(clientSource, /class="message-focus-host"/);
+  assert.match(clientSource, /function renderStickerManager/);
+  assert.match(clientSource, /data-action="like-story-comment"/);
+  assert.doesNotMatch(clientSource, /profile-network:\$\{esc\(user\?/);
   assert.match(clientSource, /initialTool = null/);
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
   assert.match(clientSource, /class="story-effects-panel"/);
@@ -692,6 +697,20 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   });
   assert.equal(comment.status, 201);
   assert.equal(comment.data.story.commentCount, 1);
+  const originalComment = comment.data.story.comments[0];
+  assert.equal(originalComment.likeCount, 0);
+  const commentLike = await alice.request(`/api/stories/${story.id}/comments/${originalComment.id}/like`, { method: 'POST' });
+  assert.equal(commentLike.status, 200);
+  assert.equal(commentLike.data.story.comments[0].likedByMe, true);
+  assert.equal(commentLike.data.story.comments[0].likeCount, 1);
+  const commentReply = await alice.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { text: 'Thanks @bob_test', replyTo: originalComment.id }
+  });
+  assert.equal(commentReply.status, 201);
+  assert.equal(commentReply.data.story.commentCount, 2);
+  assert.equal(commentReply.data.story.comments[1].replyTo, originalComment.id);
+  assert.equal(commentReply.data.story.comments[1].replyPreview.user.id, bobUser.id);
   assert.equal((await alice.request('/api/notifications')).data.notifications
     .filter((notification) => notification.type === 'mention').length, aliceMentionCount);
 
