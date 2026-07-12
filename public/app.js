@@ -449,6 +449,18 @@
     rail.scrollTo({ left: Math.max(0, left), behavior: 'auto' });
   }
 
+  function applyRenderScroll(scrollMode, scrollSnapshot) {
+    if (state.highlightMessageId) scrollHighlightedMessage();
+    else if (scrollMode === 'bottom') scrollMessagesToBottom();
+    else restoreMessagesScroll(scrollSnapshot, { anchor: 'bottom' });
+  }
+
+  function stabilizeBottomScroll() {
+    requestAnimationFrame(scrollMessagesToBottom);
+    setTimeout(scrollMessagesToBottom, 120);
+    setTimeout(scrollMessagesToBottom, 360);
+  }
+
   function renderApp(options = {}) {
     const scrollSnapshot = captureMessagesScroll();
     const scrollMode = options.scroll || 'preserve';
@@ -469,6 +481,8 @@
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
     `;
     state.tabTransition = false;
+    resizeComposerInput();
+    applyRenderScroll(scrollMode, scrollSnapshot);
     setTimeout(() => {
       resizeComposerInput();
       if (state.storyEditor?.textEditing) {
@@ -478,9 +492,8 @@
         resizeStoryTextInput(storyText);
         centerStoryActiveChoice();
       }
-      if (state.highlightMessageId) scrollHighlightedMessage();
-      else if (scrollMode === 'bottom') scrollMessagesToBottom();
-      else restoreMessagesScroll(scrollSnapshot);
+      applyRenderScroll(scrollMode, scrollSnapshot);
+      if (scrollMode === 'bottom') stabilizeBottomScroll();
       attachCallStreams();
       attachStoryEditorVideo();
       attachStoryViewerVideo();
