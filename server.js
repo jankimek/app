@@ -306,7 +306,11 @@ function basicPublicUser(user, viewerId = null) {
     url: `/u/${encodeURIComponent(user.username)}`,
     createdAt: user.createdAt,
     socialPublic: user.profile?.socialPublic !== false,
-    searchable: user.profile?.searchable !== false
+    searchable: user.profile?.searchable !== false,
+    avatarViewable: user.profile?.avatarViewable !== false,
+    mentionPermission: viewerId === user.id ? (user.profile?.mentionPermission || 'everyone') : undefined,
+    storyReplies: viewerId === user.id ? (user.profile?.storyReplies || 'everyone') : undefined,
+    friendRequests: viewerId === user.id ? (user.profile?.friendRequests || 'everyone') : undefined
   };
 }
 
@@ -522,6 +526,16 @@ function canViewStory(story, viewerId = null) {
   return Boolean(active && canViewStories(story.ownerId, viewerId));
 }
 
+function canReplyToStory(story, viewerId) {
+  if (!story || !viewerId) return false;
+  if (viewerId === story.ownerId) return true;
+  const owner = db.users[story.ownerId];
+  const setting = owner?.profile?.storyReplies || 'everyone';
+  if (setting === 'off') return false;
+  if (setting === 'following') return isFollowing(story.ownerId, viewerId);
+  return true;
+}
+
 function activeStoriesFor(userId) {
   const now = Date.now();
   return Object.values(db.stories)
@@ -580,6 +594,7 @@ function publicStory(story, viewerId = null) {
     viewed: Boolean(viewerId && (viewerId === story.ownerId || views.includes(viewerId))),
     likeCount: likes.length,
     likedByMe: Boolean(viewerId && likes.includes(viewerId)),
+    canReply: canReplyToStory(story, viewerId),
     commentCount: comments.length,
     stickerResponses: responseSummary,
     comments: comments.slice(-30).map((comment) => ({
@@ -712,6 +727,9 @@ function mentionedUsers(text, excludeUserId = null) {
 function notifyMentions(actor, text, source) {
   const notifications = [];
   for (const target of mentionedUsers(text, actor.id)) {
+    const permission = target.profile?.mentionPermission || 'everyone';
+    if (permission === 'nobody') continue;
+    if (permission === 'following' && !isFollowing(target.id, actor.id)) continue;
     const note = addNotification(target.id, 'mention', actor.id, null, `${actor.username} mentioned you ${source}.`);
     if (note) {
       notifications.push({ target, note });
@@ -1134,7 +1152,11 @@ async function handleApi(req, res, pathname, query) {
         bio: '',
         avatarFileId: null,
         socialPublic: true,
-        searchable: true
+        searchable: true,
+        avatarViewable: true,
+        mentionPermission: 'everyone',
+        storyReplies: 'everyone',
+        friendRequests: 'everyone'
       },
       twoFactor: {
         enabled: false,
@@ -1209,6 +1231,10 @@ async function handleApi(req, res, pathname, query) {
     user.profile.bio = cleanText(body.bio || '', 280);
     if (body.socialPublic !== undefined) user.profile.socialPublic = Boolean(body.socialPublic);
     if (body.searchable !== undefined) user.profile.searchable = Boolean(body.searchable);
+    if (body.avatarViewable !== undefined) user.profile.avatarViewable = Boolean(body.avatarViewable);
+    if (['everyone', 'following', 'nobody'].includes(body.mentionPermission)) user.profile.mentionPermission = body.mentionPermission;
+    if (['everyone', 'following', 'off'].includes(body.storyReplies)) user.profile.storyReplies = body.storyReplies;
+    if (['everyone', 'followers', 'off'].includes(body.friendRequests)) user.profile.friendRequests = body.friendRequests;
     if (body.avatar?.dataUrl) {
       if (!mimeFromDataUrl(body.avatar.dataUrl).startsWith('image/')) return sendError(res, 400, 'Profile picture must be an image.');
       const file = await saveUpload(body.avatar, user.id, 'avatar');
@@ -1477,6 +1503,7 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const story = db.stories[decodeURIComponent(storyCommentMatch[1])];
     if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
+    if (!canReplyToStory(story, user.id)) return sendError(res, 403, 'This user has turned off story replies.');
     const body = await readJsonBody(req);
     const text = cleanText(body.text || '', 280);
     if (!text) return sendError(res, 400, 'Write a comment first.');
@@ -1678,6 +1705,12 @@ async function handleApi(req, res, pathname, query) {
 
     const existing = requestBetween(user.id, other.id, 'pending');
     if (existing) return sendJson(res, 200, { user: publicUser(other, user.id), request: publicRequest(existing, user.id), pending: true });
+
+    const requestSetting = other.profile?.friendRequests || 'everyone';
+    if (requestSetting === 'off') return sendError(res, 403, 'This user is not accepting friend requests.');
+    if (requestSetting === 'followers' && !isFollowing(user.id, other.id)) {
+      return sendError(res, 403, 'Only followers can send this user a friend request.');
+    }
 
     const request = {
       id: id('req'),

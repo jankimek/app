@@ -94,6 +94,10 @@ async function register(client, username) {
   });
   assert.equal(response.status, 201);
   assert.equal(response.data.user.username, username);
+  assert.equal(response.data.user.avatarViewable, true);
+  assert.equal(response.data.user.mentionPermission, 'everyone');
+  assert.equal(response.data.user.storyReplies, 'everyone');
+  assert.equal(response.data.user.friendRequests, 'everyone');
   assert.ok(client.cookie.startsWith('chat_sid='));
   return response.data.user;
 }
@@ -139,6 +143,17 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function renderAccountIdentity[\s\S]*?href="\$\{esc\(accountProfileHref\(user\)\)\}"/);
   assert.match(clientSource, /class="chat-pane searched-profile-pane"/);
   assert.match(clientSource, /function restoreNavigationView/);
+  assert.match(clientSource, /function renderProfileSuggestions/);
+  assert.match(clientSource, /recentProfiles: JSON\.parse/);
+  assert.match(clientSource, /data-action="view-profile-picture"/);
+  assert.match(clientSource, /data-action="change-profile-picture"/);
+  assert.match(clientSource, /data-action="toggle-avatar-viewable"/);
+  assert.match(clientSource, /data-profile-setting="mentionPermission"/);
+  assert.match(clientSource, /story-pick-media/);
+  assert.match(clientSource, /function continueAvatarCropDrag/);
+  assert.match(clientSource, /crop\.offsetX = crop\.drag\.offsetX/);
+  assert.doesNotMatch(clientSource, /crop\.x\s*=/);
+  assert.doesNotMatch(clientSource, /storyMenuOpen/);
   assert.doesNotMatch(clientSource, />Activity</);
   assert.doesNotMatch(clientSource, /class="story-card"/);
   assert.match(styleSource, /\.story-editor-page \{[\s\S]*?top: var\(--visual-top\)/);
@@ -150,6 +165,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(styleSource, /\.story-gif-media/);
   assert.match(styleSource, /\.social-user-row \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto/);
   assert.match(styleSource, /\.page-header\.search-profile-header \{[\s\S]*?grid-template-columns: 40px minmax\(0, 1fr\) 40px/);
+  assert.match(styleSource, /\.crop-circle \{[\s\S]*?left: 50%;[\s\S]*?width: 76%/);
+  assert.match(styleSource, /\.crop-photo-position/);
+  assert.match(styleSource, /\.profile-photo-editor/);
+  assert.match(styleSource, /\.privacy-choice-row/);
+  assert.match(styleSource, /\.profile-suggestion-section/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -249,6 +269,34 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.ok(avatarUpdate.data.user.avatar.url);
   assert.equal((await anonymous.request(avatarUpdate.data.user.avatar.url)).status, 200);
 
+  const profilePrivacy = await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: {
+      avatarViewable: false,
+      mentionPermission: 'nobody',
+      storyReplies: 'off',
+      friendRequests: 'followers'
+    }
+  });
+  assert.equal(profilePrivacy.status, 200);
+  assert.equal(profilePrivacy.data.user.avatarViewable, false);
+  assert.equal(profilePrivacy.data.user.mentionPermission, 'nobody');
+  assert.equal(profilePrivacy.data.user.storyReplies, 'off');
+  assert.equal(profilePrivacy.data.user.friendRequests, 'followers');
+  const anonymousPrivacyView = await anonymous.request('/api/users/alice_test');
+  assert.equal(anonymousPrivacyView.data.user.avatarViewable, false);
+  assert.equal(anonymousPrivacyView.data.user.mentionPermission, undefined);
+  assert.equal(anonymousPrivacyView.data.user.storyReplies, undefined);
+  assert.equal((await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: {
+      avatarViewable: true,
+      mentionPermission: 'everyone',
+      storyReplies: 'everyone',
+      friendRequests: 'everyone'
+    }
+  })).status, 200);
+
   const shortUserSearch = await alice.request('/api/users/search?q=d');
   assert.equal(shortUserSearch.status, 200);
   assert.deepEqual(shortUserSearch.data.users, []);
@@ -265,6 +313,25 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(aliceFollowerRow.followsViewer, true);
   assert.equal(aliceFollowerRow.isFollowing, false);
   assert.equal((await alice.request(`/api/follows/${doraUser.id}`, { method: 'DELETE' })).status, 200);
+
+  assert.equal((await dora.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { friendRequests: 'off' }
+  })).status, 200);
+  assert.equal((await charlie.request('/api/contacts/dora_test', { method: 'POST' })).status, 403);
+  assert.equal((await dora.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { friendRequests: 'followers' }
+  })).status, 200);
+  assert.equal((await charlie.request('/api/contacts/dora_test', { method: 'POST' })).status, 403);
+  assert.equal((await charlie.request(`/api/follows/${doraUser.id}`, { method: 'POST' })).status, 200);
+  const followerOnlyRequest = await charlie.request('/api/contacts/dora_test', { method: 'POST' });
+  assert.equal(followerOnlyRequest.status, 201);
+  assert.equal((await dora.request(`/api/requests/${followerOnlyRequest.data.request.id}/decline`, { method: 'POST' })).status, 200);
+  assert.equal((await dora.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { friendRequests: 'everyone' }
+  })).status, 200);
 
   const request = await alice.request('/api/contacts/bob_test', { method: 'POST' });
   assert.equal(request.status, 201);
@@ -507,19 +574,62 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal((await charlie.request(`/api/stories/${story.id}/view`, { method: 'POST' })).status, 404);
   assert.equal((await charlie.request(story.file.url)).status, 404);
 
+  assert.equal((await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { storyReplies: 'off', mentionPermission: 'nobody' }
+  })).status, 200);
+  const blockedReplyView = await bob.request('/api/users/alice_test');
+  assert.equal(blockedReplyView.data.user.stories.find((item) => item.id === story.id).canReply, false);
+  assert.equal((await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { text: 'This should be blocked' }
+  })).status, 403);
+  assert.equal((await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { storyReplies: 'following', mentionPermission: 'nobody' }
+  })).status, 200);
+
   const followerView = await bob.request('/api/users/alice_test');
   const followerStory = followerView.data.user.stories.find((item) => item.id === story.id);
   assert.ok(followerStory);
+  assert.equal(followerStory.canReply, true);
   assert.equal(followerStory.edits.overlayEffect, 'grain');
   assert.equal(followerStory.edits.drawings[0].brush, 'neon');
   assert.equal((await bob.request(`/api/stories/${story.id}/view`, { method: 'POST' })).status, 200);
   assert.equal((await bob.request(`/api/stories/${story.id}/like`, { method: 'POST' })).data.story.likedByMe, true);
+  const aliceMentionCount = (await alice.request('/api/notifications')).data.notifications
+    .filter((notification) => notification.type === 'mention').length;
   const comment = await bob.request(`/api/stories/${story.id}/comments`, {
     method: 'POST',
     body: { text: 'Looks good @alice_test' }
   });
   assert.equal(comment.status, 201);
   assert.equal(comment.data.story.commentCount, 1);
+  assert.equal((await alice.request('/api/notifications')).data.notifications
+    .filter((notification) => notification.type === 'mention').length, aliceMentionCount);
+
+  assert.equal((await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { mentionPermission: 'following' }
+  })).status, 200);
+  assert.equal((await charlie.request('/api/me/story', {
+    method: 'POST',
+    body: {
+      file: { name: 'charlie-story.png', type: 'image/png', dataUrl: PNG_DATA },
+      edits: { text: 'Hello @alice_test' }
+    }
+  })).status, 201);
+  assert.equal((await alice.request('/api/notifications')).data.notifications
+    .filter((notification) => notification.type === 'mention').length, aliceMentionCount);
+  assert.equal((await bob.request('/api/me/story', {
+    method: 'POST',
+    body: {
+      file: { name: 'bob-story.png', type: 'image/png', dataUrl: PNG_DATA },
+      edits: { text: 'Hello @alice_test' }
+    }
+  })).status, 201);
+  assert.equal((await alice.request('/api/notifications')).data.notifications
+    .filter((notification) => notification.type === 'mention').length, aliceMentionCount + 1);
   const quizResponse = await bob.request(`/api/stories/${story.id}/stickers/quiz_test/respond`, {
     method: 'POST',
     body: { value: 'Pink' }

@@ -67,6 +67,7 @@
     chatProfileSocialView: null,
     recommendations: [],
     publicProfile: null,
+    recentProfiles: JSON.parse(localStorage.getItem('recentProfiles') || '[]'),
     pendingRequestCount: 0,
     notifications: [],
     requests: [],
@@ -77,7 +78,6 @@
     notificationPromptDismissed: sessionStorage.getItem('notificationPromptDismissed') === '1',
     toasts: [],
     actionSheet: null,
-    storyMenuOpen: false,
     storyPublishing: false,
     gifPool: [],
     pendingGifs: [],
@@ -85,6 +85,8 @@
     overlayClosing: false,
     profileEditOpen: false,
     settingsOpen: false,
+    settingsOpening: false,
+    settingsClosing: false,
     recommendationsOpen: false,
     avatarCrop: null,
     storyEditor: null,
@@ -443,7 +445,7 @@
             <button class="public-login-btn" data-action="show-login">Log in</button>
           </header>
           <section class="public-profile-overview">
-            <span class="avatar big-avatar">${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}</span>
+            ${profilePictureElement(user, 'big-avatar')}
             <div class="profile-stat-grid">
               ${user.followersVisible ? `
                 <span class="profile-stat"><strong>${user.followerCount ?? 0}</strong><span>followers</span></span>
@@ -473,13 +475,45 @@
               </div>
             </section>
           ` : ''}
+          ${renderPublicProfileSuggestions(user)}
           <div class="public-profile-lock">
             ${icon('lock')}
             <strong>${user.socialPublic === false ? 'This account is private' : 'Join to see more'}</strong>
             <small>${user.socialPublic === false ? 'Follow this account to see their stories.' : 'Log in to connect with this account.'}</small>
           </div>
         </section>
+        <div id="media-viewer-slot">${renderMediaViewer()}</div>
       </main>
+    `;
+  }
+
+  function renderPublicProfileSuggestions(user) {
+    if (!user?.followersVisible) return '';
+    const seen = new Set([user.id]);
+    const suggestions = [...(user.followers || []), ...(user.following || [])]
+      .filter((candidate) => {
+        if (!candidate?.id || seen.has(candidate.id)) return false;
+        seen.add(candidate.id);
+        return true;
+      })
+      .slice(0, 8);
+    if (!suggestions.length) return '';
+    return `
+      <section class="profile-suggestion-section public-profile-suggestions">
+        <div class="section-heading"><h2>Suggested profiles</h2><small>From this account's network</small></div>
+        <div class="recommendation-row profile-recommendation-row">
+          ${suggestions.map((candidate) => `
+            <article class="recommend-card">
+              <a class="recommend-identity" href="${esc(accountProfileHref(candidate))}">
+                ${avatarHtml(candidate)}
+                <strong>${esc(candidate.displayName)}</strong>
+                <small>@${esc(candidate.username)}</small>
+              </a>
+              <button class="mini-btn account-action primary-action" data-action="show-login">Follow</button>
+            </article>
+          `).join('')}
+        </div>
+      </section>
     `;
   }
 
@@ -545,13 +579,14 @@
       <div id="call-dock-slot">${renderCallDock()}</div>
       <div id="toast-slot">${renderToastStack()}</div>
       <div id="action-sheet-slot">${renderActionSheet()}</div>
-      <div id="story-menu-slot">${renderStoryMenu()}</div>
       <div id="profile-edit-slot">${renderProfileEditModal()}</div>
       <div id="settings-slot">${renderSettingsModal()}</div>
       <div id="avatar-crop-slot">${renderAvatarCropper()}</div>
       <div id="story-editor-slot">${renderStoryEditor()}</div>
       <div id="story-viewer-slot">${renderStoryViewer()}</div>
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
+      <input id="avatar-input" type="file" accept="image/*" hidden>
+      <input id="story-input" type="file" accept="image/*,video/*" hidden>
     `;
     state.tabTransition = false;
     resizeComposerInput();
@@ -583,10 +618,6 @@
 
   function updateActionSheetSlot() {
     return updateSlot('action-sheet-slot', renderActionSheet());
-  }
-
-  function updateStoryMenuSlot() {
-    return updateSlot('story-menu-slot', renderStoryMenu());
   }
 
   function updateProfileModalSlots() {
@@ -763,8 +794,31 @@
     `;
   }
 
-  function renderSearchProfilePage(user) {
+  function profilePictureElement(user, className = 'big-avatar', options = {}) {
+    const avatarUrl = user?.avatar?.url || '';
     const story = activeProfileStory(user);
+    const content = avatarUrl ? `<img src="${esc(avatarUrl)}" alt="">` : esc(initials(user));
+    const ring = story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : '';
+    const expandable = Boolean(avatarUrl && (options.own || user?.avatarViewable !== false));
+    if (!expandable) return `<span class="avatar ${esc(className)}">${content}${ring}</span>`;
+    return `
+      <button class="avatar ${esc(className)} profile-picture-button" data-action="view-profile-picture" data-src="${esc(avatarUrl)}" data-name="@${esc(user.username)}" aria-label="View profile picture">
+        ${content}${ring}
+      </button>
+    `;
+  }
+
+  function renderProfileAvatarStack(user, className = 'big-avatar') {
+    const story = activeProfileStory(user);
+    return `
+      <div class="profile-avatar-stack ${esc(className)}-stack">
+        ${profilePictureElement(user, className, { own: user?.id === state.me?.id })}
+        ${story ? `<button class="profile-story-view" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View story">${icon('play')}</button>` : ''}
+      </div>
+    `;
+  }
+
+  function renderSearchProfilePage(user) {
     return `
       <section class="search-profile-page">
         <header class="page-header search-profile-header">
@@ -773,12 +827,7 @@
           <button class="icon-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}" aria-label="Report user">${icon('more')}</button>
         </header>
         <section class="search-profile-hero">
-          ${story ? `
-            <button class="avatar big-avatar story-avatar-btn" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View story">
-              ${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}
-              <span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>
-            </button>
-          ` : `<span class="avatar big-avatar">${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}</span>`}
+          ${renderProfileAvatarStack(user)}
           <div class="profile-stat-grid">
             ${renderProfileStats(user, 'open-search-social')}
           </div>
@@ -789,6 +838,7 @@
         </section>
         <div class="search-profile-actions">${renderSearchProfileActions(user)}</div>
         ${renderHighlights(user, false)}
+        ${renderProfileSuggestions(user)}
       </section>
     `;
   }
@@ -825,11 +875,9 @@
       <section class="profile-hero">
         <div class="profile-avatar-column">
           <div class="profile-avatar-wrap">
-            <button class="avatar profile-avatar-btn" data-action="${story ? 'view-story' : 'avatar-menu'}" ${story ? `data-story-id="${esc(story.id)}"` : ''} title="${story ? 'View your story' : 'Profile picture and story'}">
-              ${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}
-              ${story ? `<span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>` : ''}
-            </button>
-            <button class="profile-avatar-add" data-action="avatar-menu" aria-label="Add story or change profile picture">+</button>
+            ${profilePictureElement(state.me, 'profile-avatar-btn', { own: true })}
+            ${story ? `<button class="profile-story-view" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View your story">${icon('play')}</button>` : ''}
+            <button class="profile-avatar-add" data-action="open-story-create" aria-label="Create story">+</button>
           </div>
           <button class="profile-link-icon" data-action="show-profile-link" data-link="${esc(profileUrl)}" aria-label="Share profile link">${icon('link')}</button>
         </div>
@@ -840,8 +888,6 @@
           <span class="profile-display-name"><strong>${esc(state.me.displayName)}</strong><button class="icon-inline-btn" data-action="open-profile-edit" aria-label="Edit profile">${icon('edit')}</button></span>
           ${state.me.bio ? `<p class="profile-bio">${esc(state.me.bio)}</p>` : ''}
         </div>
-        <input id="avatar-input" type="file" accept="image/*" hidden>
-        <input id="story-input" type="file" accept="image/*,video/*" hidden>
       </section>
       ${renderHighlights(state.me, true)}
       ${renderRecommendations()}
@@ -872,7 +918,7 @@
   }
 
   function renderRecommendations() {
-    const recommendations = visibleRecommendations();
+    const recommendations = mixedProfileSuggestions(state.me);
     return `
       <section class="suggestion-section">
         <button class="suggestion-toggle" data-action="toggle-recommendations">
@@ -897,6 +943,75 @@
   function visibleRecommendations() {
     const hidden = new Set(state.hiddenRecommendations || []);
     return state.recommendations.filter((user) => !hidden.has(user.id));
+  }
+
+  function recentProfileSnapshot(user) {
+    return {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      bio: user.bio || '',
+      avatar: user.avatar || null,
+      url: user.url || profilePath(user.username),
+      socialPublic: user.socialPublic !== false,
+      avatarViewable: user.avatarViewable !== false,
+      isContact: Boolean(user.isContact),
+      isFollowing: Boolean(user.isFollowing),
+      followsViewer: Boolean(user.followsViewer),
+      hasBlocked: Boolean(user.hasBlocked),
+      blockedBy: Boolean(user.blockedBy)
+    };
+  }
+
+  function rememberViewedProfile(user) {
+    if (!user?.id || user.id === state.me?.id) return;
+    state.recentProfiles = [
+      recentProfileSnapshot(user),
+      ...(state.recentProfiles || []).filter((item) => item?.id !== user.id)
+    ].slice(0, 16);
+    localStorage.setItem('recentProfiles', JSON.stringify(state.recentProfiles));
+  }
+
+  function mixedProfileSuggestions(profile) {
+    const hidden = new Set(state.hiddenRecommendations || []);
+    const seen = new Set([state.me?.id, profile?.id].filter(Boolean));
+    const sources = [
+      profile?.followers || [],
+      profile?.following || [],
+      state.recentProfiles || [],
+      state.recommendations || []
+    ];
+    const mixed = [];
+    const longest = Math.max(0, ...sources.map((source) => source.length));
+    for (let index = 0; index < longest && mixed.length < 12; index += 1) {
+      for (const source of sources) {
+        const candidate = source[index];
+        if (!candidate?.id || seen.has(candidate.id) || hidden.has(candidate.id)) continue;
+        if (candidate.hasBlocked || candidate.blockedBy) continue;
+        seen.add(candidate.id);
+        mixed.push(userById(candidate.id) || candidate);
+        if (mixed.length >= 12) break;
+      }
+    }
+    return mixed;
+  }
+
+  function renderProfileSuggestions(profile) {
+    const suggestions = mixedProfileSuggestions(profile);
+    if (!suggestions.length) return '';
+    return `
+      <section class="profile-suggestion-section">
+        <div class="section-heading"><h2>Suggested for you</h2><small>Related and recently viewed</small></div>
+        <div class="recommendation-row profile-recommendation-row">
+          ${suggestions.map((user) => `
+            <article class="recommend-card">
+              ${renderRecommendationIdentity(user)}
+              ${renderAccountAction(user)}
+            </article>
+          `).join('')}
+        </div>
+      </section>
+    `;
   }
 
   function storyFilterCss(filter, edits = {}) {
@@ -1562,7 +1677,7 @@
         <button class="story-top-btn story-close-btn" data-action="close-story-editor" aria-label="Close">${icon('x')}</button>
         <div class="story-top-tools">
           ${tools.map(([tool, label, iconName]) => `
-            <button class="story-top-btn ${editor.activeTool === tool ? 'active' : ''}" data-action="story-tool" data-tool="${tool}" title="${esc(label)}" aria-label="${esc(label)}">
+            <button class="story-top-btn ${editor.activeTool === tool ? 'active' : ''}" data-action="${tool === 'media' ? 'story-pick-media' : 'story-tool'}" data-tool="${tool}" title="${esc(label)}" aria-label="${esc(label)}">
               ${storyToolSymbol(tool, iconName)}
             </button>
           `).join('')}
@@ -2408,7 +2523,6 @@
 
   function renderChatProfilePane() {
     const peer = state.activePeer;
-    const story = activeProfileStory(peer);
     if (state.chatProfileSocialView) return renderChatProfileSocialPage(peer);
     return `
       <main class="chat-pane profile-pane">
@@ -2421,16 +2535,7 @@
         </header>
         <section class="chat-profile-content">
           <div class="peer-profile-hero">
-            ${story ? `
-              <button class="avatar big-avatar story-avatar-btn" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View story">
-                ${peer.avatar?.url ? `<img src="${esc(peer.avatar.url)}" alt="">` : esc(initials(peer))}
-                <span class="story-ring ${story.viewed ? 'viewed' : ''}"></span>
-              </button>
-            ` : `
-              <span class="avatar big-avatar">
-                ${peer.avatar?.url ? `<img src="${esc(peer.avatar.url)}" alt="">` : esc(initials(peer))}
-              </span>
-            `}
+            ${renderProfileAvatarStack(peer)}
             <strong>${esc(peer.displayName)}</strong>
             <span>@${esc(peer.username)}</span>
             <div class="profile-stat-grid peer-profile-stats">
@@ -2442,6 +2547,7 @@
             </div>
           </div>
           ${renderHighlights(peer, false)}
+          ${renderProfileSuggestions(peer)}
           <section class="panel-card">
             <h2>Chat</h2>
             <div class="toolbar">
@@ -2777,10 +2883,12 @@
             </article>
           `).join('') : '<p class="story-comments-empty">No comments yet.</p>'}
         </div>
-        <div class="story-comment-box">
-          <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." autocomplete="off">
-          <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
-        </div>
+        ${story.canReply !== false || story.ownerId === state.me?.id ? `
+          <div class="story-comment-box">
+            <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." autocomplete="off">
+            <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
+          </div>
+        ` : '<span class="story-replies-off comments-disabled">Replies are off for this story</span>'}
       ` : '<p class="hint">Story not found.</p>';
     }
     if (sheet.type === 'story-owner') {
@@ -2825,6 +2933,7 @@
     if (!editor) return '';
     const style = `filter:${storyFilterCss(editor.filter, editor)}; transform:${storyMediaTransformCss(editor)}; object-fit:${storyMediaFit(editor)};`;
     const tools = [
+      ['media', 'Choose photo or video', 'story'],
       ...(editor.isVideo ? [['video', 'Edit video', 'scissors']] : []),
       ['audio', 'Music', 'music'],
       ['stickers', 'Stickers', 'stickers'],
@@ -2933,10 +3042,12 @@
             <span class="story-owner-metric">${icon('heart')} ${story.likeCount || 0}</span>
             <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}<small>${story.commentCount || 0}</small></button>
           ` : `
-            <div class="story-reply-pill">
-              <input id="story-viewer-comment" maxlength="280" placeholder="Reply..." autocomplete="off">
-              <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
-            </div>
+            ${story.canReply !== false ? `
+              <div class="story-reply-pill">
+                <input id="story-viewer-comment" maxlength="280" placeholder="Reply..." autocomplete="off">
+                <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
+              </div>
+            ` : '<span class="story-replies-off">Replies are off</span>'}
             <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="Like story">${icon('heart')}</button>
             <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}</button>
           `}
@@ -2945,38 +3056,28 @@
     `;
   }
 
-  function renderStoryMenu() {
-    if (!state.storyMenuOpen) return '';
-    const currentStory = activeProfileStory(state.me);
-    return `
-      <div class="overlay ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
-        <section class="action-sheet story-sheet ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
-          ${currentStory ? `<button data-action="view-story" data-story-id="${esc(currentStory.id)}">${icon('play')} View story</button>` : ''}
-          <button data-action="create-story"><span class="story-aa">Aa</span> Create story</button>
-          <button data-action="post-story">${icon('story')} Photo or video</button>
-          <button data-action="change-profile-picture">${icon('profile')} Change profile picture</button>
-        </section>
-      </div>
-    `;
-  }
-
   function renderProfileEditModal() {
     if (!state.profileEditOpen) return '';
     return `
       <div class="center-overlay" data-action="close-modal">
-        <section class="center-modal" data-stop-close>
+        <section class="center-modal profile-edit-modal" data-stop-close>
           <header class="modal-head">
             <h2>Edit profile</h2>
             <button class="icon-btn" data-action="close-modal" aria-label="Close">${icon('x')}</button>
           </header>
-          <form class="form" data-form="profile-edit">
-            <label class="field">Username
+          <div class="profile-photo-editor">
+            ${profilePictureElement(state.me, 'profile-edit-avatar', { own: true })}
+            <span><strong>Profile picture</strong><small>Drag and zoom after choosing a photo.</small></span>
+            <button type="button" class="profile-photo-change" data-action="change-profile-picture">Change</button>
+          </div>
+          <form class="form profile-edit-form" data-form="profile-edit">
+            <label class="profile-edit-field"><span>Username</span>
               <input name="username" value="${esc(state.me.username)}" maxlength="24" autocomplete="username">
             </label>
-            <label class="field">Bio
+            <label class="profile-edit-field"><span>Bio</span>
               <textarea name="bio" maxlength="280">${esc(state.me.bio || '')}</textarea>
             </label>
-            <button class="primary" type="submit">Save</button>
+            <button class="profile-edit-save" type="submit">Save changes</button>
           </form>
         </section>
       </div>
@@ -2986,27 +3087,61 @@
   function renderSettingsModal() {
     if (!state.settingsOpen) return '';
     return `
-      <div class="center-overlay" data-action="close-modal">
-        <section class="center-modal settings-modal" data-stop-close>
-          <header class="modal-head">
+      <div class="settings-drawer-overlay ${state.settingsOpening ? 'opening' : ''} ${state.settingsClosing ? 'closing' : ''}" data-action="close-settings">
+        <aside class="settings-drawer ${state.settingsOpening ? 'opening' : ''} ${state.settingsClosing ? 'closing' : ''}" role="dialog" aria-modal="true" aria-label="Settings" data-stop-close>
+          <header class="settings-drawer-head">
             <h2>Settings</h2>
-            <button class="icon-btn" data-action="close-modal" aria-label="Close">${icon('x')}</button>
+            <button class="icon-btn" data-action="close-settings" aria-label="Close settings">${icon('x')}</button>
           </header>
           <section class="settings-block">
-            <h3>${icon('lock')} Privacy</h3>
+            <h3>${icon('lock')} Account privacy</h3>
             <label class="switch-row">
               <span>
-                <strong>Show followers and following</strong>
-                <small>People can see your follower and following counts and lists.</small>
+                <strong>Private account</strong>
+                <small>Only approved people can see stories and social lists.</small>
               </span>
-              <input type="checkbox" data-action="toggle-profile-privacy" ${state.me.socialPublic ? 'checked' : ''}>
+              <input type="checkbox" data-action="toggle-account-private" ${state.me.socialPublic === false ? 'checked' : ''}>
             </label>
             <label class="switch-row">
               <span>
-                <strong>Show when searched</strong>
-                <small>If a user searches up another user, you appear in the search results.</small>
+                <strong>Allow profile picture expansion</strong>
+                <small>Let other people open your profile picture full screen.</small>
+              </span>
+              <input type="checkbox" data-action="toggle-avatar-viewable" ${state.me.avatarViewable !== false ? 'checked' : ''}>
+            </label>
+            <label class="switch-row">
+              <span>
+                <strong>Appear in search</strong>
+                <small>Allow your account to appear when people search usernames.</small>
               </span>
               <input type="checkbox" data-action="toggle-profile-searchable" ${state.me.searchable !== false ? 'checked' : ''}>
+            </label>
+          </section>
+          <section class="settings-block">
+            <h3>${icon('profile')} Interactions</h3>
+            <label class="privacy-choice-row">
+              <span><strong>Mentions</strong><small>Who can notify you by using @${esc(state.me.username)}.</small></span>
+              <select data-profile-setting="mentionPermission" aria-label="Who can mention you">
+                <option value="everyone" ${(state.me.mentionPermission || 'everyone') === 'everyone' ? 'selected' : ''}>Everyone</option>
+                <option value="following" ${state.me.mentionPermission === 'following' ? 'selected' : ''}>People you follow</option>
+                <option value="nobody" ${state.me.mentionPermission === 'nobody' ? 'selected' : ''}>No one</option>
+              </select>
+            </label>
+            <label class="privacy-choice-row">
+              <span><strong>Story replies</strong><small>Choose who can comment or reply to your stories.</small></span>
+              <select data-profile-setting="storyReplies" aria-label="Who can reply to stories">
+                <option value="everyone" ${(state.me.storyReplies || 'everyone') === 'everyone' ? 'selected' : ''}>Everyone</option>
+                <option value="following" ${state.me.storyReplies === 'following' ? 'selected' : ''}>People you follow</option>
+                <option value="off" ${state.me.storyReplies === 'off' ? 'selected' : ''}>Off</option>
+              </select>
+            </label>
+            <label class="privacy-choice-row">
+              <span><strong>Friend requests</strong><small>Control who can ask to message you.</small></span>
+              <select data-profile-setting="friendRequests" aria-label="Who can send friend requests">
+                <option value="everyone" ${(state.me.friendRequests || 'everyone') === 'everyone' ? 'selected' : ''}>Everyone</option>
+                <option value="followers" ${state.me.friendRequests === 'followers' ? 'selected' : ''}>Followers</option>
+                <option value="off" ${state.me.friendRequests === 'off' ? 'selected' : ''}>No one</option>
+              </select>
             </label>
           </section>
           <section class="settings-block">
@@ -3024,7 +3159,7 @@
           <section class="settings-block danger-zone">
             <button class="danger logout-btn" data-action="logout">Log out</button>
           </section>
-        </section>
+        </aside>
       </div>
     `;
   }
@@ -3049,6 +3184,7 @@
 
   function renderAvatarCropper() {
     if (!state.avatarCrop) return '';
+    const landscape = Number(state.avatarCrop.naturalWidth || 1) >= Number(state.avatarCrop.naturalHeight || 1);
     return `
       <div class="center-overlay crop-overlay">
         <section class="crop-modal">
@@ -3057,12 +3193,17 @@
             <button class="icon-btn" data-action="cancel-avatar-crop" aria-label="Close">${icon('x')}</button>
           </header>
           <div class="crop-stage" id="crop-stage">
-            <img src="${esc(state.avatarCrop.dataUrl)}" alt="" style="transform:scale(${esc(state.avatarCrop.zoom || 1)})">
+            <div class="crop-photo-position" style="transform:translate3d(${esc(state.avatarCrop.offsetX || 0)}px,${esc(state.avatarCrop.offsetY || 0)}px,0)">
+              <img class="${landscape ? 'crop-landscape' : 'crop-portrait'}" src="${esc(state.avatarCrop.dataUrl)}" alt="" style="transform:translate(-50%,-50%) scale(${esc(state.avatarCrop.zoom || 1)})">
+            </div>
             <div class="crop-mask"></div>
-            <div class="crop-circle" style="left:${state.avatarCrop.x}px; top:${state.avatarCrop.y}px; width:${state.avatarCrop.size}px; height:${state.avatarCrop.size}px"></div>
+            <div class="crop-circle"></div>
           </div>
-          <label class="zoom-control">Zoom
+          <p class="crop-guidance">Drag to reposition. Pinch or use the slider to zoom.</p>
+          <label class="zoom-control" aria-label="Profile picture zoom">
+            <span class="zoom-symbol small">${icon('profile')}</span>
             <input id="avatar-zoom" type="range" min="1" max="3" step="0.01" value="${esc(state.avatarCrop.zoom || 1)}">
+            <span class="zoom-symbol large">${icon('profile')}</span>
           </label>
           <button class="primary crop-confirm" data-action="confirm-avatar-crop">Confirm</button>
         </section>
@@ -3192,6 +3333,7 @@
       state.searchResults,
       state.conversationResults.flatMap((result) => [result.peer, result.sender]),
       state.recommendations,
+      state.recentProfiles,
       state.requests.flatMap((request) => [request.from, request.to]),
       state.notifications.map((note) => note.actor),
       state.publicProfile ? [state.publicProfile] : []
@@ -3292,6 +3434,8 @@
     state.chats = state.chats.map((chat) => chat.peer?.id === updatedUser.id ? { ...chat, peer: merge(chat.peer) } : chat);
     state.searchResults = state.searchResults.map(merge);
     state.recommendations = state.recommendations.map(merge);
+    state.recentProfiles = state.recentProfiles.map(merge);
+    localStorage.setItem('recentProfiles', JSON.stringify(state.recentProfiles));
     if (state.publicProfile?.id === updatedUser.id) state.publicProfile = merge(state.publicProfile);
     if (state.activePeer?.id === updatedUser.id) state.activePeer = merge(state.activePeer);
   }
@@ -3362,6 +3506,10 @@
       bio: state.me.bio || '',
       socialPublic: state.me.socialPublic,
       searchable: state.me.searchable !== false,
+      avatarViewable: state.me.avatarViewable !== false,
+      mentionPermission: state.me.mentionPermission || 'everyone',
+      storyReplies: state.me.storyReplies || 'everyone',
+      friendRequests: state.me.friendRequests || 'everyone',
       ...patch
     };
     const data = await api('/api/me/profile', { method: 'PATCH', body });
@@ -3381,6 +3529,10 @@
       username: state.me.username,
       socialPublic: state.me.socialPublic,
       searchable: state.me.searchable !== false,
+      avatarViewable: state.me.avatarViewable !== false,
+      mentionPermission: state.me.mentionPermission || 'everyone',
+      storyReplies: state.me.storyReplies || 'everyone',
+      friendRequests: state.me.friendRequests || 'everyone',
       avatar: {
         name,
         type: mimeFromDataUrl(dataUrl),
@@ -3390,9 +3542,7 @@
     };
     const data = await api('/api/me/profile', { method: 'PATCH', body });
     state.me = data.user;
-    state.storyMenuOpen = false;
     state.avatarCrop = null;
-    updateStoryMenuSlot();
     updateProfileModalSlots();
     updateSidebar();
   }
@@ -3400,17 +3550,20 @@
   async function beginAvatarCrop(file) {
     if (!file) return;
     const dataUrl = await fileToDataUrl(file);
+    const image = await loadImage(dataUrl);
     state.avatarCrop = {
       dataUrl,
       name: file.name || 'avatar.png',
       lastModified: file.lastModified || Date.now(),
-      x: 42,
-      y: 42,
-      size: 220,
+      naturalWidth: image.naturalWidth,
+      naturalHeight: image.naturalHeight,
+      offsetX: 0,
+      offsetY: 0,
       zoom: 1,
       drag: null
     };
     updateProfileModalSlots();
+    requestAnimationFrame(updateCropUi);
   }
 
   function mimeFromDataUrl(dataUrl) {
@@ -3479,20 +3632,51 @@
     capturePointer(preview, pointerId);
   }
 
+  function continueAvatarCropDrag() {
+    const crop = state.avatarCrop;
+    const stage = document.getElementById('crop-stage');
+    if (!crop || !stage || cropPointers.size !== 1) return;
+    const [pointerId, point] = cropPointers.entries().next().value;
+    crop.drag = {
+      pointerId,
+      startX: point.x,
+      startY: point.y,
+      offsetX: Number(crop.offsetX || 0),
+      offsetY: Number(crop.offsetY || 0)
+    };
+    capturePointer(stage, pointerId);
+  }
+
   function updateCropUi() {
     const crop = state.avatarCrop;
     if (!crop) return;
-    const circle = document.querySelector('.crop-circle');
-    if (circle) {
-      circle.style.left = `${crop.x}px`;
-      circle.style.top = `${crop.y}px`;
-      circle.style.width = `${crop.size}px`;
-      circle.style.height = `${crop.size}px`;
-    }
+    clampAvatarCropPosition(crop);
+    const position = document.querySelector('.crop-photo-position');
+    if (position) position.style.transform = `translate3d(${crop.offsetX || 0}px,${crop.offsetY || 0}px,0)`;
     const img = document.querySelector('#crop-stage img');
-    if (img) img.style.transform = `scale(${crop.zoom || 1})`;
+    if (img) img.style.transform = `translate(-50%,-50%) scale(${crop.zoom || 1})`;
     const zoom = document.getElementById('avatar-zoom');
-    if (zoom) zoom.value = String(crop.zoom || 1);
+    if (zoom) {
+      zoom.value = String(crop.zoom || 1);
+      zoom.style.setProperty('--range-progress', `${((Number(crop.zoom || 1) - 1) / 2) * 100}%`);
+    }
+  }
+
+  function clampAvatarCropPosition(crop) {
+    const stage = document.getElementById('crop-stage');
+    const circle = stage?.querySelector('.crop-circle');
+    if (!stage || !circle) return;
+    const stageRect = stage.getBoundingClientRect();
+    const circleRect = circle.getBoundingClientRect();
+    const naturalWidth = Math.max(1, Number(crop.naturalWidth || 1));
+    const naturalHeight = Math.max(1, Number(crop.naturalHeight || 1));
+    const baseScale = Math.max(stageRect.width / naturalWidth, stageRect.height / naturalHeight);
+    const displayWidth = naturalWidth * baseScale * Number(crop.zoom || 1);
+    const displayHeight = naturalHeight * baseScale * Number(crop.zoom || 1);
+    const maxX = Math.max(0, (displayWidth - circleRect.width) / 2);
+    const maxY = Math.max(0, (displayHeight - circleRect.height) / 2);
+    crop.offsetX = clamp(Number(crop.offsetX || 0), -maxX, maxX);
+    crop.offsetY = clamp(Number(crop.offsetY || 0), -maxY, maxY);
   }
 
   async function confirmAvatarCrop() {
@@ -3500,15 +3684,19 @@
     const stage = document.getElementById('crop-stage');
     if (!crop || !stage) return;
     const rect = stage.getBoundingClientRect();
+    const circleRect = stage.querySelector('.crop-circle')?.getBoundingClientRect();
+    if (!circleRect) return;
     const img = await loadImage(crop.dataUrl);
     const scale = Math.max(rect.width / img.naturalWidth, rect.height / img.naturalHeight) * (crop.zoom || 1);
     const displayW = img.naturalWidth * scale;
     const displayH = img.naturalHeight * scale;
-    const offsetX = (rect.width - displayW) / 2;
-    const offsetY = (rect.height - displayH) / 2;
-    const sx = Math.max(0, (crop.x - offsetX) / scale);
-    const sy = Math.max(0, (crop.y - offsetY) / scale);
-    const sourceSize = Math.min(img.naturalWidth - sx, img.naturalHeight - sy, crop.size / scale);
+    const imageLeft = (rect.width - displayW) / 2 + Number(crop.offsetX || 0);
+    const imageTop = (rect.height - displayH) / 2 + Number(crop.offsetY || 0);
+    const circleLeft = circleRect.left - rect.left;
+    const circleTop = circleRect.top - rect.top;
+    const sourceSize = circleRect.width / scale;
+    const sx = clamp((circleLeft - imageLeft) / scale, 0, Math.max(0, img.naturalWidth - sourceSize));
+    const sy = clamp((circleTop - imageTop) / scale, 0, Math.max(0, img.naturalHeight - sourceSize));
     const canvas = document.createElement('canvas');
     canvas.width = 512;
     canvas.height = 512;
@@ -3647,8 +3835,6 @@
       type: file.type || 'application/octet-stream',
       lastModified: file.lastModified || Date.now()
     });
-    state.storyMenuOpen = false;
-    updateStoryMenuSlot();
     updateStoryEditorView();
   }
 
@@ -3661,8 +3847,6 @@
       textEditing: false,
       isBlankStory: true
     });
-    state.storyMenuOpen = false;
-    updateStoryMenuSlot();
     updateStoryEditorView();
   }
 
@@ -4241,10 +4425,8 @@
         }
       });
       state.me = data.user;
-      state.storyMenuOpen = false;
       state.storyEditor = null;
       updateStoryEditorView();
-      updateStoryMenuSlot();
       updateSidebar();
     } finally {
       state.storyPublishing = false;
@@ -4312,9 +4494,7 @@
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/view`, { method: 'POST' });
     replaceStory(data.story);
     state.storyViewer = data.story?.file ? { storyId: data.story.id } : null;
-    state.storyMenuOpen = false;
     state.mediaViewer = null;
-    updateStoryMenuSlot();
     updateMediaViewerSlot();
     updateStoryViewerView();
     scheduleStoryAdvance(data.story);
@@ -4586,6 +4766,7 @@
   async function openSearchProfile(username, options = {}) {
     const user = await fetchPublicProfile(username);
     if (!user) throw new Error('User not found.');
+    rememberViewedProfile(user);
     if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
     if (options.pushHistory !== false) {
       history.replaceState({
@@ -5222,6 +5403,7 @@
   }
 
   let overlayCloseTimer = null;
+  let settingsCloseTimer = null;
   let storyAdvanceTimer = null;
 
   function clearStoryAdvance() {
@@ -5246,26 +5428,47 @@
   function openActionSheet(sheet) {
     clearTimeout(overlayCloseTimer);
     state.overlayClosing = false;
-    state.storyMenuOpen = false;
     state.actionSheet = sheet;
-    updateStoryMenuSlot();
     updateActionSheetSlot();
   }
 
   function closeOverlays() {
-    if (!state.actionSheet && !state.storyMenuOpen) return;
+    if (!state.actionSheet) return;
     clearTimeout(overlayCloseTimer);
     state.overlayClosing = true;
     updateActionSheetSlot();
-    updateStoryMenuSlot();
     overlayCloseTimer = setTimeout(() => {
       state.actionSheet = null;
-      state.storyMenuOpen = false;
       state.overlayClosing = false;
       updateActionSheetSlot();
-      updateStoryMenuSlot();
       if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
     }, 190);
+  }
+
+  function openSettingsDrawer() {
+    clearTimeout(settingsCloseTimer);
+    state.settingsOpen = true;
+    state.settingsOpening = true;
+    state.settingsClosing = false;
+    updateProfileModalSlots();
+    requestAnimationFrame(() => {
+      document.querySelector('.settings-drawer-overlay')?.classList.remove('opening');
+      document.querySelector('.settings-drawer')?.classList.remove('opening');
+      state.settingsOpening = false;
+    });
+  }
+
+  function closeSettingsDrawer() {
+    if (!state.settingsOpen || state.settingsClosing) return;
+    clearTimeout(settingsCloseTimer);
+    state.settingsOpening = false;
+    state.settingsClosing = true;
+    updateProfileModalSlots();
+    settingsCloseTimer = setTimeout(() => {
+      state.settingsOpen = false;
+      state.settingsClosing = false;
+      updateProfileModalSlots();
+    }, 240);
   }
 
   function scrollMessagesToBottom() {
@@ -5418,6 +5621,7 @@
     const action = target.dataset.action;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-media' && target.classList.contains('media-viewer') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
@@ -5444,6 +5648,9 @@
         state.lastTab = 'chats';
         state.profileSocialView = null;
         state.chatProfileSocialView = null;
+        state.settingsOpen = false;
+        state.settingsOpening = false;
+        state.settingsClosing = false;
         renderAuth();
       }
       if (action === 'tab') {
@@ -5490,6 +5697,7 @@
         renderApp();
       }
       if (action === 'open-chat-profile') {
+        rememberViewedProfile(state.activePeer);
         state.chatProfileOpen = true;
         state.chatProfileSocialView = null;
         renderApp();
@@ -5532,6 +5740,14 @@
       }
       if (action === 'open-media') {
         state.mediaViewer = { src: target.dataset.src, name: target.dataset.name || '', type: target.dataset.type || '' };
+        updateMediaViewerSlot();
+      }
+      if (action === 'view-profile-picture') {
+        state.mediaViewer = {
+          src: target.dataset.src,
+          name: target.dataset.name || 'Profile picture',
+          type: 'image/*'
+        };
         updateMediaViewerSlot();
       }
       if (action === 'close-media') {
@@ -5585,6 +5801,9 @@
           if (tool !== 'stickers') state.storyEditor.stickerComposer = null;
         }
         updateStoryEditorView();
+      }
+      if (action === 'story-pick-media') {
+        document.getElementById('story-input')?.click();
       }
       if (action === 'story-video-play') {
         await toggleStoryVideoPlayback();
@@ -6000,13 +6219,14 @@
         updateProfileModalSlots();
       }
       if (action === 'open-settings') {
-        state.settingsOpen = true;
-        updateProfileModalSlots();
+        openSettingsDrawer();
       }
       if (action === 'close-modal') {
         state.profileEditOpen = false;
-        state.settingsOpen = false;
         updateProfileModalSlots();
+      }
+      if (action === 'close-settings') {
+        closeSettingsDrawer();
       }
       if (action === 'toggle-recommendations') {
         state.recommendationsOpen = !state.recommendationsOpen;
@@ -6019,8 +6239,12 @@
           updateRecommendationsSection();
         }
       }
-      if (action === 'toggle-profile-privacy') {
-        await updateProfilePatch({ socialPublic: target.checked });
+      if (action === 'toggle-account-private') {
+        await updateProfilePatch({ socialPublic: !target.checked });
+        updateProfileModalSlots();
+      }
+      if (action === 'toggle-avatar-viewable') {
+        await updateProfilePatch({ avatarViewable: target.checked });
         updateProfileModalSlots();
       }
       if (action === 'toggle-profile-searchable') {
@@ -6071,33 +6295,13 @@
         state.chatProfileSocialView = null;
         renderApp();
       }
-      if (action === 'avatar-menu') {
-        clearTimeout(overlayCloseTimer);
-        state.actionSheet = null;
-        state.storyMenuOpen = true;
-        state.overlayClosing = false;
-        updateActionSheetSlot();
-        updateStoryMenuSlot();
-      }
       if (action === 'open-story-create') {
-        clearTimeout(overlayCloseTimer);
         state.actionSheet = null;
-        state.storyMenuOpen = true;
         state.overlayClosing = false;
         updateActionSheetSlot();
-        updateStoryMenuSlot();
-      }
-      if (action === 'create-story') {
         beginBlankStoryEditor();
       }
-      if (action === 'post-story') {
-        state.storyMenuOpen = false;
-        updateStoryMenuSlot();
-        document.getElementById('story-input')?.click();
-      }
       if (action === 'change-profile-picture') {
-        state.storyMenuOpen = false;
-        updateStoryMenuSlot();
         document.getElementById('avatar-input')?.click();
       }
       if (action === 'cancel-avatar-crop') {
@@ -6198,6 +6402,13 @@
         event.target.value = '';
         if (file) await submitGif(file);
       }
+      if (event.target.matches('[data-profile-setting]')) {
+        const setting = event.target.dataset.profileSetting;
+        if (['mentionPermission', 'storyReplies', 'friendRequests'].includes(setting)) {
+          await updateProfilePatch({ [setting]: event.target.value });
+          updateProfileModalSlots();
+        }
+      }
       if (event.target.matches('[data-story-slider]')) {
         await respondToStorySticker(event.target.dataset.storyId, event.target.dataset.stickerId, Number(event.target.value));
       }
@@ -6250,8 +6461,7 @@
     }
     if (event.target.id === 'avatar-zoom' && state.avatarCrop) {
       state.avatarCrop.zoom = Number(event.target.value || 1);
-      const img = document.querySelector('#crop-stage img');
-      if (img) img.style.transform = `scale(${state.avatarCrop.zoom})`;
+      updateCropUi();
       return;
     }
     if (event.target.id === 'story-editor-text' && state.storyEditor) {
@@ -6439,6 +6649,11 @@
   }, true);
 
   document.addEventListener('keydown', async (event) => {
+    if (event.key === 'Escape' && state.settingsOpen) {
+      event.preventDefault();
+      closeSettingsDrawer();
+      return;
+    }
     if (event.target.id === 'composer-text' && event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       try {
@@ -6666,31 +6881,36 @@
     const cropStage = event.target.closest('#crop-stage');
     if (state.avatarCrop && cropStage) {
       event.preventDefault();
+      state.edgeSwipe = null;
       const rect = cropStage.getBoundingClientRect();
       const crop = state.avatarCrop;
       cropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (cropPointers.size >= 2) {
-        const points = Array.from(cropPointers.values()).slice(0, 2);
+        const entries = Array.from(cropPointers.entries()).slice(0, 2);
+        const points = entries.map(([, point]) => point);
+        const centerX = (points[0].x + points[1].x) / 2 - rect.left - rect.width / 2;
+        const centerY = (points[0].y + points[1].y) / 2 - rect.top - rect.height / 2;
         crop.drag = null;
         crop.pinch = {
+          pointerIds: entries.map(([pointerId]) => pointerId),
           distance: Math.max(1, pointerDistance(points[0], points[1])),
-          zoom: crop.zoom || 1
+          zoom: Number(crop.zoom || 1),
+          offsetX: Number(crop.offsetX || 0),
+          offsetY: Number(crop.offsetY || 0),
+          centerX,
+          centerY
         };
+        crop.pinch.pointerIds.forEach((pointerId) => capturePointer(cropStage, pointerId));
         return;
       }
-      const localX = event.clientX - rect.left;
-      const localY = event.clientY - rect.top;
-      if (!event.target.closest('.crop-circle')) {
-        crop.x = clamp(localX - crop.size / 2, 0, rect.width - crop.size);
-        crop.y = clamp(localY - crop.size / 2, 0, rect.height - crop.size);
-      }
       crop.drag = {
-        offsetX: localX - crop.x,
-        offsetY: localY - crop.y,
-        width: rect.width,
-        height: rect.height
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        offsetX: Number(crop.offsetX || 0),
+        offsetY: Number(crop.offsetY || 0)
       };
-      cropStage.setPointerCapture?.(event.pointerId);
+      capturePointer(cropStage, event.pointerId);
       updateCropUi();
       return;
     }
@@ -6850,25 +7070,29 @@
       return;
     }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
+      event.preventDefault();
       cropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       const crop = state.avatarCrop;
       if (crop.pinch && cropPointers.size >= 2) {
-        const points = Array.from(cropPointers.values()).slice(0, 2);
-        const distance = Math.max(1, pointerDistance(points[0], points[1]));
-        crop.zoom = clamp(crop.pinch.zoom * (distance / crop.pinch.distance), 1, 3);
+        const points = crop.pinch.pointerIds.map((pointerId) => cropPointers.get(pointerId)).filter(Boolean);
+        const rect = document.getElementById('crop-stage')?.getBoundingClientRect();
+        if (points.length >= 2 && rect) {
+          const distance = Math.max(1, pointerDistance(points[0], points[1]));
+          const zoom = clamp(crop.pinch.zoom * (distance / crop.pinch.distance), 1, 3);
+          const ratio = zoom / crop.pinch.zoom;
+          const centerX = (points[0].x + points[1].x) / 2 - rect.left - rect.width / 2;
+          const centerY = (points[0].y + points[1].y) / 2 - rect.top - rect.height / 2;
+          crop.zoom = zoom;
+          crop.offsetX = centerX - (crop.pinch.centerX - crop.pinch.offsetX) * ratio;
+          crop.offsetY = centerY - (crop.pinch.centerY - crop.pinch.offsetY) * ratio;
+        }
         updateCropUi();
         return;
       }
-    }
-    if (state.avatarCrop?.drag) {
-      const crop = state.avatarCrop;
-      const rect = document.getElementById('crop-stage')?.getBoundingClientRect();
-      const width = rect?.width || crop.drag.width;
-      const height = rect?.height || crop.drag.height;
-      const left = rect ? event.clientX - rect.left : event.clientX;
-      const top = rect ? event.clientY - rect.top : event.clientY;
-      crop.x = clamp(left - crop.drag.offsetX, 0, width - crop.size);
-      crop.y = clamp(top - crop.drag.offsetY, 0, height - crop.size);
+      if (crop.drag?.pointerId === event.pointerId) {
+        crop.offsetX = crop.drag.offsetX + event.clientX - crop.drag.startX;
+        crop.offsetY = crop.drag.offsetY + event.clientY - crop.drag.startY;
+      }
       updateCropUi();
       return;
     }
@@ -6946,14 +7170,11 @@
       return;
     }
     if (state.avatarCrop && cropPointers.has(event.pointerId)) {
+      const wasPinch = Boolean(state.avatarCrop.pinch);
       cropPointers.delete(event.pointerId);
-      state.avatarCrop.drag = null;
+      if (state.avatarCrop.drag?.pointerId === event.pointerId) state.avatarCrop.drag = null;
       if (cropPointers.size < 2) state.avatarCrop.pinch = null;
-      state.edgeSwipe = null;
-      return;
-    }
-    if (state.avatarCrop?.drag) {
-      state.avatarCrop.drag = null;
+      if (wasPinch && cropPointers.size === 1) continueAvatarCropDrag();
       state.edgeSwipe = null;
       return;
     }
