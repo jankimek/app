@@ -51,6 +51,7 @@ const db = {
   contacts: readJson('contacts.json', {}),
   follows: readJson('follows.json', {}),
   chatSettings: readJson('chatSettings.json', {}),
+  groups: readJson('groups.json', {}),
   messages: readJson('messages.json', {}),
   files: readJson('files.json', {}),
   friendRequests: readJson('friendRequests.json', {}),
@@ -105,6 +106,10 @@ function saveFollows() {
 
 function saveChatSettings() {
   return saveJson('chatSettings.json', db.chatSettings);
+}
+
+function saveGroups() {
+  return saveJson('groups.json', db.groups);
 }
 
 function saveMessages() {
@@ -321,6 +326,7 @@ function basicPublicUser(user, viewerId = null) {
     socialPublic: user.profile?.socialPublic !== false,
     searchable: user.profile?.searchable !== false,
     avatarViewable: user.profile?.avatarViewable !== false,
+    allowGroupAdds: viewerId === user.id ? user.profile?.allowGroupAdds !== false : undefined,
     mentionPermission: viewerId === user.id ? (user.profile?.mentionPermission || 'everyone') : undefined,
     storyReplies: viewerId === user.id ? (user.profile?.storyReplies || 'everyone') : undefined,
     friendRequests: viewerId === user.id ? (user.profile?.friendRequests || 'everyone') : undefined
@@ -484,7 +490,7 @@ function relationFor(viewerId, otherId) {
   };
 }
 
-function addNotification(userId, type, actorId, requestId = null, text = '') {
+function addNotification(userId, type, actorId, requestId = null, text = '', data = {}) {
   const list = ensureObjectList(db.notifications, userId);
   if (requestId && list.some((item) => item.requestId === requestId && item.type === type)) return null;
   const notification = {
@@ -493,6 +499,7 @@ function addNotification(userId, type, actorId, requestId = null, text = '') {
     actorId,
     requestId,
     text,
+    ...data,
     createdAt: nowIso()
   };
   list.unshift(notification);
@@ -506,6 +513,7 @@ function publicNotification(notification, viewerId) {
     type: notification.type,
     actor: basicPublicUser(db.users[notification.actorId], viewerId),
     request: notification.requestId ? publicRequest(db.friendRequests[notification.requestId], viewerId) : null,
+    group: notification.groupId ? publicGroup(db.groups[notification.groupId], viewerId) : null,
     text: notification.text,
     createdAt: notification.createdAt
   };
@@ -549,6 +557,49 @@ function canViewChat(a, b) {
     (db.contacts[a] || []).includes(b) &&
     (db.contacts[b] || []).includes(a)
   );
+}
+
+function groupForMember(groupId, userId) {
+  const group = db.groups[groupId];
+  return group && (group.memberIds || []).includes(userId) ? group : null;
+}
+
+function isGroupAdmin(group, userId) {
+  return Boolean(group && (group.ownerId === userId || (group.adminIds || []).includes(userId)));
+}
+
+function canAddGroupMembers(group, userId) {
+  return Boolean(groupForMember(group?.id, userId) && (isGroupAdmin(group, userId) || group.membersCanAdd !== false));
+}
+
+function canFriendAddToGroup(inviterId, targetId) {
+  const target = db.users[targetId];
+  return Boolean(
+    target &&
+    target.profile?.allowGroupAdds !== false &&
+    canViewChat(inviterId, targetId) &&
+    !isBlockedBetween(inviterId, targetId)
+  );
+}
+
+function publicGroup(group, viewerId) {
+  if (!group || !(group.memberIds || []).includes(viewerId)) return null;
+  const members = (group.memberIds || []).map((userId) => db.users[userId]).filter(Boolean);
+  const avatar = group.avatarFileId ? db.files[group.avatarFileId] : null;
+  return {
+    id: group.id,
+    name: group.name,
+    avatar: publicFile(avatar),
+    ownerId: group.ownerId,
+    adminIds: (group.adminIds || []).filter((userId) => group.memberIds.includes(userId)),
+    members: members.map((member) => basicPublicUser(member, viewerId)),
+    memberCount: members.length,
+    membersCanAdd: group.membersCanAdd !== false,
+    isAdmin: isGroupAdmin(group, viewerId),
+    canAddMembers: canAddGroupMembers(group, viewerId),
+    createdAt: group.createdAt,
+    updatedAt: group.updatedAt
+  };
 }
 
 function canViewStories(ownerId, viewerId = null) {
@@ -811,7 +862,32 @@ function findMessage(messageId) {
 }
 
 function participantsForChatId(chatId) {
-  return chatId.split('__');
+  return db.groups[chatId]?.memberIds || chatId.split('__');
+}
+
+function messageGroup(message) {
+  return message?.groupId ? db.groups[message.groupId] : db.groups[message?.chatId];
+}
+
+function messageParticipantIds(message) {
+  const group = messageGroup(message);
+  return group ? (group.memberIds || []) : [message?.senderId, message?.recipientId].filter(Boolean);
+}
+
+function canViewMessage(userId, message) {
+  if (!message || (message.hiddenFor || []).includes(userId)) return false;
+  const group = messageGroup(message);
+  if (group) return Boolean(groupForMember(group.id, userId));
+  const peerId = message.senderId === userId ? message.recipientId : message.senderId;
+  return messageParticipantIds(message).includes(userId) && canViewChat(userId, peerId);
+}
+
+function canInteractWithMessage(userId, message) {
+  if (!canViewMessage(userId, message)) return false;
+  const group = messageGroup(message);
+  if (group) return true;
+  const peerId = message.senderId === userId ? message.recipientId : message.senderId;
+  return canChat(userId, peerId);
 }
 
 function escapeHtml(value) {
@@ -867,8 +943,10 @@ function decorateMessage(message) {
   return {
     id: message.id,
     chatId: message.chatId,
+    groupId: message.groupId || null,
     senderId: message.senderId,
     recipientId: message.recipientId,
+    sender: basicPublicUser(db.users[message.senderId]),
     kind: message.kind,
     text: message.deletedAt ? '' : (message.text || ''),
     replyTo: message.replyTo || null,
@@ -1141,6 +1219,10 @@ async function cloneStoredFile(file, ownerId, scope) {
 function canAccessFile(userId, file) {
   if (!file) return false;
   if (file.scope === 'avatar') return true;
+  if (file.scope === 'group-avatar') {
+    const group = Object.values(db.groups).find((item) => item.avatarFileId === file.id);
+    return Boolean(userId && groupForMember(group?.id, userId));
+  }
   if (file.scope === 'gif') {
     const gif = Object.values(db.gifs).find((item) => item.fileId === file.id);
     return Boolean(gif && (gif.status === 'approved' || gif.submitterId === userId || isModerator(userId)));
@@ -1158,7 +1240,7 @@ function canAccessFile(userId, file) {
   if (!found) return false;
   const { message } = found;
   if (message.deletedAt) return false;
-  return message.senderId === userId || message.recipientId === userId;
+  return canViewMessage(userId, message);
 }
 
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -1250,6 +1332,7 @@ async function handleApi(req, res, pathname, query) {
         socialPublic: true,
         searchable: true,
         avatarViewable: true,
+        allowGroupAdds: true,
         mentionPermission: 'everyone',
         storyReplies: 'everyone',
         friendRequests: 'everyone'
@@ -1328,6 +1411,7 @@ async function handleApi(req, res, pathname, query) {
     if (body.socialPublic !== undefined) user.profile.socialPublic = Boolean(body.socialPublic);
     if (body.searchable !== undefined) user.profile.searchable = Boolean(body.searchable);
     if (body.avatarViewable !== undefined) user.profile.avatarViewable = Boolean(body.avatarViewable);
+    if (body.allowGroupAdds !== undefined) user.profile.allowGroupAdds = Boolean(body.allowGroupAdds);
     if (['everyone', 'following', 'nobody'].includes(body.mentionPermission)) user.profile.mentionPermission = body.mentionPermission;
     if (['everyone', 'following', 'off'].includes(body.storyReplies)) user.profile.storyReplies = body.storyReplies;
     if (['everyone', 'followers', 'off'].includes(body.friendRequests)) user.profile.friendRequests = body.friendRequests;
@@ -2013,6 +2097,312 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { users });
   }
 
+  if (req.method === 'GET' && pathname === '/api/groups') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const groups = Object.values(db.groups)
+      .filter((group) => (group.memberIds || []).includes(user.id))
+      .map((group) => {
+        const latest = latestVisibleMessage(db.messages[group.id] || [], user.id);
+        return { ...publicGroup(group, user.id), latest: latest ? decorateMessage(latest) : null };
+      })
+      .sort((a, b) => String(b.latest?.createdAt || b.updatedAt || '').localeCompare(String(a.latest?.createdAt || a.updatedAt || '')));
+    return sendJson(res, 200, { groups });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/groups') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const invitedIds = Array.from(new Set((Array.isArray(body.memberIds) ? body.memberIds : [])
+      .map((value) => cleanText(value, 120))
+      .filter((userId) => userId && userId !== user.id && db.users[userId])));
+    if (invitedIds.length < 2) return sendError(res, 400, 'Choose at least two friends for a group chat.');
+    if (invitedIds.length > 49) return sendError(res, 400, 'A group can have up to 50 members.');
+    const unavailable = invitedIds.find((userId) => !canFriendAddToGroup(user.id, userId));
+    if (unavailable) {
+      const target = db.users[unavailable];
+      return sendError(res, 403, `@${target.username} does not allow this group invitation.`);
+    }
+    const createdAt = nowIso();
+    const group = {
+      id: id('group'),
+      name: cleanText(body.name || '', 60) || [user.id, ...invitedIds]
+        .map((userId) => db.users[userId]?.profile?.displayName || db.users[userId]?.username)
+        .filter(Boolean)
+        .slice(0, 3)
+        .join(', '),
+      ownerId: user.id,
+      adminIds: [user.id],
+      memberIds: [user.id, ...invitedIds],
+      avatarFileId: null,
+      membersCanAdd: body.membersCanAdd !== false,
+      createdAt,
+      updatedAt: createdAt
+    };
+    if (body.avatar?.dataUrl) {
+      if (!mimeFromDataUrl(body.avatar.dataUrl).startsWith('image/')) return sendError(res, 400, 'Group picture must be an image.');
+      const avatar = await saveUpload(body.avatar, user.id, 'group-avatar');
+      group.avatarFileId = avatar.id;
+      await saveFiles();
+    }
+    db.groups[group.id] = group;
+    const notifications = invitedIds.map((userId) => ({
+      userId,
+      note: addNotification(userId, 'group_added', user.id, null, `${user.username} added you to ${group.name}.`, { groupId: group.id })
+    }));
+    await Promise.all([saveGroups(), saveNotifications()]);
+    const publicValue = publicGroup(group, user.id);
+    pushToUsers(group.memberIds, { type: 'group:updated', groupId: group.id, group: publicValue });
+    for (const item of notifications) {
+      if (!item.note) continue;
+      pushToUser(item.userId, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(item.userId).length,
+        notification: publicNotification(item.note, item.userId)
+      });
+    }
+    return sendJson(res, 201, { group: publicValue });
+  }
+
+  const groupMatch = /^\/api\/groups\/([^/]+)$/.exec(pathname);
+  if (groupMatch && ['GET', 'PATCH'].includes(req.method)) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupMatch[1]), user.id);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    if (req.method === 'GET') return sendJson(res, 200, { group: publicGroup(group, user.id) });
+    if (!isGroupAdmin(group, user.id)) return sendError(res, 403, 'Only group admins can edit this group.');
+    const body = await readJsonBody(req);
+    if (body.name !== undefined) {
+      const name = cleanText(body.name, 60);
+      if (!name) return sendError(res, 400, 'Group name cannot be empty.');
+      group.name = name;
+    }
+    if (body.membersCanAdd !== undefined) group.membersCanAdd = Boolean(body.membersCanAdd);
+    if (body.avatar?.dataUrl) {
+      if (!mimeFromDataUrl(body.avatar.dataUrl).startsWith('image/')) return sendError(res, 400, 'Group picture must be an image.');
+      const avatar = await saveUpload(body.avatar, user.id, 'group-avatar');
+      group.avatarFileId = avatar.id;
+      await saveFiles();
+    }
+    group.updatedAt = nowIso();
+    await saveGroups();
+    pushToUsers(group.memberIds, { type: 'group:updated', groupId: group.id });
+    return sendJson(res, 200, { group: publicGroup(group, user.id) });
+  }
+
+  const groupMembersMatch = /^\/api\/groups\/([^/]+)\/members$/.exec(pathname);
+  if (req.method === 'POST' && groupMembersMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupMembersMatch[1]), user.id);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    if (!canAddGroupMembers(group, user.id)) return sendError(res, 403, 'Only group admins can add people here.');
+    const body = await readJsonBody(req);
+    const memberIds = Array.from(new Set((Array.isArray(body.memberIds) ? body.memberIds : [])
+      .map((value) => cleanText(value, 120))
+      .filter((userId) => userId && !group.memberIds.includes(userId) && db.users[userId])));
+    if (!memberIds.length) return sendError(res, 400, 'Choose at least one new member.');
+    if (group.memberIds.length + memberIds.length > 50) return sendError(res, 400, 'A group can have up to 50 members.');
+    const unavailable = memberIds.find((userId) => !canFriendAddToGroup(user.id, userId));
+    if (unavailable) return sendError(res, 403, `@${db.users[unavailable].username} does not allow this group invitation.`);
+    group.memberIds.push(...memberIds);
+    group.updatedAt = nowIso();
+    const notifications = memberIds.map((userId) => ({
+      userId,
+      note: addNotification(userId, 'group_added', user.id, null, `${user.username} added you to ${group.name}.`, { groupId: group.id })
+    }));
+    await Promise.all([saveGroups(), saveNotifications()]);
+    pushToUsers(group.memberIds, { type: 'group:updated', groupId: group.id });
+    for (const item of notifications) {
+      if (item.note) pushToUser(item.userId, { type: 'notification:new', notification: publicNotification(item.note, item.userId) });
+    }
+    return sendJson(res, 200, { group: publicGroup(group, user.id) });
+  }
+
+  const groupMemberMatch = /^\/api\/groups\/([^/]+)\/members\/([^/]+)$/.exec(pathname);
+  if (req.method === 'DELETE' && groupMemberMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupMemberMatch[1]), user.id);
+    const memberId = decodeURIComponent(groupMemberMatch[2]);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    if (!isGroupAdmin(group, user.id)) return sendError(res, 403, 'Only group admins can remove members.');
+    if (memberId === group.ownerId) return sendError(res, 400, 'The group owner cannot be removed.');
+    if (!group.memberIds.includes(memberId)) return sendError(res, 404, 'Member not found.');
+    group.memberIds = group.memberIds.filter((id) => id !== memberId);
+    group.adminIds = (group.adminIds || []).filter((id) => id !== memberId);
+    group.updatedAt = nowIso();
+    await saveGroups();
+    pushToUsers([...group.memberIds, memberId], { type: 'group:updated', groupId: group.id });
+    return sendJson(res, 200, { group: publicGroup(group, user.id) });
+  }
+
+  const groupAdminMatch = /^\/api\/groups\/([^/]+)\/admins\/([^/]+)$/.exec(pathname);
+  if (groupAdminMatch && ['POST', 'DELETE'].includes(req.method)) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupAdminMatch[1]), user.id);
+    const memberId = decodeURIComponent(groupAdminMatch[2]);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    if (group.ownerId !== user.id) return sendError(res, 403, 'Only the group owner can manage admins.');
+    if (!group.memberIds.includes(memberId)) return sendError(res, 404, 'Member not found.');
+    if (req.method === 'POST' && !group.adminIds.includes(memberId)) group.adminIds.push(memberId);
+    if (req.method === 'DELETE' && memberId !== group.ownerId) group.adminIds = group.adminIds.filter((id) => id !== memberId);
+    group.updatedAt = nowIso();
+    await saveGroups();
+    pushToUsers(group.memberIds, { type: 'group:updated', groupId: group.id });
+    return sendJson(res, 200, { group: publicGroup(group, user.id) });
+  }
+
+  const groupLeaveMatch = /^\/api\/groups\/([^/]+)\/leave$/.exec(pathname);
+  if (req.method === 'POST' && groupLeaveMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupLeaveMatch[1]), user.id);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    const remaining = group.memberIds.filter((memberId) => memberId !== user.id);
+    if (!remaining.length) {
+      delete db.groups[group.id];
+    } else {
+      group.memberIds = remaining;
+      group.adminIds = (group.adminIds || []).filter((memberId) => memberId !== user.id);
+      if (group.ownerId === user.id) {
+        group.ownerId = group.adminIds.find((memberId) => remaining.includes(memberId)) || remaining[0];
+        if (!group.adminIds.includes(group.ownerId)) group.adminIds.unshift(group.ownerId);
+      }
+      group.updatedAt = nowIso();
+    }
+    await saveGroups();
+    pushToUsers([...remaining, user.id], { type: 'group:updated', groupId: group.id });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const groupAppearanceMatch = /^\/api\/groups\/([^/]+)\/appearance$/.exec(pathname);
+  if (groupAppearanceMatch && ['GET', 'PATCH'].includes(req.method)) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupAppearanceMatch[1]), user.id);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    if (req.method === 'GET') return sendJson(res, 200, { settings: chatAppearanceFor(user.id, group.id) });
+    const body = await readJsonBody(req);
+    if (!db.chatSettings[user.id]) db.chatSettings[user.id] = {};
+    db.chatSettings[user.id][group.id] = cleanChatAppearance({ ...chatAppearanceFor(user.id, group.id), ...body });
+    await saveChatSettings();
+    return sendJson(res, 200, { settings: db.chatSettings[user.id][group.id] });
+  }
+
+  const groupMessageMatch = /^\/api\/groups\/([^/]+)\/messages$/.exec(pathname);
+  if (groupMessageMatch && ['GET', 'POST'].includes(req.method)) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupMessageMatch[1]), user.id);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    const list = ensureChatMessages(group.id);
+    if (req.method === 'GET') {
+      const limit = Math.max(1, Math.min(500, Number(query.get('limit') || 200)));
+      const before = String(query.get('before') || '');
+      let visible = list
+        .filter((message) => !(message.hiddenFor || []).includes(user.id))
+        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      if (before) visible = visible.filter((message) => String(message.createdAt) < before);
+      const hasMore = visible.length > limit;
+      return sendJson(res, 200, {
+        messages: visible.slice(Math.max(0, visible.length - limit)).map(decorateMessage),
+        hasMore,
+        group: publicGroup(group, user.id)
+      });
+    }
+    const body = await readJsonBody(req);
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(body.kind) ? body.kind : 'text';
+    const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
+    if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
+    let file = null;
+    if (kind === 'gif' && body.gifId) {
+      const gif = db.gifs[cleanText(body.gifId || '', 120)];
+      if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
+      file = db.files[gif.fileId];
+    } else if (body.file?.dataUrl) {
+      const incomingMime = mimeFromDataUrl(body.file.dataUrl);
+      if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
+      if (kind === 'video' && !incomingMime.startsWith('video/')) return sendError(res, 400, 'That file is not a video.');
+      if (kind === 'voice' && !incomingMime.startsWith('audio/')) return sendError(res, 400, 'That file is not audio.');
+      if (kind === 'sticker' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That sticker is not an image.');
+      if (kind === 'gif' && !['image/gif', 'image/webp'].includes(incomingMime)) return sendError(res, 400, 'Choose an animated GIF or WebP file.');
+      file = await saveUpload(body.file, user.id, kind === 'gif' ? 'message-gif' : kind);
+    }
+    if (['image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(kind) && !file) return sendError(res, 400, 'This message type needs a file.');
+    const message = {
+      id: id('msg'),
+      chatId: group.id,
+      groupId: group.id,
+      senderId: user.id,
+      recipientId: null,
+      kind,
+      text,
+      replyTo: body.replyTo && list.some((item) => item.id === body.replyTo) ? body.replyTo : null,
+      attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
+      hiddenFor: [],
+      reactions: {},
+      messageStickers: [],
+      pinnedAt: null,
+      pinnedBy: null,
+      forwardedFrom: null,
+      createdAt: nowIso(),
+      deletedAt: null,
+      deletedBy: null
+    };
+    if (file && file.scope !== 'gif') {
+      file.messageId = message.id;
+      await saveFiles();
+    }
+    list.push(message);
+    group.updatedAt = message.createdAt;
+    const decorated = decorateMessage(message);
+    const notifications = group.memberIds
+      .filter((memberId) => memberId !== user.id)
+      .map((memberId) => ({
+        memberId,
+        note: addNotification(memberId, 'message', user.id, null, `${group.name}: ${user.username}: ${messageSnippet(message)}`, { groupId: group.id })
+      }));
+    await Promise.all([saveMessages(), saveGroups(), saveNotifications()]);
+    pushToUsers(group.memberIds, { type: 'message:new', chatId: group.id, groupId: group.id, message: decorated });
+    for (const item of notifications) {
+      if (item.note) pushToUser(item.memberId, { type: 'notification:new', notification: publicNotification(item.note, item.memberId) });
+    }
+    return sendJson(res, 201, { message: decorated });
+  }
+
+  const groupExportMatch = /^\/api\/groups\/([^/]+)\/export$/.exec(pathname);
+  if (req.method === 'GET' && groupExportMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const group = groupForMember(decodeURIComponent(groupExportMatch[1]), user.id);
+    if (!group) return sendError(res, 404, 'Group not found.');
+    const messages = (db.messages[group.id] || [])
+      .filter((message) => !(message.hiddenFor || []).includes(user.id))
+      .map(decorateMessage);
+    const created = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeName = group.name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'group';
+    const format = query.get('format') === 'html' ? 'html' : 'json';
+    if (format === 'html') {
+      const rows = messages.map((message) => {
+        const sender = db.users[message.senderId];
+        const content = message.deletedAt
+          ? '<em>Message deleted</em>'
+          : `${escapeHtml(message.text || '')}${message.attachment ? `<br><a href="${escapeHtml(message.attachment.downloadUrl)}">${escapeHtml(message.attachment.name)}</a>` : ''}`;
+        return `<article><small>${escapeHtml(`${new Date(message.createdAt).toLocaleString()} | ${sender?.username || message.senderId} | ${message.kind}`)}</small><p>${content}</p></article>`;
+      }).join('\n');
+      const html = `<!doctype html><meta charset="utf-8"><title>Group chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#4fd2c2}</style><h1>${escapeHtml(group.name)}</h1>${rows}`;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': `attachment; filename="group-${safeName}-${created}.html"` });
+      return res.end(html);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="group-${safeName}-${created}.json"` });
+    return res.end(JSON.stringify({ exportedAt: nowIso(), viewer: publicUser(user, user.id), group: publicGroup(group, user.id), messages }, null, 2));
+  }
+
   if (req.method === 'GET' && pathname === '/api/chats/search') {
     const user = await requireAuth(req, res);
     if (!user) return;
@@ -2029,6 +2419,20 @@ async function handleApi(req, res, pathname, query) {
         results.push({
           chatId,
           peer: publicUser(peer, user.id),
+          sender: basicPublicUser(db.users[message.senderId]),
+          message: decorateMessage(message),
+          snippet: messageSnippet(message)
+        });
+      }
+    }
+    for (const group of Object.values(db.groups)) {
+      if (!(group.memberIds || []).includes(user.id)) continue;
+      for (const message of db.messages[group.id] || []) {
+        if ((message.hiddenFor || []).includes(user.id)) continue;
+        if (!messageSearchText(message).toLowerCase().includes(term)) continue;
+        results.push({
+          chatId: group.id,
+          group: publicGroup(group, user.id),
           sender: basicPublicUser(db.users[message.senderId]),
           message: decorateMessage(message),
           snippet: messageSnippet(message)
@@ -2228,10 +2632,11 @@ async function handleApi(req, res, pathname, query) {
       const found = findMessage(cleanText(body.messageId || '', 120));
       if (!found) return sendError(res, 404, 'Message not found.');
       const { chatId, message } = found;
-      if (message.senderId !== user.id && message.recipientId !== user.id) return sendError(res, 404, 'Message not found.');
+      if (!canViewMessage(user.id, message)) return sendError(res, 404, 'Message not found.');
       reportedChatId = chatId;
       reportedMessage = message;
-      reportedUser = db.users[message.senderId === user.id ? message.recipientId : message.senderId];
+      reportedUser = db.users[message.senderId];
+      if (reportedUser?.id === user.id) return sendError(res, 400, 'Choose a message from another user to report.');
     } else {
       reportedUser = db.users[cleanText(body.reportedUserId || '', 120)] || userByUsername(body.reportedUserId);
       if (!reportedUser) return sendError(res, 404, 'User not found.');
@@ -2278,8 +2683,7 @@ async function handleApi(req, res, pathname, query) {
     const found = findMessage(decodeURIComponent(reactionMatch[1]));
     if (!found) return sendError(res, 404, 'Message not found.');
     const { chatId, message } = found;
-    const peerId = message.senderId === user.id ? message.recipientId : message.senderId;
-    if (![message.senderId, message.recipientId].includes(user.id) || !canViewChat(user.id, peerId) || (message.hiddenFor || []).includes(user.id)) {
+    if (!canViewMessage(user.id, message)) {
       return sendError(res, 404, 'Message not found.');
     }
     if (message.deletedAt) return sendError(res, 400, 'Deleted messages cannot be reacted to.');
@@ -2302,8 +2706,7 @@ async function handleApi(req, res, pathname, query) {
     const found = findMessage(decodeURIComponent(pinMessageMatch[1]));
     if (!found) return sendError(res, 404, 'Message not found.');
     const { chatId, message } = found;
-    const peerId = message.senderId === user.id ? message.recipientId : message.senderId;
-    if (![message.senderId, message.recipientId].includes(user.id) || !canViewChat(user.id, peerId) || (message.hiddenFor || []).includes(user.id)) {
+    if (!canViewMessage(user.id, message)) {
       return sendError(res, 404, 'Message not found.');
     }
     if (message.deletedAt) return sendError(res, 400, 'Deleted messages cannot be pinned.');
@@ -2324,8 +2727,7 @@ async function handleApi(req, res, pathname, query) {
     const found = findMessage(decodeURIComponent(messageStickerMatch[1]));
     if (!found) return sendError(res, 404, 'Message not found.');
     const { chatId, message } = found;
-    const peerId = message.senderId === user.id ? message.recipientId : message.senderId;
-    if (![message.senderId, message.recipientId].includes(user.id) || !canChat(user.id, peerId)) {
+    if (!canInteractWithMessage(user.id, message)) {
       return sendError(res, 404, 'Message not found.');
     }
     if (message.deletedAt) return sendError(res, 400, 'Deleted messages cannot have stickers.');
@@ -2351,14 +2753,14 @@ async function handleApi(req, res, pathname, query) {
     const found = findMessage(decodeURIComponent(forwardMessageMatch[1]));
     if (!found) return sendError(res, 404, 'Message not found.');
     const source = found.message;
-    const sourcePeerId = source.senderId === user.id ? source.recipientId : source.senderId;
-    if (![source.senderId, source.recipientId].includes(user.id) || !canViewChat(user.id, sourcePeerId) || (source.hiddenFor || []).includes(user.id) || source.deletedAt) {
+    if (!canViewMessage(user.id, source) || source.deletedAt) {
       return sendError(res, 404, 'Message not found.');
     }
     const body = await readJsonBody(req);
-    const peer = db.users[cleanText(body.recipientId || '', 120)];
-    if (!peer || !canChat(user.id, peer.id)) return sendError(res, 404, 'Chat not found.');
-    const chatId = chatIdFor(user.id, peer.id);
+    const targetGroup = body.groupId ? groupForMember(cleanText(body.groupId, 120), user.id) : null;
+    const peer = targetGroup ? null : db.users[cleanText(body.recipientId || '', 120)];
+    if (!targetGroup && (!peer || !canChat(user.id, peer.id))) return sendError(res, 404, 'Chat not found.');
+    const chatId = targetGroup?.id || chatIdFor(user.id, peer.id);
     const list = ensureChatMessages(chatId);
     const sourceFile = source.attachment?.id ? db.files[source.attachment.id] : null;
     const file = sourceFile?.scope === 'gif'
@@ -2368,8 +2770,9 @@ async function handleApi(req, res, pathname, query) {
     const message = {
       id: id('msg'),
       chatId,
+      groupId: targetGroup?.id || null,
       senderId: user.id,
-      recipientId: peer.id,
+      recipientId: peer?.id || null,
       kind: source.kind,
       text: source.text || '',
       replyTo: null,
@@ -2388,14 +2791,19 @@ async function handleApi(req, res, pathname, query) {
     if (file && file.scope !== 'gif') file.messageId = message.id;
     list.push(message);
     const decorated = decorateMessage(message);
-    const notification = addNotification(peer.id, 'message', user.id, null, `${user.username}: Forwarded ${messageSnippet(message)}`);
+    const recipients = targetGroup ? targetGroup.memberIds.filter((memberId) => memberId !== user.id) : [peer.id];
+    const notifications = recipients.map((memberId) => ({
+      memberId,
+      note: addNotification(memberId, 'message', user.id, null, `${targetGroup ? `${targetGroup.name}: ` : ''}${user.username}: Forwarded ${messageSnippet(message)}`, targetGroup ? { groupId: targetGroup.id } : {})
+    }));
     await Promise.all([saveFiles(), saveMessages(), saveNotifications()]);
-    pushToUsers([user.id, peer.id], { type: 'message:new', chatId, message: decorated });
-    if (notification) {
-      pushToUser(peer.id, {
+    pushToUsers(targetGroup?.memberIds || [user.id, peer.id], { type: 'message:new', chatId, groupId: targetGroup?.id || null, message: decorated });
+    for (const item of notifications) {
+      if (!item.note) continue;
+      pushToUser(item.memberId, {
         type: 'notification:new',
-        pendingRequestCount: pendingIncomingRequests(peer.id).length,
-        notification: publicNotification(notification, peer.id)
+        pendingRequestCount: pendingIncomingRequests(item.memberId).length,
+        notification: publicNotification(item.note, item.memberId)
       });
     }
     return sendJson(res, 201, { message: decorated });
@@ -2408,7 +2816,7 @@ async function handleApi(req, res, pathname, query) {
     const found = findMessage(decodeURIComponent(hideMessageMatch[1]));
     if (!found) return sendError(res, 404, 'Message not found.');
     const { chatId, message } = found;
-    if (![message.senderId, message.recipientId].includes(user.id)) return sendError(res, 404, 'Message not found.');
+    if (!canViewMessage(user.id, message)) return sendError(res, 404, 'Message not found.');
     if (!Array.isArray(message.hiddenFor)) message.hiddenFor = [];
     if (!message.hiddenFor.includes(user.id)) message.hiddenFor.push(user.id);
     await saveMessages();
@@ -2638,6 +3046,17 @@ function handleWsFrame(client, frame) {
   }
   if (message.type === 'typing' && canChat(client.userId, message.to)) {
     pushToUser(message.to, { type: 'typing', from: client.userId, isTyping: Boolean(message.isTyping) });
+  }
+  if (message.type === 'typing' && message.groupId) {
+    const group = groupForMember(String(message.groupId), client.userId);
+    if (group) {
+      pushToUsers(group.memberIds.filter((userId) => userId !== client.userId), {
+        type: 'typing',
+        from: client.userId,
+        groupId: group.id,
+        isTyping: Boolean(message.isTyping)
+      });
+    }
   }
   if (message.type === 'signal' && canChat(client.userId, message.to)) {
     pushToUser(message.to, { type: 'signal', from: client.userId, payload: message.payload });

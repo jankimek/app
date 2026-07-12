@@ -46,7 +46,10 @@
     tabDirection: 'right',
     contacts: [],
     chats: [],
+    groups: [],
     activePeer: null,
+    activeGroup: null,
+    groupComposer: null,
     chatProfileOpen: false,
     chatReturnAnimation: false,
     chatOpening: false,
@@ -113,6 +116,7 @@
     stickerMap: new Map(),
     replyTo: null,
     typingPeerId: null,
+    typingGroup: null,
     ws: null,
     typingTimer: null,
     recorder: null,
@@ -266,6 +270,19 @@
     return `<span class="avatar ${story ? 'has-story' : ''}">${avatarUrl ? `<img src="${esc(avatarUrl)}" alt="">` : esc(initials(user))}${storyRing}</span>`;
   }
 
+  function groupAvatarHtml(group, className = '') {
+    if (group?.avatar?.url) {
+      return `<span class="avatar group-avatar ${esc(className)}"><img src="${esc(group.avatar.url)}" alt=""></span>`;
+    }
+    const members = (group?.members || []).filter((member) => member?.id !== state.me?.id).slice(0, 3);
+    if (!members.length) return `<span class="avatar group-avatar ${esc(className)}">${icon('group')}</span>`;
+    return `<span class="avatar group-avatar group-avatar-stack ${esc(className)}">${members.map((member) => (
+      member.avatar?.url
+        ? `<img src="${esc(member.avatar.url)}" alt="">`
+        : `<i>${esc(initials(member))}</i>`
+    )).join('')}</span>`;
+  }
+
   function icon(name) {
     const icons = {
       messages: '<svg viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2h9A3.5 3.5 0 0 1 20 5.5v7A3.5 3.5 0 0 1 16.5 16H9l-5 4v-4.5A3.5 3.5 0 0 1 4 12.5v-7Z"/><path d="M8 8h8M8 12h5"/></svg>',
@@ -322,7 +339,8 @@
       check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>',
       forward: '<svg viewBox="0 0 24 24"><path d="m14 5 7 7-7 7v-4c-5 0-8.5 1.5-11 4 1-6 4.5-10 11-10V5Z"/></svg>',
       pin: '<svg viewBox="0 0 24 24"><path d="m8 3 8 8M14 3l7 7-4 1-5 5-1 5-7-7 5-1 5-5V3Z"/><path d="m9 15-6 6"/></svg>',
-      camera: '<svg viewBox="0 0 24 24"><path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/></svg>'
+      camera: '<svg viewBox="0 0 24 24"><path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/></svg>',
+      group: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 20a5 5 0 0 1 7-4.6"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -357,6 +375,33 @@
     return { chats: 0, search: 1, notifications: 0, profile: 2 }[tab] ?? 0;
   }
 
+  function hasActiveConversation() {
+    return Boolean(state.activePeer || state.activeGroup);
+  }
+
+  function activeConversationKey() {
+    return state.activeGroup?.id || state.activePeer?.id || null;
+  }
+
+  function activeChatId() {
+    if (state.activeGroup) return state.activeGroup.id;
+    return state.activePeer ? [state.me.id, state.activePeer.id].sort().join('__') : null;
+  }
+
+  function activeMessagesUrl(suffix = '') {
+    if (state.activeGroup) return `/api/groups/${encodeURIComponent(state.activeGroup.id)}/messages${suffix}`;
+    return state.activePeer ? `/api/chats/${encodeURIComponent(state.activePeer.id)}/messages${suffix}` : '';
+  }
+
+  function activeAppearanceUrl() {
+    if (state.activeGroup) return `/api/groups/${encodeURIComponent(state.activeGroup.id)}/appearance`;
+    return state.activePeer ? `/api/chats/${encodeURIComponent(state.activePeer.id)}/appearance` : '';
+  }
+
+  function activeConversationTitle() {
+    return state.activeGroup?.name || state.activePeer?.displayName || 'Chat';
+  }
+
   function switchMainTab(nextTab, options = {}) {
     if (!['chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
     const leavingPublicProfile = state.searchProfileOpen;
@@ -374,14 +419,15 @@
     }
     if (isMobileLayout()) {
       state.activePeer = null;
+      state.activeGroup = null;
       state.chatProfileOpen = false;
       state.chatProfileSocialView = null;
-    } else if (state.activePeer) {
+    } else if (hasActiveConversation()) {
       state.chatProfileOpen = false;
       state.chatProfileSocialView = null;
     }
     if (state.tab !== 'profile') state.profileSocialView = null;
-    const keepDesktopChat = !isMobileLayout() && state.activePeer && !wasChatProfileOpen && !leavingPublicProfile;
+    const keepDesktopChat = !isMobileLayout() && hasActiveConversation() && !wasChatProfileOpen && !leavingPublicProfile;
     if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
     else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
     else renderApp();
@@ -709,7 +755,7 @@
       : captureMessagesScroll();
     const scrollMode = options.scroll || 'preserve';
     app.innerHTML = `
-      <div class="app-shell ${state.activePeer ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''}">
+      <div class="app-shell ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -726,8 +772,10 @@
       <div id="chat-customization-slot">${renderChatCustomization()}</div>
       <div id="sticker-creator-slot">${renderStickerCreator()}</div>
       <div id="sticker-manager-slot">${renderStickerManager()}</div>
+      <div id="group-composer-slot">${renderGroupComposer()}</div>
       <input id="avatar-input" type="file" accept="image/*" hidden>
       <input id="story-input" type="file" accept="image/*,video/*" hidden>
+      <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
     state.tabTransition = false;
     resizeComposerInput();
@@ -859,8 +907,25 @@
 
   function renderChatsPanel() {
     const query = state.conversationQuery.trim();
-    const chatRows = state.chats.length ? state.chats.map((chat) => {
-      const unread = state.unreadByPeer[chat.peer.id] || 0;
+    const conversations = [
+      ...state.chats.map((chat) => ({ type: 'direct', id: chat.peer.id, latest: chat.latest, chat })),
+      ...state.groups.map((group) => ({ type: 'group', id: group.id, latest: group.latest, group }))
+    ].sort((a, b) => String(b.latest?.createdAt || '').localeCompare(String(a.latest?.createdAt || '')));
+    const chatRows = conversations.length ? conversations.map((conversation) => {
+      const unread = state.unreadByPeer[conversation.id] || 0;
+      if (conversation.type === 'group') {
+        const group = conversation.group;
+        const sender = group.latest?.sender;
+        const preview = group.latest ? `${sender?.id === state.me.id ? 'You' : (sender?.displayName || 'Member')}: ${describeMessage(group.latest)}` : `${group.memberCount} members`;
+        return `
+          <button class="chat-item group-chat-item ${state.activeGroup?.id === group.id ? 'active' : ''} ${unread ? 'unread' : ''}" data-action="open-group" data-group-id="${esc(group.id)}">
+            ${groupAvatarHtml(group)}
+            <span class="person"><strong>${esc(group.name)}</strong><small>${esc(preview)}</small></span>
+            <span class="chat-meta"><small>${group.latest ? esc(shortTime(group.latest.createdAt)) : ''}</small></span>
+          </button>
+        `;
+      }
+      const chat = conversation.chat;
       return `
         <button class="chat-item ${state.activePeer?.id === chat.peer.id ? 'active' : ''} ${unread ? 'unread' : ''}" data-action="open-chat" data-user-id="${esc(chat.peer.id)}" data-peer-id="${esc(chat.peer.id)}">
           ${avatarHtml(chat.peer)}
@@ -878,7 +943,14 @@
       ? '<div class="empty-state">Searching conversations...</div>'
       : state.conversationResults.length ? state.conversationResults.map((result) => {
         const mine = result.message.senderId === state.me.id;
-        const label = mine ? 'You' : (result.sender?.displayName || result.peer.displayName);
+        const label = mine ? 'You' : (result.sender?.displayName || result.peer?.displayName || 'Member');
+        if (result.group) return `
+          <button class="chat-item conversation-hit" data-action="open-group" data-group-id="${esc(result.group.id)}" data-message-id="${esc(result.message.id)}">
+            ${groupAvatarHtml(result.group)}
+            <span class="person"><strong>${esc(result.group.name)}</strong><small>${esc(label)}: ${esc(result.snippet || describeMessage(result.message))}</small></span>
+            <small>${esc(shortTime(result.message.createdAt))}</small>
+          </button>
+        `;
         return `
           <button class="chat-item conversation-hit" data-action="open-chat" data-user-id="${esc(result.peer.id)}" data-peer-id="${esc(result.peer.id)}" data-message-id="${esc(result.message.id)}">
             ${avatarHtml(result.peer)}
@@ -904,6 +976,7 @@
       ${renderNotificationPermissionPrompt()}
       <section class="panel-heading">
         <h2>Messages</h2>
+        <button class="icon-btn new-group-btn" data-action="new-group" title="New group chat" aria-label="New group chat">${icon('edit')}</button>
       </section>
       <section class="chat-list">
         ${query ? searchRows : chatRows}
@@ -2867,14 +2940,14 @@
   }
 
   function renderChatCustomization() {
-    if (!state.chatCustomizationOpen || !state.activePeer) return '';
+    if (!state.chatCustomizationOpen || !hasActiveConversation()) return '';
     const settings = { ...defaultChatAppearance(), ...(state.chatAppearance || {}) };
     return `
       <div class="chat-customization-overlay" data-action="close-chat-customization">
         <section class="chat-customization-sheet" data-stop-close>
           <header class="chat-customization-head">
             <button class="icon-btn" data-action="close-chat-customization" aria-label="Close">${icon('x')}</button>
-            <span><strong>Chat appearance</strong><small>@${esc(state.activePeer.username)}</small></span>
+            <span><strong>Chat appearance</strong><small>${esc(state.activeGroup?.name || `@${state.activePeer?.username || ''}`)}</small></span>
             <button class="icon-btn" data-action="reset-chat-appearance" aria-label="Reset appearance">${icon('refresh')}</button>
           </header>
           <section class="chat-appearance-section">
@@ -2912,8 +2985,8 @@
   }
 
   async function updateChatAppearance(patch) {
-    if (!state.activePeer) return;
-    const data = await api(`/api/chats/${encodeURIComponent(state.activePeer.id)}/appearance`, { method: 'PATCH', body: patch });
+    if (!hasActiveConversation()) return;
+    const data = await api(activeAppearanceUrl(), { method: 'PATCH', body: patch });
     state.chatAppearance = data.settings;
     applyChatAppearanceUi();
     updateChatCustomizationSlot();
@@ -2941,7 +3014,7 @@
         </main>
       `;
     }
-    if (!state.activePeer) {
+    if (!hasActiveConversation()) {
       return `
         <main class="chat-pane">
           <div class="empty-state">
@@ -2956,21 +3029,24 @@
 
     if (state.chatProfileOpen) return renderChatProfilePane();
 
+    const group = state.activeGroup;
+    const peer = state.activePeer;
+    const key = activeConversationKey();
     return `
       <main class="chat-pane active-chat chat-background-${esc(state.chatAppearance?.background || 'midnight')} ${state.chatReturnAnimation ? 'chat-returning' : ''} ${state.chatOpening ? 'chat-opening' : ''}" style="${esc(chatAppearanceStyle())}">
         <header class="chat-header">
           <button class="icon-btn back-btn" title="Back" aria-label="Back" data-action="back">${icon('back')}</button>
           <button class="chat-profile-button" data-action="open-chat-profile">
-            ${avatarHtml(state.activePeer)}
+            ${group ? groupAvatarHtml(group) : avatarHtml(peer)}
           </button>
           <button class="chat-title" data-action="open-chat-profile">
-            <strong>${esc(state.activePeer.displayName)}</strong>
-            <small>@${esc(state.activePeer.username)}</small>
+            <strong>${esc(group?.name || peer.displayName)}</strong>
+            <small>${group ? `${group.memberCount} members` : `@${esc(peer.username)}`}</small>
           </button>
-          <div class="toolbar" style="margin-left:auto">
+          ${peer ? `<div class="toolbar" style="margin-left:auto">
             <button class="icon-btn" title="Voice call" aria-label="Voice call" data-action="audio-call">${icon('phone')}</button>
             <button class="icon-btn" title="Video call" aria-label="Video call" data-action="video-call">${icon('video')}</button>
-          </div>
+          </div>` : `<button class="icon-btn group-header-info" data-action="open-chat-profile" aria-label="Group details">${icon('group')}</button>`}
         </header>
         <section class="messages" id="messages">
           ${renderMessagesList()}
@@ -2985,7 +3061,7 @@
             ` : ''}
             <div class="composer-row instagram-composer">
               <button class="composer-camera" title="Add photo, video, or document" aria-label="Add photo, video, or document" data-action="attach-open">${icon('camera')}</button>
-              <textarea id="composer-text" class="composer-input" rows="1" maxlength="8000" placeholder="Message ${esc(state.activePeer.displayName)}">${esc(state.composerDrafts[state.activePeer.id] || '')}</textarea>
+              <textarea id="composer-text" class="composer-input" rows="1" maxlength="8000" placeholder="Message ${esc(activeConversationTitle())}">${esc(state.composerDrafts[key] || '')}</textarea>
               <button class="composer-tool" title="Hold to record voice" aria-label="Hold to record voice" data-action="record-voice">${icon('mic')}</button>
               <button class="composer-tool ${state.stickerPanel ? 'active' : ''}" title="Stickers and GIFs" aria-label="Stickers and GIFs" data-action="sticker-toggle">${icon('sticker')}</button>
               <button class="send-btn" title="Send" aria-label="Send" data-action="send-text">Send</button>
@@ -2999,6 +3075,7 @@
   }
 
   function renderChatProfilePane() {
+    if (state.activeGroup) return renderGroupProfilePane();
     const peer = state.activePeer;
     if (state.chatProfileSocialView) return renderChatProfileSocialPage(peer);
     return `
@@ -3057,6 +3134,197 @@
     `;
   }
 
+  function renderGroupProfilePane() {
+    const group = state.activeGroup;
+    if (!group) return '';
+    return `
+      <main class="chat-pane profile-pane group-profile-pane">
+        <header class="chat-header">
+          <button class="icon-btn" title="Back to group" aria-label="Back to group" data-action="close-chat-profile">${icon('back')}</button>
+          <div class="chat-title"><strong>Group details</strong><small>${group.memberCount} members</small></div>
+          ${group.isAdmin ? `<button class="icon-btn" data-action="edit-group" aria-label="Edit group">${icon('edit')}</button>` : ''}
+        </header>
+        <section class="chat-profile-content group-profile-content">
+          <div class="peer-profile-hero group-profile-hero">
+            <button class="group-photo-button ${group.isAdmin ? 'editable' : ''}" ${group.isAdmin ? 'data-action="edit-group"' : ''} aria-label="${group.isAdmin ? 'Edit group' : 'Group picture'}">
+              ${groupAvatarHtml(group, 'large')}
+              ${group.isAdmin ? `<span>${icon('camera')}</span>` : ''}
+            </button>
+            <strong>${esc(group.name)}</strong>
+            <span>${group.memberCount} members</span>
+          </div>
+          <section class="panel-card chat-profile-appearance">
+            <button class="profile-setting-link" data-action="open-chat-customization">
+              <span class="profile-setting-icon">${icon('palette')}</span>
+              <span><strong>Chat appearance</strong><small>Background and message colors</small></span>
+              ${icon('chevron')}
+            </button>
+          </section>
+          <section class="panel-card group-members-section">
+            <header class="group-section-head">
+              <span><strong>Members</strong><small>${group.memberCount}</small></span>
+              ${group.canAddMembers ? `<button class="group-add-link" data-action="add-group-people">${icon('plus')} Add people</button>` : ''}
+            </header>
+            <div class="group-member-list">
+              ${(group.members || []).map((member) => {
+                const isOwner = member.id === group.ownerId;
+                const isAdmin = isOwner || (group.adminIds || []).includes(member.id);
+                const canManage = group.isAdmin && member.id !== state.me.id && !isOwner;
+                return `
+                  <article class="group-member-row">
+                    <button class="group-member-identity" data-action="view-user-profile" data-username="${esc(member.username)}">
+                      ${avatarHtml(member)}
+                      <span><strong>${esc(member.displayName)}</strong><small>@${esc(member.username)}${isOwner ? ' · Owner' : isAdmin ? ' · Admin' : ''}</small></span>
+                    </button>
+                    ${canManage ? `<button class="icon-btn" data-action="group-member-menu" data-user-id="${esc(member.id)}" aria-label="Manage ${esc(member.displayName)}">${icon('more')}</button>` : ''}
+                  </article>
+                `;
+              }).join('')}
+            </div>
+            ${group.isAdmin ? `
+              <label class="switch-row group-invite-switch">
+                <span><strong>Members can add people</strong><small>Friends can invite their own friends to this group.</small></span>
+                <input type="checkbox" data-action="toggle-group-member-adds" ${group.membersCanAdd ? 'checked' : ''}>
+              </label>
+            ` : ''}
+          </section>
+          <section class="panel-card group-chat-actions">
+            <button class="profile-setting-link" data-action="export-chat" data-format="json">${icon('download')}<span><strong>Export group chat</strong><small>Save messages as JSON</small></span>${icon('chevron')}</button>
+            <button class="profile-setting-link danger-text" data-action="leave-group">${icon('logout')}<span><strong>Leave group</strong><small>You will stop receiving new messages.</small></span>${icon('chevron')}</button>
+          </section>
+        </section>
+      </main>
+    `;
+  }
+
+  function renderGroupComposer() {
+    const composer = state.groupComposer;
+    if (!composer) return '';
+    const mode = composer.mode || 'create';
+    const group = state.activeGroup;
+    if (mode === 'edit') {
+      return `
+        <div class="group-composer-overlay" data-action="close-group-composer">
+          <section class="group-composer group-edit-composer" role="dialog" aria-modal="true" aria-label="Edit group" data-stop-close>
+            <header><button class="icon-btn" data-action="close-group-composer" aria-label="Close">${icon('x')}</button><strong>Edit group</strong><button class="group-done-btn" data-action="save-group-edit">Done</button></header>
+            <button class="group-edit-photo" data-action="choose-group-avatar" aria-label="Change group picture">
+              ${composer.avatarPreview ? `<span class="avatar group-avatar large"><img src="${esc(composer.avatarPreview)}" alt=""></span>` : groupAvatarHtml(group, 'large')}
+              <small>${icon('camera')} Change group picture</small>
+            </button>
+            <label class="group-name-field"><span>Group name</span><input id="group-name-input" maxlength="60" value="${esc(composer.name || '')}" autocomplete="off"></label>
+          </section>
+        </div>
+      `;
+    }
+    const existingIds = new Set(group?.members?.map((member) => member.id) || []);
+    const query = String(composer.query || '').trim().toLowerCase();
+    const contacts = state.contacts
+      .filter((contact) => !existingIds.has(contact.id))
+      .filter((contact) => !query || `${contact.displayName} ${contact.username}`.toLowerCase().includes(query));
+    const selected = new Set(composer.selected || []);
+    const minimum = mode === 'create' ? 2 : 1;
+    return `
+      <div class="group-composer-overlay" data-action="close-group-composer">
+        <section class="group-composer" role="dialog" aria-modal="true" aria-label="${mode === 'create' ? 'New group' : 'Add people'}" data-stop-close>
+          <header>
+            <button class="icon-btn" data-action="close-group-composer" aria-label="Close">${icon('x')}</button>
+            <strong>${mode === 'create' ? 'New group' : 'Add people'}</strong>
+            <button class="group-done-btn" data-action="${mode === 'create' ? 'create-group' : 'confirm-add-group-people'}" ${selected.size < minimum ? 'disabled' : ''}>${mode === 'create' ? 'Create' : 'Add'}</button>
+          </header>
+          ${mode === 'create' ? `<label class="group-name-field"><span>Name</span><input id="group-name-input" maxlength="60" placeholder="Group name (optional)" value="${esc(composer.name || '')}" autocomplete="off"></label>` : ''}
+          <label class="group-people-search">${icon('search')}<input id="group-people-search" placeholder="Search friends" autocomplete="off" value="${esc(composer.query || '')}"></label>
+          ${selected.size ? `<div class="group-selected-strip">${[...selected].map((id) => {
+            const member = userById(id);
+            return member ? `<button data-action="toggle-group-person" data-user-id="${esc(id)}">${avatarHtml(member)}<small>${esc(member.displayName)}</small>${icon('x')}</button>` : '';
+          }).join('')}</div>` : ''}
+          <div class="group-contact-list">
+            ${contacts.length ? contacts.map((contact) => `
+              <button class="group-contact-row ${selected.has(contact.id) ? 'selected' : ''}" data-action="toggle-group-person" data-user-id="${esc(contact.id)}">
+                ${avatarHtml(contact)}<span><strong>${esc(contact.displayName)}</strong><small>@${esc(contact.username)}</small></span><i>${selected.has(contact.id) ? icon('check') : ''}</i>
+              </button>
+            `).join('') : '<p class="group-empty">No available friends match this search.</p>'}
+          </div>
+          <p class="group-privacy-note">Only friends who allow group invitations can be added.</p>
+        </section>
+      </div>
+    `;
+  }
+
+  function updateGroupComposerSlot(options = {}) {
+    const slot = document.getElementById('group-composer-slot');
+    if (!slot) return renderApp();
+    slot.innerHTML = renderGroupComposer();
+    if (options.focus) setTimeout(() => document.getElementById(options.focus)?.focus({ preventScroll: true }), 0);
+  }
+
+  async function createGroup() {
+    const composer = state.groupComposer;
+    if (!composer || (composer.selected || []).length < 2) return;
+    const data = await api('/api/groups', { method: 'POST', body: { name: composer.name || '', memberIds: composer.selected } });
+    state.groupComposer = null;
+    await refreshChatsOnly();
+    state.groups = state.groups.some((group) => group.id === data.group.id) ? state.groups : [data.group, ...state.groups];
+    await openGroup(data.group.id);
+  }
+
+  async function addGroupPeople() {
+    const composer = state.groupComposer;
+    if (!state.activeGroup || !composer?.selected?.length) return;
+    const data = await api(`/api/groups/${encodeURIComponent(state.activeGroup.id)}/members`, { method: 'POST', body: { memberIds: composer.selected } });
+    state.activeGroup = data.group;
+    state.groupComposer = null;
+    await refreshChatsOnly();
+    renderApp({ scroll: 'preserve' });
+  }
+
+  async function saveGroupEdit() {
+    const composer = state.groupComposer;
+    if (!state.activeGroup || !composer) return;
+    const body = { name: composer.name || state.activeGroup.name };
+    if (composer.avatarFile) body.avatar = composer.avatarFile;
+    const data = await api(`/api/groups/${encodeURIComponent(state.activeGroup.id)}`, { method: 'PATCH', body });
+    state.activeGroup = data.group;
+    state.groupComposer = null;
+    await refreshChatsOnly();
+    renderApp({ scroll: 'preserve' });
+  }
+
+  async function updateGroupSettings(patch) {
+    if (!state.activeGroup) return;
+    const data = await api(`/api/groups/${encodeURIComponent(state.activeGroup.id)}`, { method: 'PATCH', body: patch });
+    state.activeGroup = data.group;
+    await refreshChatsOnly();
+    renderApp({ scroll: 'preserve' });
+  }
+
+  async function manageGroupMember(userId, action) {
+    if (!state.activeGroup) return;
+    let url = `/api/groups/${encodeURIComponent(state.activeGroup.id)}`;
+    let method = 'POST';
+    if (action === 'remove') {
+      url += `/members/${encodeURIComponent(userId)}`;
+      method = 'DELETE';
+    } else {
+      url += `/admins/${encodeURIComponent(userId)}`;
+      method = action === 'demote' ? 'DELETE' : 'POST';
+    }
+    const data = await api(url, { method });
+    state.activeGroup = data.group;
+    state.actionSheet = null;
+    await refreshChatsOnly();
+    renderApp({ scroll: 'preserve' });
+  }
+
+  async function leaveGroup() {
+    if (!state.activeGroup) return;
+    await api(`/api/groups/${encodeURIComponent(state.activeGroup.id)}/leave`, { method: 'POST' });
+    state.activeGroup = null;
+    state.chatProfileOpen = false;
+    state.messages = [];
+    await refreshChatsOnly();
+    renderApp();
+  }
+
   function renderChatProfileSocialPage(peer) {
     const view = state.chatProfileSocialView === 'following' ? 'following' : 'followers';
     const users = view === 'followers' ? (peer.followers || []) : (peer.following || []);
@@ -3088,9 +3356,11 @@
     const highlighted = state.highlightMessageId === message.id;
     const stickerMessage = message.kind === 'sticker' && !message.deletedAt;
     const mediaMessage = ['image', 'video', 'gif'].includes(message.kind) && message.attachment && !message.deletedAt;
+    const sender = message.sender || userById(message.senderId);
     return `
       <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''}" data-message-id="${esc(message.id)}">
         ${message.pinnedAt ? `<span class="message-context-label">${icon('pin')} Pinned</span>` : ''}
+        ${state.activeGroup && sender ? `<span class="group-message-sender" title="${esc(sender.displayName || sender.username)}">${avatarHtml(sender)}</span>` : ''}
         <div class="bubble">
           ${message.forwardedFrom ? '<span class="forwarded-label">Forwarded</span>' : ''}
           ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
@@ -3163,7 +3433,13 @@
             <button data-action="forward-message" data-message-id="${esc(message.id)}" data-user-id="${esc(chat.peer.id)}">
               ${avatarHtml(chat.peer)}<span><strong>${esc(chat.peer.displayName)}</strong><small>@${esc(chat.peer.username)}</small></span><b>Send</b>
             </button>
-          `).join('') : '<p>No chats available.</p>'}
+          `).join('') : ''}
+          ${state.groups.map((group) => `
+            <button data-action="forward-message" data-message-id="${esc(message.id)}" data-group-id="${esc(group.id)}">
+              ${groupAvatarHtml(group)}<span><strong>${esc(group.name)}</strong><small>${group.memberCount} members</small></span><b>Send</b>
+            </button>
+          `).join('')}
+          ${!state.chats.length && !state.groups.length ? '<p>No chats available.</p>' : ''}
         </div>
       </section>
     `;
@@ -3179,9 +3455,12 @@
   }
 
   function renderTypingIndicator() {
-    if (!state.activePeer || state.typingPeerId !== state.activePeer.id) return '';
+    const groupTyping = state.activeGroup && state.typingGroup?.groupId === state.activeGroup.id;
+    if (!groupTyping && (!state.activePeer || state.typingPeerId !== state.activePeer.id)) return '';
+    const typer = groupTyping ? userById(state.typingGroup.userId) : state.activePeer;
     return `
       <article class="typing-message">
+        ${groupTyping && typer ? avatarHtml(typer) : ''}
         <div class="typing-bubble">typing...</div>
       </article>
     `;
@@ -3190,7 +3469,7 @@
   function renderMessagesList() {
     const olderLoader = state.loadingOlderMessages ? '<div class="older-loader"><span class="spinner"></span></div>' : '';
     if (state.messages.length) return `${olderLoader}${state.messages.map(renderMessage).join('')}${renderTypingIndicator()}`;
-    if (state.activePeer && state.typingPeerId === state.activePeer.id) return renderTypingIndicator();
+    if ((state.activePeer && state.typingPeerId === state.activePeer.id) || (state.activeGroup && state.typingGroup?.groupId === state.activeGroup.id)) return renderTypingIndicator();
     return '<div class="empty-state">No messages yet. Send the first one.</div>';
   }
 
@@ -3418,10 +3697,15 @@
         </span>
       </article>
     `).join('') : '<p class="hint">No unanswered requests.</p>';
-    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention', 'comment_reply', 'comment_like'].includes(note.type));
+    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention', 'comment_reply', 'comment_like', 'group_added'].includes(note.type));
     const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
-        ${note.actor ? `
+        ${note.group ? `
+          <button class="notification-identity" data-action="open-group" data-group-id="${esc(note.group.id)}">
+            ${groupAvatarHtml(note.group)}
+            <span class="person"><strong>${esc(note.group.name)}</strong><small>${esc(note.text || 'You were added to a group')} - ${esc(shortTime(note.createdAt))}</small></span>
+          </button>
+        ` : note.actor ? `
           <a class="notification-identity" href="${esc(accountProfileHref(note.actor))}" data-action="view-user-profile" data-username="${esc(note.actor.username)}">
             ${avatarHtml(note.actor)}
             <span class="person">
@@ -3501,6 +3785,15 @@
           ? `<button data-action="unblock-user" data-user-id="${esc(peer.id)}">Unblock</button>`
           : `<button class="danger-text" data-action="block-user" data-user-id="${esc(peer.id)}">${icon('block')} Block</button>`}
       `;
+    }
+    if (sheet.type === 'group-member' && state.activeGroup) {
+      const member = userById(sheet.userId);
+      const isAdmin = (state.activeGroup.adminIds || []).includes(sheet.userId);
+      body = member ? `
+        <div class="sheet-note"><strong>${esc(member.displayName)}</strong><small>@${esc(member.username)}</small></div>
+        ${state.activeGroup.ownerId === state.me.id ? `<button data-action="manage-group-member" data-user-id="${esc(member.id)}" data-member-action="${isAdmin ? 'demote' : 'promote'}">${isAdmin ? 'Remove as admin' : 'Make admin'}</button>` : ''}
+        <button class="danger-text" data-action="manage-group-member" data-user-id="${esc(member.id)}" data-member-action="remove">Remove from group</button>
+      ` : '';
     }
     if (sheet.type === 'mute' && peer) {
       const options = [
@@ -3826,6 +4119,10 @@
                 <option value="off" ${state.me.friendRequests === 'off' ? 'selected' : ''}>No one</option>
               </select>
             </label>
+            <label class="switch-row">
+              <span><strong>Group invitations</strong><small>Allow friends to add you to group chats.</small></span>
+              <input type="checkbox" data-action="toggle-group-invites" ${state.me.allowGroupAdds !== false ? 'checked' : ''}>
+            </label>
           </section>
           <section class="settings-block">
             <h3>${icon('bell')} Notifications</h3>
@@ -3926,10 +4223,11 @@
   }
 
   async function loadContactsAndChats() {
-    const [me, contacts, chats, notifications, recommendations] = await Promise.all([
+    const [me, contacts, chats, groups, notifications, recommendations] = await Promise.all([
       api('/api/me'),
       api('/api/contacts'),
       api('/api/chats'),
+      api('/api/groups').catch(() => ({ groups: [] })),
       api('/api/notifications').catch(() => ({ pendingRequestCount: 0, requests: [], notifications: [] })),
       api('/api/users/recommendations').catch(() => ({ users: [] }))
     ]);
@@ -3938,6 +4236,7 @@
     state.isModerator = Boolean(me.isModerator);
     state.contacts = contacts.users;
     state.chats = chats.chats;
+    state.groups = groups.groups || [];
     state.pendingRequestCount = notifications.pendingRequestCount || 0;
     state.requests = notifications.requests || [];
     state.notifications = notifications.notifications || [];
@@ -3945,6 +4244,7 @@
     if (state.activePeer) {
       state.activePeer = userById(state.activePeer.id) || state.activePeer;
     }
+    if (state.activeGroup) state.activeGroup = state.groups.find((group) => group.id === state.activeGroup.id) || state.activeGroup;
   }
 
   async function loadGifPool(query = '') {
@@ -3992,6 +4292,7 @@
     const peer = userById(userId);
     if (!peer) return;
     state.activePeer = peer;
+    state.activeGroup = null;
     if (state.searchProfileOpen) {
       state.searchProfileOpen = false;
       state.searchProfileSocialView = null;
@@ -4024,12 +4325,45 @@
     renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
   }
 
+  async function openGroup(groupId, highlightMessageId = null) {
+    const group = state.groups.find((item) => item.id === groupId);
+    if (!group) return;
+    state.activeGroup = group;
+    state.activePeer = null;
+    state.chatProfileOpen = false;
+    state.chatProfileSocialView = null;
+    state.replyTo = null;
+    state.stickerPanel = false;
+    state.typingPeerId = null;
+    state.typingGroup = null;
+    state.highlightMessageId = highlightMessageId;
+    state.hasOlderMessages = false;
+    state.loadingOlderMessages = false;
+    state.chatOpening = !highlightMessageId;
+    state.chatOpenToken += 1;
+    delete state.unreadByPeer[groupId];
+    if (isMobileLayout()) {
+      state.tab = 'chats';
+      state.lastTab = 'chats';
+    }
+    const [data, appearance] = await Promise.all([
+      api(`/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`),
+      api(`/api/groups/${encodeURIComponent(groupId)}/appearance`).catch(() => ({ settings: defaultChatAppearance() }))
+    ]);
+    state.activeGroup = data.group || group;
+    state.messages = data.messages || [];
+    state.chatAppearance = appearance.settings || defaultChatAppearance();
+    state.hasOlderMessages = Boolean(data.hasMore);
+    renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
+  }
+
   function userById(userId) {
     if (!userId) return null;
     if (state.me?.id === userId) return state.me;
     const pools = [
       state.contacts,
       state.chats.map((chat) => chat.peer),
+      state.groups.flatMap((group) => group.members || []),
       state.searchResults,
       state.conversationResults.flatMap((result) => [result.peer, result.sender]),
       state.recommendations,
@@ -4049,7 +4383,7 @@
   }
 
   async function loadOlderMessages() {
-    if (!state.activePeer || state.loadingOlderMessages || !state.hasOlderMessages || !state.messages.length) return;
+    if (!hasActiveConversation() || state.loadingOlderMessages || !state.hasOlderMessages || !state.messages.length) return;
     const messagesEl = document.getElementById('messages');
     const previousHeight = messagesEl?.scrollHeight || 0;
     const previousTop = messagesEl?.scrollTop || 0;
@@ -4057,7 +4391,7 @@
     updateMessagesList({ scroll: 'preserve' });
     try {
       const before = encodeURIComponent(state.messages[0].createdAt);
-      const data = await api(`/api/chats/${encodeURIComponent(state.activePeer.id)}/messages?limit=200&before=${before}`);
+      const data = await api(activeMessagesUrl(`?limit=200&before=${before}`));
       const existing = new Set(state.messages.map((message) => message.id));
       const older = (data.messages || []).filter((message) => !existing.has(message.id));
       state.messages = [...older, ...state.messages].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
@@ -4074,12 +4408,15 @@
 
   async function refreshChatsOnly() {
     try {
-      const [chats, notifications, recommendations] = await Promise.all([
+      const [chats, groups, notifications, recommendations] = await Promise.all([
         api('/api/chats'),
+        api('/api/groups').catch(() => ({ groups: state.groups })),
         api('/api/notifications').catch(() => ({ pendingRequestCount: state.pendingRequestCount, requests: state.requests, notifications: state.notifications })),
         api('/api/users/recommendations').catch(() => ({ users: state.recommendations }))
       ]);
       state.chats = chats.chats;
+      state.groups = groups.groups || [];
+      if (state.activeGroup) state.activeGroup = state.groups.find((group) => group.id === state.activeGroup.id) || state.activeGroup;
       state.pendingRequestCount = notifications.pendingRequestCount || 0;
       state.requests = notifications.requests || [];
       state.notifications = notifications.notifications || [];
@@ -4207,6 +4544,7 @@
       socialPublic: state.me.socialPublic,
       searchable: state.me.searchable !== false,
       avatarViewable: state.me.avatarViewable !== false,
+      allowGroupAdds: state.me.allowGroupAdds !== false,
       mentionPermission: state.me.mentionPermission || 'everyone',
       storyReplies: state.me.storyReplies || 'everyone',
       friendRequests: state.me.friendRequests || 'everyone',
@@ -5314,16 +5652,17 @@
 
   async function sendCurrentText() {
     const input = document.getElementById('composer-text');
-    const draft = state.activePeer ? state.composerDrafts[state.activePeer.id] : '';
+    const key = activeConversationKey();
+    const draft = key ? state.composerDrafts[key] : '';
     const text = (input?.value ?? draft ?? '').trim();
-    if (!text || !state.activePeer) return;
+    if (!text || !hasActiveConversation()) return;
     input.value = '';
-    delete state.composerDrafts[state.activePeer.id];
+    delete state.composerDrafts[key];
     await sendMessage({ kind: 'text', text });
   }
 
   async function sendMessage(payload) {
-    if (!state.activePeer) return;
+    if (!hasActiveConversation()) return;
     const body = {
       kind: payload.kind,
       text: payload.text || '',
@@ -5333,7 +5672,7 @@
       gifId: payload.gifId || null
     };
     state.replyTo = null;
-    const data = await api(`/api/chats/${encodeURIComponent(state.activePeer.id)}/messages`, {
+    const data = await api(activeMessagesUrl(), {
       method: 'POST',
       body
     });
@@ -5351,12 +5690,13 @@
   }
 
   async function sendFile(file, forcedKind = null, stickerId = null) {
-    if (!file || !state.activePeer) return;
+    if (!file || !hasActiveConversation()) return;
+    const key = activeConversationKey();
     const dataUrl = await fileToDataUrl(file);
     const input = document.getElementById('composer-text');
-    const caption = (input?.value ?? state.composerDrafts[state.activePeer.id] ?? '').trim();
+    const caption = (input?.value ?? state.composerDrafts[key] ?? '').trim();
     if (input) input.value = '';
-    delete state.composerDrafts[state.activePeer.id];
+    delete state.composerDrafts[key];
     const kind = forcedKind || classifyFile(file);
     await sendMessage({
       kind,
@@ -5427,8 +5767,11 @@
   }
 
   function exportChat(format) {
-    if (!state.activePeer) return;
-    location.href = `/api/chats/${encodeURIComponent(state.activePeer.id)}/export?format=${format}`;
+    if (state.activeGroup) {
+      location.href = `/api/groups/${encodeURIComponent(state.activeGroup.id)}/export?format=${format}`;
+      return;
+    }
+    if (state.activePeer) location.href = `/api/chats/${encodeURIComponent(state.activePeer.id)}/export?format=${format}`;
   }
 
   async function deleteMessage(messageId) {
@@ -5475,17 +5818,17 @@
     updateSidebar();
   }
 
-  async function forwardMessage(messageId, recipientId) {
+  async function forwardMessage(messageId, recipientId = null, groupId = null) {
     const data = await api(`/api/messages/${encodeURIComponent(messageId)}/forward`, {
       method: 'POST',
-      body: { recipientId }
+      body: groupId ? { groupId } : { recipientId }
     });
-    if (state.activePeer?.id === recipientId && data.message) {
+    if ((state.activePeer?.id === recipientId || state.activeGroup?.id === groupId) && data.message) {
       upsertMessage(data.message);
       updateMessagesList({ scroll: 'bottom' });
     }
     closeMessageFocus();
-    pushToast({ key: `forward-${messageId}-${recipientId}`, kind: 'social', title: 'Message forwarded', body: 'Sent to the selected chat.' });
+    pushToast({ key: `forward-${messageId}-${groupId || recipientId}`, kind: 'social', title: 'Message forwarded', body: 'Sent to the selected chat.' });
     await refreshChatsOnly();
     updateSidebar();
   }
@@ -5544,7 +5887,7 @@
     state.tab = ['chats', 'search', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'search';
     state.lastTab = ['chats', 'search', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
     state.profileSocialView = view?.profileSocialView || null;
-    state.chatProfileOpen = Boolean(view?.chatProfileOpen && state.activePeer);
+    state.chatProfileOpen = Boolean(view?.chatProfileOpen && hasActiveConversation());
     state.chatProfileSocialView = view?.chatProfileSocialView || null;
     state.searchProfileOpen = Boolean(view?.searchProfileOpen && profileUsername);
     state.searchProfileSocialView = view?.searchProfileSocialView || null;
@@ -5678,7 +6021,7 @@
     if (document.hidden) navigator.vibrate?.(60);
   }
 
-  function showSystemNotification({ title, body, actor, tag, userId = null }) {
+  function showSystemNotification({ title, body, actor, tag, userId = null, groupId = null }) {
     if (!state.messageNotifications || !('Notification' in window) || Notification.permission !== 'granted') return;
     try {
       const notification = new Notification(title, {
@@ -5688,7 +6031,8 @@
       });
       notification.onclick = () => {
         window.focus();
-        if (userId) openChat(userId).catch((error) => alert(error.message));
+        if (groupId) openGroup(groupId).catch((error) => alert(error.message));
+        else if (userId) openChat(userId).catch((error) => alert(error.message));
         else {
           state.lastTab = state.tab;
           state.tab = 'notifications';
@@ -5701,19 +6045,21 @@
     }
   }
 
-  function showIncomingMessageNotification(message) {
+  function showIncomingMessageNotification(message, groupId = null) {
     const sender = userById(message.senderId);
-    const title = sender?.displayName || sender?.username || 'New message';
+    const group = groupId ? state.groups.find((item) => item.id === groupId) : null;
+    const title = group?.name || sender?.displayName || sender?.username || 'New message';
     const body = describeMessage(message);
     pushToast({
-      key: `message-${message.senderId}`,
+      key: `message-${groupId || message.senderId}`,
       kind: 'message',
       title,
       body,
       actor: sender,
-      userId: message.senderId
+      userId: groupId ? null : message.senderId,
+      groupId
     });
-    showSystemNotification({ title, body, actor: sender, tag: `chat-${message.senderId}`, userId: message.senderId });
+    showSystemNotification({ title, body, actor: sender, tag: `chat-${groupId || message.senderId}`, userId: groupId ? null : message.senderId, groupId });
   }
 
   function showSocialNotification(event) {
@@ -5731,12 +6077,13 @@
     const titles = {
       mention: 'You were mentioned',
       comment_reply: 'New comment reply',
-      comment_like: 'Someone liked your comment'
+      comment_like: 'Someone liked your comment',
+      group_added: 'Added to a group'
     };
     const title = titles[note.type] || 'New follower update';
     const body = note.text || `${actor?.displayName || actor?.username || 'Someone'} sent an update.`;
-    pushToast({ key: `social-${note.id}`, kind: 'social', title, body, actor });
-    showSystemNotification({ title, body, actor, tag: `social-${note.id}` });
+    pushToast({ key: `social-${note.id}`, kind: note.group ? 'message' : 'social', title, body, actor, groupId: note.group?.id || null });
+    showSystemNotification({ title, body, actor, tag: `social-${note.id}`, groupId: note.group?.id || null });
   }
 
   function connectWs() {
@@ -5760,17 +6107,19 @@
 
   async function handleSocketEvent(event) {
     if (event.type === 'message:new') {
-      const activeIds = [state.me.id, state.activePeer?.id].sort().join('__');
-      const incoming = event.message.recipientId === state.me.id;
-      const activelyViewing = event.chatId === activeIds && !document.hidden;
-      if (event.chatId === activeIds) {
+      const currentChatId = activeChatId();
+      const incoming = event.message.senderId !== state.me.id;
+      const activelyViewing = event.chatId === currentChatId && !document.hidden;
+      if (event.chatId === currentChatId) {
         if (event.message.senderId === state.typingPeerId) state.typingPeerId = null;
+        if (event.message.senderId === state.typingGroup?.userId) state.typingGroup = null;
         upsertMessage(event.message);
         if (!updateMessagesList({ scroll: 'auto', anchor: 'bottom' })) renderApp();
       }
       if (incoming && !activelyViewing) {
-        state.unreadByPeer[event.message.senderId] = (state.unreadByPeer[event.message.senderId] || 0) + 1;
-        showIncomingMessageNotification(event.message);
+        const unreadKey = event.groupId || event.message.groupId || event.message.senderId;
+        state.unreadByPeer[unreadKey] = (state.unreadByPeer[unreadKey] || 0) + 1;
+        showIncomingMessageNotification(event.message, event.groupId || event.message.groupId || null);
       }
       await refreshChatsOnly();
       updateSidebar();
@@ -5788,8 +6137,7 @@
       updateSidebar();
     }
     if (event.type === 'message:updated') {
-      const activeIds = [state.me.id, state.activePeer?.id].sort().join('__');
-      if (event.chatId === activeIds && event.message) {
+      if (event.chatId === activeChatId() && event.message) {
         upsertMessage(event.message);
         updateMessagesList({ scroll: 'preserve' });
         if (state.messageFocus?.messageId === event.message.id) syncFocusedMessageUi(event.message);
@@ -5812,6 +6160,7 @@
       await loadContactsAndChats();
       if (activePeerId && !state.contacts.some((contact) => contact.id === activePeerId)) {
         state.activePeer = null;
+        state.activeGroup = null;
         state.chatProfileOpen = false;
         state.chatProfileSocialView = null;
         renderApp();
@@ -5821,8 +6170,26 @@
         else updateSidebar();
       }
     }
+    if (event.type === 'group:updated') {
+      const activeGroupId = state.activeGroup?.id || null;
+      await refreshChatsOnly();
+      const updated = state.groups.find((group) => group.id === activeGroupId);
+      if (activeGroupId && !updated) {
+        state.activeGroup = null;
+        state.chatProfileOpen = false;
+        state.messages = [];
+        renderApp();
+      } else {
+        if (updated) state.activeGroup = updated;
+        if (state.chatProfileOpen) renderApp({ scroll: 'preserve' });
+        else updateSidebar();
+      }
+    }
     if (event.type === 'typing') {
-      if (event.from === state.activePeer?.id) {
+      if (event.groupId === state.activeGroup?.id) {
+        state.typingGroup = event.isTyping ? { groupId: event.groupId, userId: event.from } : null;
+        if (!updateMessagesList({ scroll: 'preserve', anchor: 'bottom' })) renderApp();
+      } else if (event.from === state.activePeer?.id) {
         state.typingPeerId = event.isTyping ? event.from : null;
         if (!updateMessagesList({ scroll: 'preserve', anchor: 'bottom' })) renderApp();
       }
@@ -5833,8 +6200,10 @@
   }
 
   function sendTypingSignal(isTyping) {
-    if (!state.activePeer || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-    state.ws.send(JSON.stringify({ type: 'typing', to: state.activePeer.id, isTyping }));
+    if (!hasActiveConversation() || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    state.ws.send(JSON.stringify(state.activeGroup
+      ? { type: 'typing', groupId: state.activeGroup.id, isTyping }
+      : { type: 'typing', to: state.activePeer.id, isTyping }));
   }
 
   async function startRecording(button) {
@@ -6052,7 +6421,7 @@
 
   async function sendGif(gifId) {
     const gif = state.gifPool.find((item) => item.id === gifId);
-    if (!gif?.file?.url || !state.activePeer) return;
+    if (!gif?.file?.url || !hasActiveConversation()) return;
     await sendMessage({
       kind: 'gif',
       text: '',
@@ -6417,7 +6786,7 @@
 
   function updateMessagesList(options = {}) {
     const messages = document.getElementById('messages');
-    if (!messages || !state.activePeer || state.chatProfileOpen) return false;
+    if (!messages || !hasActiveConversation() || state.chatProfileOpen) return false;
     if (state.messageFocus) {
       state.messageFocusNeedsRefresh = true;
       return true;
@@ -6445,14 +6814,14 @@
   }
 
   function renderSidebarState() {
-    if (!isMobileLayout() && state.activePeer && !state.searchProfileOpen && updateSidebar()) return;
+    if (!isMobileLayout() && hasActiveConversation() && !state.searchProfileOpen && updateSidebar()) return;
     renderApp();
   }
 
   function updateChatFooter(options = {}) {
     const pane = document.querySelector('.chat-pane');
     const current = pane?.querySelector('footer');
-    if (!current || !state.activePeer || state.chatProfileOpen) return false;
+    if (!current || !hasActiveConversation() || state.chatProfileOpen) return false;
     const input = current.querySelector('#composer-text');
     const hadFocus = document.activeElement === input;
     const selectionStart = input?.selectionStart || 0;
@@ -6512,6 +6881,7 @@
         state.tab = 'chats';
         state.lastTab = 'chats';
         state.activePeer = null;
+        state.activeGroup = null;
         state.chatProfileOpen = false;
         state.profileSocialView = null;
         state.chatProfileSocialView = null;
@@ -6572,6 +6942,7 @@
     if (action === 'close-sticker-creator' && target.classList.contains('sticker-creator-page') && event.target.closest('[data-stop-close]')) return;
     if (['close-sticker-manager', 'close-sticker-save'].includes(action) && target.classList.contains('sticker-manager-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-message-focus' && target.classList.contains('message-focus-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-group-composer' && target.classList.contains('group-composer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
       if (action === 'auth-mode') {
@@ -6592,6 +6963,7 @@
         state.toasts = [];
         state.me = null;
         state.activePeer = null;
+        state.activeGroup = null;
         state.tab = 'chats';
         state.lastTab = 'chats';
         state.profileSocialView = null;
@@ -6611,8 +6983,48 @@
         }
         await openChat(target.dataset.userId, target.dataset.messageId || null);
       }
+      if (action === 'open-group') {
+        await openGroup(target.dataset.groupId, target.dataset.messageId || null);
+      }
+      if (action === 'new-group') {
+        state.groupComposer = { mode: 'create', selected: [], name: '', query: '' };
+        updateGroupComposerSlot();
+      }
+      if (action === 'close-group-composer') {
+        state.groupComposer = null;
+        updateGroupComposerSlot();
+      }
+      if (action === 'toggle-group-person' && state.groupComposer) {
+        const selected = new Set(state.groupComposer.selected || []);
+        if (selected.has(target.dataset.userId)) selected.delete(target.dataset.userId);
+        else selected.add(target.dataset.userId);
+        state.groupComposer.selected = [...selected];
+        updateGroupComposerSlot();
+      }
+      if (action === 'create-group') await createGroup();
+      if (action === 'add-group-people') {
+        state.groupComposer = { mode: 'add', selected: [], query: '' };
+        updateGroupComposerSlot();
+      }
+      if (action === 'confirm-add-group-people') await addGroupPeople();
+      if (action === 'edit-group') {
+        state.groupComposer = { mode: 'edit', name: state.activeGroup?.name || '', avatarPreview: null, avatarFile: null };
+        updateGroupComposerSlot();
+      }
+      if (action === 'choose-group-avatar') document.getElementById('group-avatar-input')?.click();
+      if (action === 'save-group-edit') await saveGroupEdit();
+      if (action === 'toggle-group-member-adds') await updateGroupSettings({ membersCanAdd: target.checked });
+      if (action === 'group-member-menu') openActionSheet({ type: 'group-member', userId: target.dataset.userId });
+      if (action === 'manage-group-member') {
+        const label = target.dataset.memberAction === 'remove' ? 'Remove this person from the group?' : 'Change this member’s admin role?';
+        if (confirm(label)) await manageGroupMember(target.dataset.userId, target.dataset.memberAction);
+      }
+      if (action === 'leave-group') {
+        if (confirm('Leave this group? You will no longer receive its messages.')) await leaveGroup();
+      }
       if (action === 'back') {
         state.activePeer = null;
+        state.activeGroup = null;
         state.tab = 'chats';
         state.lastTab = 'chats';
         state.chatProfileOpen = false;
@@ -6620,7 +7032,7 @@
         renderApp();
       }
       if (action === 'open-chat-profile') {
-        rememberViewedProfile(state.activePeer);
+        if (state.activePeer) rememberViewedProfile(state.activePeer);
         state.chatProfileOpen = true;
         state.chatProfileSocialView = null;
         renderApp();
@@ -7220,7 +7632,7 @@
         await hideMessageForMe(target.dataset.messageId);
       }
       if (action === 'forward-message') {
-        await forwardMessage(target.dataset.messageId, target.dataset.userId);
+        await forwardMessage(target.dataset.messageId, target.dataset.userId || null, target.dataset.groupId || null);
       }
       if (action === 'attach-message-sticker') {
         await attachStickerToMessage(target.dataset.messageId, target.dataset.stickerId);
@@ -7372,6 +7784,10 @@
         await updateProfilePatch({ searchable: target.checked });
         updateProfileModalSlots();
       }
+      if (action === 'toggle-group-invites') {
+        await updateProfilePatch({ allowGroupAdds: target.checked });
+        updateProfileModalSlots();
+      }
       if (action === 'toggle-message-notifications') {
         await setMessageNotifications(target.checked);
       }
@@ -7390,7 +7806,8 @@
         const toast = state.toasts.find((item) => item.id === target.dataset.toastId);
         if (toast) {
           dismissToast(toast.id);
-          if (toast.kind === 'message' && toast.userId) await openChat(toast.userId);
+          if (toast.kind === 'message' && toast.groupId) await openGroup(toast.groupId);
+          else if (toast.kind === 'message' && toast.userId) await openChat(toast.userId);
           else {
             state.lastTab = state.tab;
             state.tab = 'notifications';
@@ -7512,6 +7929,21 @@
           updateChatFooter();
         }
       }
+      if (event.target.id === 'group-avatar-input') {
+        const file = event.target.files[0];
+        event.target.value = '';
+        if (file && state.groupComposer?.mode === 'edit') {
+          const dataUrl = await fileToDataUrl(file);
+          state.groupComposer.avatarPreview = dataUrl;
+          state.groupComposer.avatarFile = {
+            name: file.name || 'group-picture.jpg',
+            type: file.type || 'image/jpeg',
+            dataUrl,
+            lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null
+          };
+          updateGroupComposerSlot();
+        }
+      }
       if (event.target.id === 'chat-background-color') {
         await updateChatAppearance({ theme: 'custom', background: 'custom', backgroundColor: event.target.value });
       }
@@ -7557,6 +7989,17 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.id === 'group-name-input' && state.groupComposer) {
+      state.groupComposer.name = event.target.value.slice(0, 60);
+      return;
+    }
+    if (event.target.id === 'group-people-search' && state.groupComposer) {
+      state.groupComposer.query = event.target.value.slice(0, 80);
+      updateGroupComposerSlot({ focus: 'group-people-search' });
+      const input = document.getElementById('group-people-search');
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+      return;
+    }
     if (event.target.id === 'sticker-set-name' && state.stickerSetEditor) {
       state.stickerSetEditor.name = event.target.value.slice(0, 30);
       return;
@@ -7819,7 +8262,8 @@
       }, 340);
     }
     if (event.target.id === 'composer-text') {
-      if (state.activePeer) state.composerDrafts[state.activePeer.id] = event.target.value;
+      const key = activeConversationKey();
+      if (key) state.composerDrafts[key] = event.target.value;
       resizeComposerInput();
       sendTypingSignal(true);
       clearTimeout(state.typingTimer);
@@ -7901,7 +8345,7 @@
       return;
     }
     const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet ||
-      state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator;
+      state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer;
     if (state.me && !gestureBlocked && event.clientX < 24 && !event.target.closest('input,textarea,[contenteditable="true"]')) {
       state.edgeSwipe = {
         startX: event.clientX,
@@ -7909,7 +8353,7 @@
         surface: event.target.closest('.chat-pane, .side-content')
       };
     }
-    if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !state.activePeer &&
+    if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !hasActiveConversation() &&
       !state.searchProfileOpen && !state.profileSocialView && state.tab !== 'notifications' &&
       event.target.closest('.side-content') && !event.target.closest('input,textarea,[contenteditable="true"]')) {
       state.tabSwipe = {
@@ -8449,8 +8893,9 @@
         }
         else if (state.chatProfileSocialView) state.chatProfileSocialView = null;
         else if (state.chatProfileOpen) state.chatProfileOpen = false;
-        else if (state.activePeer) {
+        else if (hasActiveConversation()) {
           state.activePeer = null;
+          state.activeGroup = null;
           state.tab = 'chats';
           state.lastTab = 'chats';
           state.replyTo = null;

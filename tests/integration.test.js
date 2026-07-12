@@ -99,6 +99,7 @@ async function register(client, username) {
   assert.equal(response.data.user.mentionPermission, 'everyone');
   assert.equal(response.data.user.storyReplies, 'everyone');
   assert.equal(response.data.user.friendRequests, 'everyone');
+  assert.equal(response.data.user.allowGroupAdds, true);
   assert.ok(client.cookie.startsWith('chat_sid='));
   return response.data.user;
 }
@@ -193,6 +194,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(styleSource, /\.chat-customization-sheet/);
   assert.match(styleSource, /\.sticker-creator-page/);
   assert.match(styleSource, /\.chat-gif-grid/);
+  assert.match(clientSource, /function renderGroupComposer/);
+  assert.match(clientSource, /function renderGroupProfilePane/);
+  assert.match(clientSource, /class="group-message-sender"/);
+  assert.match(clientSource, /data-action="toggle-group-invites"/);
+  assert.match(styleSource, /\.group-composer-overlay/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -803,4 +809,124 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
     body: { identifier: 'alice_test', password: PASSWORD, twoFactorCode: totp(setup.data.secret) }
   });
   assert.equal(validLogin.status, 200);
+});
+
+test('group invitations, history, admin controls, rich messages, and leaving', async (t) => {
+  const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-app-group-test-'));
+  const dataDir = path.join(runtime, 'data');
+  const uploadDir = path.join(runtime, 'uploads');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const port = 35000 + Math.floor(Math.random() * 1500);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, UPLOAD_DIR: uploadDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let serverError = '';
+  child.stderr.on('data', (chunk) => { serverError += chunk.toString('utf8'); });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill();
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      child.once('exit', resolve);
+      setTimeout(resolve, 1500);
+    });
+    fs.rmSync(runtime, { recursive: true, force: true });
+  });
+
+  await waitForServer(baseUrl, child);
+  assert.equal(serverError, '');
+  const owner = new ApiClient(baseUrl);
+  const bob = new ApiClient(baseUrl);
+  const charlie = new ApiClient(baseUrl);
+  const dora = new ApiClient(baseUrl);
+  const ownerUser = await register(owner, 'group_owner');
+  const bobUser = await register(bob, 'group_bob');
+  const charlieUser = await register(charlie, 'group_charlie');
+  const doraUser = await register(dora, 'group_dora');
+
+  async function connect(requester, accepter, accepterUsername) {
+    const request = await requester.request(`/api/contacts/${accepterUsername}`, { method: 'POST' });
+    assert.equal(request.status, 201);
+    assert.equal((await accepter.request(`/api/requests/${request.data.request.id}/accept`, { method: 'POST' })).status, 200);
+  }
+
+  await connect(owner, bob, bobUser.username);
+  await connect(owner, charlie, charlieUser.username);
+  await connect(bob, dora, doraUser.username);
+
+  assert.equal((await charlie.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { allowGroupAdds: false }
+  })).data.user.allowGroupAdds, false);
+  const blockedInvite = await owner.request('/api/groups', {
+    method: 'POST',
+    body: { name: 'Night plans', memberIds: [bobUser.id, charlieUser.id] }
+  });
+  assert.equal(blockedInvite.status, 403);
+  assert.match(blockedInvite.data.error, /does not allow/i);
+
+  await charlie.request('/api/me/profile', { method: 'PATCH', body: { allowGroupAdds: true } });
+  const created = await owner.request('/api/groups', {
+    method: 'POST',
+    body: { name: 'Night plans', memberIds: [bobUser.id, charlieUser.id] }
+  });
+  assert.equal(created.status, 201);
+  const group = created.data.group;
+  assert.equal(group.memberCount, 3);
+  assert.equal(group.isAdmin, true);
+  assert.ok((await charlie.request('/api/notifications')).data.notifications.some((note) => note.type === 'group_added' && note.group.id === group.id));
+
+  const groupMessage = await owner.request(`/api/groups/${group.id}/messages`, {
+    method: 'POST',
+    body: { kind: 'image', text: 'Previous group history', file: { name: 'plans.png', type: 'image/png', dataUrl: PNG_DATA } }
+  });
+  assert.equal(groupMessage.status, 201);
+  assert.equal(groupMessage.data.message.sender.username, ownerUser.username);
+  assert.equal((await bob.request(groupMessage.data.message.attachment.url)).status, 200);
+  assert.equal((await dora.request(groupMessage.data.message.attachment.url)).status, 404);
+  assert.equal((await bob.request(`/api/messages/${groupMessage.data.message.id}/reaction`, {
+    method: 'POST', body: { emoji: '❤️' }
+  })).status, 200);
+  assert.equal((await bob.request(`/api/messages/${groupMessage.data.message.id}`, { method: 'DELETE' })).status, 403);
+
+  const added = await bob.request(`/api/groups/${group.id}/members`, {
+    method: 'POST',
+    body: { memberIds: [doraUser.id] }
+  });
+  assert.equal(added.status, 200);
+  assert.equal(added.data.group.memberCount, 4);
+  const doraHistory = await dora.request(`/api/groups/${group.id}/messages?limit=200`);
+  assert.equal(doraHistory.status, 200);
+  assert.ok(doraHistory.data.messages.some((message) => message.id === groupMessage.data.message.id));
+  assert.equal((await dora.request(groupMessage.data.message.attachment.url)).status, 200);
+
+  const promoted = await owner.request(`/api/groups/${group.id}/admins/${bobUser.id}`, { method: 'POST' });
+  assert.equal(promoted.status, 200);
+  assert.ok(promoted.data.group.adminIds.includes(bobUser.id));
+  assert.equal((await bob.request(`/api/groups/${group.id}/members/${charlieUser.id}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await charlie.request(`/api/groups/${group.id}/messages?limit=200`)).status, 404);
+  assert.equal((await charlie.request(groupMessage.data.message.attachment.url)).status, 404);
+
+  const edited = await owner.request(`/api/groups/${group.id}`, {
+    method: 'PATCH',
+    body: { name: 'Weekend plans', membersCanAdd: false, avatar: { name: 'group.png', type: 'image/png', dataUrl: PNG_DATA } }
+  });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.data.group.name, 'Weekend plans');
+  assert.equal(edited.data.group.membersCanAdd, false);
+  assert.equal((await dora.request(edited.data.group.avatar.url)).status, 200);
+
+  const appearance = await dora.request(`/api/groups/${group.id}/appearance`, {
+    method: 'PATCH', body: { theme: 'rose', background: 'rose', mineColor: '#aa3377' }
+  });
+  assert.equal(appearance.status, 200);
+  assert.equal(appearance.data.settings.theme, 'rose');
+  const groupSearch = await dora.request('/api/chats/search?q=previous%20group');
+  assert.ok(groupSearch.data.results.some((result) => result.group?.id === group.id));
+  assert.equal((await dora.request(`/api/groups/${group.id}/export?format=json`)).status, 200);
+  assert.equal((await dora.request(`/api/groups/${group.id}/leave`, { method: 'POST' })).status, 200);
+  assert.ok(!(await dora.request('/api/groups')).data.groups.some((item) => item.id === group.id));
 });
