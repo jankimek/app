@@ -1139,6 +1139,18 @@ function mimeFromDataUrl(dataUrl) {
   return match?.[1] || 'application/octet-stream';
 }
 
+function isAnimatedImageDataUrl(dataUrl) {
+  const mime = mimeFromDataUrl(dataUrl);
+  if (mime === 'image/gif') return true;
+  if (mime !== 'image/webp') return false;
+  try {
+    const { buffer } = dataUrlToBuffer(dataUrl);
+    return buffer.includes(Buffer.from('ANIM')) || buffer.includes(Buffer.from('ANMF'));
+  } catch {
+    return false;
+  }
+}
+
 function safeFileName(name) {
   const cleaned = String(name || 'file').replace(/[^\w.\- ()]/g, '_').slice(0, 80);
   return cleaned || 'file';
@@ -2323,9 +2335,12 @@ async function handleApi(req, res, pathname, query) {
       const gif = db.gifs[cleanText(body.gifId || '', 120)];
       if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
       file = db.files[gif.fileId];
+    } else if (kind === 'gif') {
+      return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
     } else if (body.file?.dataUrl) {
       const incomingMime = mimeFromDataUrl(body.file.dataUrl);
       if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
+      if (kind === 'image' && isAnimatedImageDataUrl(body.file.dataUrl)) return sendError(res, 403, 'Animated images must be approved in the shared GIF pool before they can be sent.');
       if (kind === 'video' && !incomingMime.startsWith('video/')) return sendError(res, 400, 'That file is not a video.');
       if (kind === 'voice' && !incomingMime.startsWith('audio/')) return sendError(res, 400, 'That file is not audio.');
       if (kind === 'sticker' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That sticker is not an image.');
@@ -2558,9 +2573,12 @@ async function handleApi(req, res, pathname, query) {
       const gif = db.gifs[cleanText(body.gifId || '', 120)];
       if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
       file = db.files[gif.fileId];
+    } else if (kind === 'gif') {
+      return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
     } else if (body.file?.dataUrl) {
       const incomingMime = mimeFromDataUrl(body.file.dataUrl);
       if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
+      if (kind === 'image' && isAnimatedImageDataUrl(body.file.dataUrl)) return sendError(res, 403, 'Animated images must be approved in the shared GIF pool before they can be sent.');
       if (kind === 'video' && !incomingMime.startsWith('video/')) return sendError(res, 400, 'That file is not a video.');
       if (kind === 'voice' && !incomingMime.startsWith('audio/')) return sendError(res, 400, 'That file is not audio.');
       if (kind === 'sticker' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That sticker is not an image.');

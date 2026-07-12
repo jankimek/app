@@ -204,6 +204,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /installNavigationPreview\(backEntry, 'swipe'\)/);
   assert.match(styleSource, /\.route-page-preview/);
   assert.match(styleSource, /socialUnderlineToRight/);
+  assert.match(clientSource, /function submitChatGif/);
+  assert.doesNotMatch(clientSource, /sendFile\(file, 'gif'\)/);
+  assert.match(clientSource, /function syncGroupComposerSelection/);
+  assert.match(clientSource, /class="navigation-edge-zone"/);
+  assert.match(styleSource, /\.group-composer-create/);
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -477,17 +482,25 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
     { kind: 'document', file: { name: 'notes.txt', type: 'text/plain', dataUrl: TEXT_DATA } },
     { kind: 'voice', file: { name: 'voice.wav', type: 'audio/wav', dataUrl: AUDIO_DATA } },
     { kind: 'video', file: { name: 'clip.mp4', type: 'video/mp4', dataUrl: VIDEO_DATA } },
-    { kind: 'gif', file: { name: 'reaction.gif', type: 'image/gif', dataUrl: GIF_DATA } },
     { kind: 'sticker', file: { name: 'sticker.svg', type: 'image/svg+xml', dataUrl: SVG_DATA }, stickerId: 'local-sticker' }
   ];
-  let directGifMessage = null;
   for (const mediaCase of mediaCases) {
     const response = await sendMessage(alice, bobUser.id, mediaCase);
     assert.equal(response.status, 201);
     assert.equal(response.data.message.kind, mediaCase.kind);
-    if (mediaCase.kind === 'gif') directGifMessage = response.data.message;
   }
-  assert.equal((await bob.request(directGifMessage.attachment.url)).status, 200);
+  const unmoderatedGif = await sendMessage(alice, bobUser.id, {
+    kind: 'gif',
+    file: { name: 'reaction.gif', type: 'image/gif', dataUrl: GIF_DATA }
+  });
+  assert.equal(unmoderatedGif.status, 403);
+  assert.match(unmoderatedGif.data.error, /approved/i);
+  const disguisedGif = await sendMessage(alice, bobUser.id, {
+    kind: 'image',
+    file: { name: 'reaction.gif', type: 'image/gif', dataUrl: GIF_DATA }
+  });
+  assert.equal(disguisedGif.status, 403);
+  assert.match(disguisedGif.data.error, /GIF pool/i);
 
   assert.equal((await bob.request(imageMessage.data.message.attachment.metaUrl)).status, 200);
   assert.equal((await bob.request(imageMessage.data.message.attachment.downloadUrl)).status, 200);
@@ -883,6 +896,19 @@ test('group invitations, history, admin controls, rich messages, and leaving', a
   assert.equal(group.memberCount, 3);
   assert.equal(group.isAdmin, true);
   assert.ok((await charlie.request('/api/notifications')).data.notifications.some((note) => note.type === 'group_added' && note.group.id === group.id));
+
+  const unmoderatedGroupGif = await owner.request(`/api/groups/${group.id}/messages`, {
+    method: 'POST',
+    body: { kind: 'gif', file: { name: 'unreviewed.gif', type: 'image/gif', dataUrl: GIF_DATA } }
+  });
+  assert.equal(unmoderatedGroupGif.status, 403);
+  assert.match(unmoderatedGroupGif.data.error, /approved/i);
+  const disguisedGroupGif = await owner.request(`/api/groups/${group.id}/messages`, {
+    method: 'POST',
+    body: { kind: 'image', file: { name: 'unreviewed.gif', type: 'image/gif', dataUrl: GIF_DATA } }
+  });
+  assert.equal(disguisedGroupGif.status, 403);
+  assert.match(disguisedGroupGif.data.error, /GIF pool/i);
 
   const groupMessage = await owner.request(`/api/groups/${group.id}/messages`, {
     method: 'POST',

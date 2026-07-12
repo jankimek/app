@@ -308,6 +308,20 @@
     root?.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
   }
 
+  function captureLiveScroll(root) {
+    if (!root) return [];
+    return [...root.querySelectorAll('[data-scroll-memory], .messages, .chat-profile-content')]
+      .map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft }));
+  }
+
+  function restoreLiveScroll(positions) {
+    for (const position of positions || []) {
+      if (!position.element?.isConnected) continue;
+      position.element.scrollTop = position.top;
+      position.element.scrollLeft = position.left;
+    }
+  }
+
   function installNavigationPreview(entry, mode = 'back') {
     document.querySelector('.route-page-preview')?.remove();
     if (!entry?.previewHtml) return null;
@@ -851,24 +865,22 @@
     const token = state.chatOpenToken;
     const messages = document.getElementById('messages');
     if (!messages) return;
-    let lastTop = messages.scrollTop;
     let cancelled = false;
+    const cancel = () => { cancelled = true; };
+    messages.addEventListener('pointerdown', cancel, { once: true, passive: true });
+    messages.addEventListener('touchstart', cancel, { once: true, passive: true });
+    messages.addEventListener('wheel', cancel, { once: true, passive: true });
     const settle = () => {
       if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
-      if (Math.abs(messages.scrollTop - lastTop) > 5) {
-        cancelled = true;
-        return;
-      }
       messages.scrollTop = messages.scrollHeight;
-      lastTop = messages.scrollTop;
       updateBubbleViewportColors();
     };
     requestAnimationFrame(settle);
-    [90, 220, 480, 820, 1200].forEach((delay) => setTimeout(settle, delay));
+    [60, 140, 260, 480, 760, 1100, 1500].forEach((delay) => setTimeout(settle, delay));
     if (window.ResizeObserver) {
       const observer = new ResizeObserver(settle);
       observer.observe(messages);
-      setTimeout(() => observer.disconnect(), 1300);
+      setTimeout(() => observer.disconnect(), 1600);
     }
   }
 
@@ -886,6 +898,7 @@
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
+      ${state.navigationStack.length ? '<div class="navigation-edge-zone" aria-hidden="true"></div>' : ''}
       <div id="call-dock-slot">${renderCallDock()}</div>
       <div id="toast-slot">${renderToastStack()}</div>
       <div id="action-sheet-slot">${renderActionSheet()}</div>
@@ -935,6 +948,7 @@
         if (state.routeForward !== forwardEntry) return;
         state.routeForward = null;
         document.querySelector('.route-preview-forward')?.remove();
+        currentAppShell()?.querySelector('.chat-pane.chat-opening')?.classList.remove('chat-opening');
         currentAppShell()?.classList.remove('route-page-current', 'route-page-entering');
       }, 310);
     }
@@ -3334,6 +3348,13 @@
     `;
   }
 
+  function renderGroupSelectedPeople(selectedIds = []) {
+    return selectedIds.map((userId) => {
+      const member = userById(userId);
+      return member ? `<button data-action="toggle-group-person" data-user-id="${esc(userId)}">${avatarHtml(member)}<small>${esc(member.displayName)}</small>${icon('x')}</button>` : '';
+    }).join('');
+  }
+
   function renderGroupComposer() {
     const composer = state.groupComposer;
     if (!composer) return '';
@@ -3354,15 +3375,13 @@
       `;
     }
     const existingIds = new Set(group?.members?.map((member) => member.id) || []);
-    const query = String(composer.query || '').trim().toLowerCase();
     const contacts = state.contacts
-      .filter((contact) => !existingIds.has(contact.id))
-      .filter((contact) => !query || `${contact.displayName} ${contact.username}`.toLowerCase().includes(query));
+      .filter((contact) => !existingIds.has(contact.id));
     const selected = new Set(composer.selected || []);
     const minimum = mode === 'create' ? 2 : 1;
     return `
       <div class="group-composer-overlay" data-action="close-group-composer">
-        <section class="group-composer" role="dialog" aria-modal="true" aria-label="${mode === 'create' ? 'New group' : 'Add people'}" data-stop-close>
+        <section class="group-composer group-composer-${mode}" role="dialog" aria-modal="true" aria-label="${mode === 'create' ? 'New group' : 'Add people'}" data-stop-close>
           <header>
             <button class="icon-btn" data-action="close-group-composer" aria-label="Close">${icon('x')}</button>
             <strong>${mode === 'create' ? 'New group' : 'Add people'}</strong>
@@ -3370,16 +3389,14 @@
           </header>
           ${mode === 'create' ? `<label class="group-name-field"><span>Name</span><input id="group-name-input" maxlength="60" placeholder="Group name (optional)" value="${esc(composer.name || '')}" autocomplete="off"></label>` : ''}
           <label class="group-people-search">${icon('search')}<input id="group-people-search" placeholder="Search friends" autocomplete="off" value="${esc(composer.query || '')}"></label>
-          ${selected.size ? `<div class="group-selected-strip">${[...selected].map((id) => {
-            const member = userById(id);
-            return member ? `<button data-action="toggle-group-person" data-user-id="${esc(id)}">${avatarHtml(member)}<small>${esc(member.displayName)}</small>${icon('x')}</button>` : '';
-          }).join('')}</div>` : ''}
+          <div class="group-selected-strip ${selected.size ? 'has-selection' : ''}">${renderGroupSelectedPeople([...selected])}</div>
           <div class="group-contact-list">
             ${contacts.length ? contacts.map((contact) => `
-              <button class="group-contact-row ${selected.has(contact.id) ? 'selected' : ''}" data-action="toggle-group-person" data-user-id="${esc(contact.id)}">
+              <button class="group-contact-row ${selected.has(contact.id) ? 'selected' : ''}" data-action="toggle-group-person" data-user-id="${esc(contact.id)}" data-search="${esc(`${contact.displayName} ${contact.username}`.toLowerCase())}">
                 ${avatarHtml(contact)}<span><strong>${esc(contact.displayName)}</strong><small>@${esc(contact.username)}</small></span><i>${selected.has(contact.id) ? icon('check') : ''}</i>
               </button>
-            `).join('') : '<p class="group-empty">No available friends match this search.</p>'}
+            `).join('') : ''}
+            <p class="group-empty" data-group-empty ${contacts.length ? 'hidden' : ''}>No available friends match this search.</p>
           </div>
           <p class="group-privacy-note">Only friends who allow group invitations can be added.</p>
         </section>
@@ -3392,6 +3409,37 @@
     if (!slot) return renderApp();
     slot.innerHTML = renderGroupComposer();
     if (options.focus) setTimeout(() => document.getElementById(options.focus)?.focus({ preventScroll: true }), 0);
+  }
+
+  function syncGroupComposerSelection() {
+    const composer = state.groupComposer;
+    if (!composer || !['create', 'add'].includes(composer.mode)) return;
+    const selected = new Set(composer.selected || []);
+    const strip = document.querySelector('.group-selected-strip');
+    if (strip) {
+      strip.innerHTML = renderGroupSelectedPeople([...selected]);
+      strip.classList.toggle('has-selection', Boolean(selected.size));
+    }
+    document.querySelectorAll('.group-contact-row').forEach((row) => {
+      const checked = selected.has(row.dataset.userId);
+      row.classList.toggle('selected', checked);
+      const marker = row.querySelector(':scope > i');
+      if (marker) marker.innerHTML = checked ? icon('check') : '';
+    });
+    const done = document.querySelector('.group-composer .group-done-btn');
+    if (done) done.disabled = selected.size < (composer.mode === 'create' ? 2 : 1);
+  }
+
+  function filterGroupComposerPeople(query) {
+    const term = String(query || '').trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll('.group-contact-row').forEach((row) => {
+      const match = !term || String(row.dataset.search || '').includes(term);
+      row.hidden = !match;
+      if (match) visible += 1;
+    });
+    const empty = document.querySelector('[data-group-empty]');
+    if (empty) empty.hidden = visible > 0;
   }
 
   async function createGroup() {
@@ -4398,14 +4446,14 @@
     }
   }
 
-  async function submitGif(file) {
+  async function submitGif(file, options = {}) {
     if (!file) return;
     const dataUrl = await fileToDataUrl(file);
     const data = await api('/api/gifs', {
       method: 'POST',
       body: {
-        title: state.storyEditor?.gifSubmissionTitle || file.name.replace(/\.[^.]+$/, ''),
-        tags: state.storyEditor?.gifSubmissionTags || '',
+        title: options.title || state.storyEditor?.gifSubmissionTitle || file.name.replace(/\.[^.]+$/, ''),
+        tags: options.tags || state.storyEditor?.gifSubmissionTags || '',
         file: {
           name: file.name || 'animation.gif',
           type: file.type || mimeFromDataUrl(dataUrl),
@@ -4415,8 +4463,25 @@
       }
     });
     await loadGifPool(state.storyEditor?.gifQuery || '');
-    if (data.pending) alert('GIF submitted for moderator review.');
+    if (data.pending && options.notify !== false) alert('GIF submitted for moderator review.');
     if (state.storyEditor) updateStoryEditorView();
+    return data;
+  }
+
+  async function submitChatGif(file) {
+    const data = await submitGif(file, { notify: false });
+    if (data.pending) {
+      pushToast({
+        key: `gif-review-${data.gif.id}`,
+        kind: 'social',
+        title: 'GIF submitted',
+        body: 'A moderator must approve it before it appears in the shared GIF pool.'
+      });
+      return;
+    }
+    await sendMessage({ kind: 'gif', text: '', gifId: data.gif.id });
+    state.stickerPanel = false;
+    updateChatFooter({ suppressFocus: true });
   }
 
   async function reviewGif(gifId, decision) {
@@ -7149,7 +7214,7 @@
         if (selected.has(target.dataset.userId)) selected.delete(target.dataset.userId);
         else selected.add(target.dataset.userId);
         state.groupComposer.selected = [...selected];
-        updateGroupComposerSlot();
+        syncGroupComposerSelection();
       }
       if (action === 'create-group') await createGroup();
       if (action === 'add-group-people') {
@@ -8085,11 +8150,7 @@
       if (event.target.id === 'chat-gif-input') {
         const file = event.target.files[0];
         event.target.value = '';
-        if (file) {
-          await sendFile(file, 'gif');
-          state.stickerPanel = false;
-          updateChatFooter();
-        }
+        if (file) await submitChatGif(file);
       }
       if (event.target.id === 'group-avatar-input') {
         const file = event.target.files[0];
@@ -8157,9 +8218,7 @@
     }
     if (event.target.id === 'group-people-search' && state.groupComposer) {
       state.groupComposer.query = event.target.value.slice(0, 80);
-      updateGroupComposerSlot({ focus: 'group-people-search' });
-      const input = document.getElementById('group-people-search');
-      input?.setSelectionRange?.(input.value.length, input.value.length);
+      filterGroupComposerPeople(state.groupComposer.query);
       return;
     }
     if (event.target.id === 'sticker-set-name' && state.stickerSetEditor) {
@@ -8514,10 +8573,15 @@
       state.edgeSwipe = {
         startX: event.clientX,
         startY: event.clientY,
+        startAt: performance.now(),
+        lastX: event.clientX,
+        lastAt: performance.now(),
+        velocity: 0,
         surface,
         preview: installNavigationPreview(backEntry, 'swipe'),
         entry: backEntry,
-        width: surface?.getBoundingClientRect().width || window.innerWidth
+        width: surface?.getBoundingClientRect().width || window.innerWidth,
+        liveScroll: captureLiveScroll(surface)
       };
     }
     if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !hasActiveConversation() &&
@@ -8924,6 +8988,10 @@
       if (dx > 0 && Math.abs(dx) > Math.abs(dy)) {
         event.preventDefault();
         if (Math.abs(dx) > 12) state.edgeSwipe.moved = true;
+        const moveAt = performance.now();
+        state.edgeSwipe.velocity = Math.max(0, (event.clientX - state.edgeSwipe.lastX) / Math.max(1, moveAt - state.edgeSwipe.lastAt));
+        state.edgeSwipe.lastX = event.clientX;
+        state.edgeSwipe.lastAt = moveAt;
         const amount = Math.min(dx, window.innerWidth * 0.82);
         if (state.edgeSwipe.surface) {
           state.edgeSwipe.surface.style.transition = 'none';
@@ -9048,7 +9116,9 @@
       const dy = event.clientY - state.edgeSwipe.startY;
       const surface = swipe.surface;
       if (state.edgeSwipe.moved) state.suppressClickUntil = Date.now() + 320;
-      const commit = dx > Math.min(72, swipe.width * 0.2) && Math.abs(dx) > Math.abs(dy);
+      const velocity = swipe.velocity || 0;
+      const commitDistance = Math.min(56, swipe.width * 0.16);
+      const commit = Math.abs(dx) > Math.abs(dy) && (dx > commitDistance || (dx > 24 && velocity > 0.42));
       if (surface) surface.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), box-shadow 240ms ease';
       if (swipe.preview) swipe.preview.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), filter 240ms ease';
       if (commit) {
@@ -9066,6 +9136,7 @@
           finishNavigationBack(swipe.entry).catch((error) => alert(error.message));
         }, 245);
       } else {
+        restoreLiveScroll(swipe.liveScroll);
         if (surface) {
           surface.style.transform = 'translateX(0)';
           surface.style.boxShadow = '';
@@ -9075,6 +9146,7 @@
           swipe.preview.style.filter = 'brightness(.78)';
         }
         setTimeout(() => {
+          restoreLiveScroll(swipe.liveScroll);
           surface?.classList.remove('route-swipe-current');
           swipe.preview?.remove();
         }, 245);
@@ -9129,6 +9201,7 @@
       state.drag = null;
     }
     if (state.edgeSwipe?.surface) {
+      restoreLiveScroll(state.edgeSwipe.liveScroll);
       state.edgeSwipe.surface.style.transform = '';
       state.edgeSwipe.surface.style.boxShadow = '';
       state.edgeSwipe.surface.style.transition = '';
@@ -9154,6 +9227,7 @@
       state.drag = null;
     }
     if (state.edgeSwipe?.surface) {
+      restoreLiveScroll(state.edgeSwipe.liveScroll);
       state.edgeSwipe.surface.style.transform = '';
       state.edgeSwipe.surface.style.boxShadow = '';
       state.edgeSwipe.surface.style.transition = '';
