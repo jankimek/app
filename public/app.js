@@ -78,6 +78,9 @@
     notificationPromptDismissed: sessionStorage.getItem('notificationPromptDismissed') === '1',
     toasts: [],
     actionSheet: null,
+    messageFocus: null,
+    messageFocusClosing: false,
+    lastMessageTap: null,
     storyPublishing: false,
     gifPool: [],
     pendingGifs: [],
@@ -117,6 +120,9 @@
     storyDraw: null,
     storyVideoTrimDrag: null,
     edgeSwipe: null,
+    tabSwipe: null,
+    suppressClickUntil: 0,
+    scrollMemory: {},
     longPressTimer: null,
     longPressTriggered: false,
     call: freshCallState()
@@ -298,7 +304,10 @@
       gif: '<svg viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="3"/><path d="M8.5 10.5H6.8a2.3 2.3 0 0 0 0 4.6h1.7v-2H7M11.5 10.5v4.6M14.5 15.1v-4.6h3.2M14.5 12.7h2.6"/></svg>',
       refresh: '<svg viewBox="0 0 24 24"><path d="M20 7v5h-5"/><path d="M19 12a7 7 0 1 0-2 5"/></svg>',
       plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
-      check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>'
+      check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>',
+      forward: '<svg viewBox="0 0 24 24"><path d="m14 5 7 7-7 7v-4c-5 0-8.5 1.5-11 4 1-6 4.5-10 11-10V5Z"/></svg>',
+      pin: '<svg viewBox="0 0 24 24"><path d="m8 3 8 8M14 3l7 7-4 1-5 5-1 5-7-7 5-1 5-5V3Z"/><path d="m9 15-6 6"/></svg>',
+      camera: '<svg viewBox="0 0 24 24"><path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
@@ -331,6 +340,37 @@
 
   function tabIndex(tab) {
     return { chats: 0, search: 1, notifications: 0, profile: 2 }[tab] ?? 0;
+  }
+
+  function switchMainTab(nextTab) {
+    if (!['chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
+    const leavingPublicProfile = state.searchProfileOpen;
+    const profileReturnScroll = state.profileReturnScroll;
+    const wasChatProfileOpen = state.chatProfileOpen;
+    state.lastTab = state.tab;
+    state.tabTransition = true;
+    state.tabDirection = tabIndex(nextTab) < tabIndex(state.tab) ? 'left' : 'right';
+    state.tab = nextTab;
+    if (leavingPublicProfile) {
+      state.searchProfileOpen = false;
+      state.searchProfileSocialView = null;
+      state.publicProfile = null;
+      history.replaceState({ appManaged: true, route: 'app' }, '', '/');
+    }
+    if (isMobileLayout()) {
+      state.activePeer = null;
+      state.chatProfileOpen = false;
+      state.chatProfileSocialView = null;
+    } else if (state.activePeer) {
+      state.chatProfileOpen = false;
+      state.chatProfileSocialView = null;
+    }
+    if (state.tab !== 'profile') state.profileSocialView = null;
+    const keepDesktopChat = !isMobileLayout() && state.activePeer && !wasChatProfileOpen && !leavingPublicProfile;
+    if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
+    else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
+    else renderApp();
+    if (leavingPublicProfile) state.profileReturnScroll = null;
   }
 
   function describeMessage(message) {
@@ -513,7 +553,7 @@
     return `
       <section class="profile-suggestion-section public-profile-suggestions">
         <div class="section-heading"><h2>Suggested profiles</h2><small>From this account's network</small></div>
-        <div class="recommendation-row profile-recommendation-row">
+        <div class="recommendation-row profile-recommendation-row" data-scroll-memory="public-suggestions:${esc(user.username)}">
           ${suggestions.map((candidate) => `
             <article class="recommend-card">
               <a class="recommend-identity" href="${esc(accountProfileHref(candidate))}">
@@ -538,6 +578,23 @@
       height: messages.scrollHeight,
       clientHeight: messages.clientHeight
     };
+  }
+
+  function capturePersistentScroll() {
+    document.querySelectorAll('[data-scroll-memory]').forEach((element) => {
+      const key = element.dataset.scrollMemory;
+      if (!key) return;
+      state.scrollMemory[key] = { top: element.scrollTop, left: element.scrollLeft };
+    });
+  }
+
+  function restorePersistentScroll() {
+    document.querySelectorAll('[data-scroll-memory]').forEach((element) => {
+      const position = state.scrollMemory[element.dataset.scrollMemory];
+      if (!position) return;
+      element.scrollTop = position.top || 0;
+      element.scrollLeft = position.left || 0;
+    });
   }
 
   function restoreMessagesScroll(snapshot, options = {}) {
@@ -579,6 +636,7 @@
   }
 
   function renderApp(options = {}) {
+    capturePersistentScroll();
     const scrollSnapshot = Object.prototype.hasOwnProperty.call(options, 'scrollSnapshot')
       ? options.scrollSnapshot
       : captureMessagesScroll();
@@ -591,6 +649,7 @@
       <div id="call-dock-slot">${renderCallDock()}</div>
       <div id="toast-slot">${renderToastStack()}</div>
       <div id="action-sheet-slot">${renderActionSheet()}</div>
+      <div id="message-focus-slot">${renderMessageFocus()}</div>
       <div id="profile-edit-slot">${renderProfileEditModal()}</div>
       <div id="settings-slot">${renderSettingsModal()}</div>
       <div id="avatar-crop-slot">${renderAvatarCropper()}</div>
@@ -605,6 +664,7 @@
     state.tabTransition = false;
     resizeComposerInput();
     applyRenderScroll(scrollMode, scrollSnapshot);
+    restorePersistentScroll();
     setTimeout(() => {
       resizeComposerInput();
       if (state.storyEditor?.textEditing) {
@@ -615,6 +675,7 @@
         centerStoryActiveChoice();
       }
       applyRenderScroll(scrollMode, scrollSnapshot);
+      restorePersistentScroll();
       if (scrollMode === 'bottom') stabilizeBottomScroll();
       attachCallStreams();
       attachStoryEditorVideo();
@@ -632,6 +693,10 @@
 
   function updateActionSheetSlot() {
     return updateSlot('action-sheet-slot', renderActionSheet());
+  }
+
+  function updateMessageFocusSlot() {
+    return updateSlot('message-focus-slot', renderMessageFocus());
   }
 
   function updateProfileModalSlots() {
@@ -680,6 +745,7 @@
   }
 
   function updateRecommendationsSection() {
+    capturePersistentScroll();
     const current = document.querySelector('.suggestion-section');
     if (!current) return false;
     const template = document.createElement('template');
@@ -687,13 +753,17 @@
     const next = template.content.firstElementChild;
     if (!next) return false;
     current.replaceWith(next);
+    restorePersistentScroll();
     return true;
   }
 
   function renderSidebar() {
+    const scrollKey = state.searchProfileOpen && state.publicProfile
+      ? `public-profile:${state.publicProfile.username}:${state.searchProfileSocialView || 'main'}`
+      : `tab:${state.tab}:${state.profileSocialView || 'main'}`;
     return `
       <aside class="sidebar">
-        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}">
+        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}" data-scroll-memory="${esc(scrollKey)}">
           ${state.tab === 'chats' ? renderChatsPanel() : state.tab === 'search' ? renderSearchPanel() : state.tab === 'notifications' ? renderNotificationsPage() : renderProfilePanel()}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
@@ -948,7 +1018,7 @@
           <span class="chevron ${state.recommendationsOpen ? 'open' : ''}">${icon('chevron')}</span>
         </button>
         ${state.recommendationsOpen ? `
-          <div class="recommendation-row">
+          <div class="recommendation-row" data-scroll-memory="profile-suggestions:${esc(state.me?.id || 'me')}">
             ${recommendations.length ? recommendations.map((user) => `
               <article class="recommend-card">
                 <button class="recommend-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>
@@ -1024,7 +1094,7 @@
     return `
       <section class="profile-suggestion-section">
         <div class="section-heading"><h2>Suggested for you</h2><small>Related and recently viewed</small></div>
-        <div class="recommendation-row profile-recommendation-row">
+        <div class="recommendation-row profile-recommendation-row" data-scroll-memory="profile-network:${esc(user?.username || state.me?.username || 'profile')}">
           ${suggestions.map((user) => `
             <article class="recommend-card">
               ${renderRecommendationIdentity(user)}
@@ -2684,7 +2754,7 @@
     const backgroundColor = chatColor(settings?.backgroundColor, defaults.backgroundColor);
     const mineColor = chatColor(settings?.mineColor, defaults.mineColor);
     const theirsColor = chatColor(settings?.theirsColor, defaults.theirsColor);
-    return `--chat-bg:${backgroundColor};--chat-mine:${mineColor};--chat-mine-text:${readableTextColor(mineColor)};--chat-theirs:${theirsColor};--chat-theirs-text:${readableTextColor(theirsColor)};`;
+    return `--chat-bg:${backgroundColor};--chat-bubble-top:${mineColor};--chat-bubble-bottom:${theirsColor};--chat-bubble-text:${readableTextColor(mineColor)};--chat-mine:${mineColor};--chat-mine-text:${readableTextColor(mineColor)};--chat-theirs:${theirsColor};--chat-theirs-text:${readableTextColor(theirsColor)};`;
   }
 
   function renderChatCustomization() {
@@ -2723,9 +2793,9 @@
             </div>
           </section>
           <section class="chat-appearance-section bubble-color-section">
-            <h3>Message colors</h3>
-            <label class="chat-color-row"><span class="chat-color-preview mine" style="--preview-color:${esc(settings.mineColor)}">Aa</span><span><strong>Your messages</strong><small>Sent</small></span><input id="chat-mine-color" type="color" value="${esc(settings.mineColor)}"></label>
-            <label class="chat-color-row"><span class="chat-color-preview theirs" style="--preview-color:${esc(settings.theirsColor)}">Aa</span><span><strong>Their messages</strong><small>Received</small></span><input id="chat-theirs-color" type="color" value="${esc(settings.theirsColor)}"></label>
+            <h3>Message gradient</h3>
+            <label class="chat-color-row"><span class="chat-color-preview mine" style="--preview-color:${esc(settings.mineColor)}">Aa</span><span><strong>Top color</strong><small>At the top of the screen</small></span><input id="chat-mine-color" type="color" value="${esc(settings.mineColor)}"></label>
+            <label class="chat-color-row"><span class="chat-color-preview theirs" style="--preview-color:${esc(settings.theirsColor)}">Aa</span><span><strong>Bottom color</strong><small>At the bottom of the screen</small></span><input id="chat-theirs-color" type="color" value="${esc(settings.theirsColor)}"></label>
           </section>
         </section>
       </div>
@@ -2753,7 +2823,7 @@
     if (state.searchProfileOpen && state.publicProfile) {
       return `
         <main class="chat-pane searched-profile-pane">
-          <div class="searched-profile-scroll">
+          <div class="searched-profile-scroll" data-scroll-memory="desktop-profile:${esc(state.publicProfile.username)}:${esc(state.searchProfileSocialView || 'main')}">
             ${state.searchProfileSocialView
               ? renderSearchProfileSocialPage(state.publicProfile)
               : renderSearchProfilePage(state.publicProfile)}
@@ -2796,8 +2866,7 @@
         <section class="messages" id="messages">
           ${renderMessagesList()}
         </section>
-        <footer>
-          ${state.stickerPanel ? renderStickerPanel() : ''}
+        <footer class="chat-footer ${state.stickerPanel ? 'tray-open' : ''}">
           <div class="composer">
             ${state.replyTo ? `
               <div class="replying-to">
@@ -2805,15 +2874,16 @@
                 <button class="icon-btn" title="Cancel reply" aria-label="Cancel reply" data-action="clear-reply">${icon('x')}</button>
               </div>
             ` : ''}
-            <div class="composer-row">
-              <button class="icon-btn" title="Attach file" aria-label="Attach file" data-action="attach-open">${icon('file')}</button>
-              <button class="icon-btn" title="Stickers" aria-label="Stickers" data-action="sticker-toggle">${icon('sticker')}</button>
+            <div class="composer-row instagram-composer">
+              <button class="composer-camera" title="Add photo, video, or document" aria-label="Add photo, video, or document" data-action="attach-open">${icon('camera')}</button>
               <textarea id="composer-text" class="composer-input" rows="1" maxlength="8000" placeholder="Message ${esc(state.activePeer.displayName)}">${esc(state.composerDrafts[state.activePeer.id] || '')}</textarea>
-              <button class="icon-btn" title="Hold to record voice" aria-label="Hold to record voice" data-action="record-voice">${icon('mic')}</button>
-              <button class="primary send-btn" title="Send" aria-label="Send" data-action="send-text">${icon('send')}</button>
+              <button class="composer-tool" title="Hold to record voice" aria-label="Hold to record voice" data-action="record-voice">${icon('mic')}</button>
+              <button class="composer-tool ${state.stickerPanel ? 'active' : ''}" title="Stickers and GIFs" aria-label="Stickers and GIFs" data-action="sticker-toggle">${icon('sticker')}</button>
+              <button class="send-btn" title="Send" aria-label="Send" data-action="send-text">Send</button>
               <input id="file-input" type="file" hidden>
             </div>
           </div>
+          ${state.stickerPanel ? renderStickerPanel() : ''}
         </footer>
       </main>
     `;
@@ -2904,12 +2974,99 @@
     const mediaMessage = ['image', 'video', 'gif'].includes(message.kind) && message.attachment && !message.deletedAt;
     return `
       <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''}" data-message-id="${esc(message.id)}">
+        ${message.pinnedAt ? `<span class="message-context-label">${icon('pin')} Pinned</span>` : ''}
         <div class="bubble">
+          ${message.forwardedFrom ? '<span class="forwarded-label">Forwarded</span>' : ''}
           ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
           ${renderMessageBody(message)}
+          ${renderMessageStickerOverlays(message)}
           <div class="swipe-time">${esc(formatTime(message.createdAt))}</div>
         </div>
+        ${renderMessageReactions(message)}
       </article>
+    `;
+  }
+
+  function renderMessageStickerOverlays(message) {
+    const stickers = message.messageStickers || [];
+    if (!stickers.length) return '';
+    return `<span class="message-sticker-overlays">${stickers.map((sticker, index) => `
+      <img src="${esc(sticker.file?.url || '')}" alt="" style="--sticker-index:${index}" draggable="false">
+    `).join('')}</span>`;
+  }
+
+  function renderMessageReactions(message) {
+    const reactions = message.reactions || [];
+    if (!reactions.length) return '';
+    return `<div class="message-reactions">${reactions.map((reaction) => `
+      <button data-action="react-message" data-message-id="${esc(message.id)}" data-emoji="${esc(reaction.emoji)}" class="${(reaction.userIds || []).includes(state.me?.id) ? 'mine' : ''}">
+        <span>${esc(reaction.emoji)}</span>${reaction.count > 1 ? `<small>${reaction.count}</small>` : ''}
+      </button>
+    `).join('')}</div>`;
+  }
+
+  function messageReactionOptions() {
+    return ['\u2764\ufe0f', '\ud83d\ude02', '\ud83d\ude2e', '\ud83d\ude22', '\ud83d\ude21', '\ud83d\udd25'];
+  }
+
+  function renderMessageFocus() {
+    const focus = state.messageFocus;
+    if (!focus) return '';
+    const message = state.messages.find((item) => item.id === focus.messageId);
+    if (!message) return '';
+    const mine = message.senderId === state.me.id;
+    let panel = '';
+    if (focus.mode === 'forward') {
+      panel = `
+        <section class="message-focus-picker">
+          <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Forward to</strong></header>
+          <div class="message-focus-list">
+            ${state.chats.length ? state.chats.map((chat) => `
+              <button data-action="forward-message" data-message-id="${esc(message.id)}" data-user-id="${esc(chat.peer.id)}">
+                ${avatarHtml(chat.peer)}<span><strong>${esc(chat.peer.displayName)}</strong><small>@${esc(chat.peer.username)}</small></span><b>Send</b>
+              </button>
+            `).join('') : '<p>No chats available.</p>'}
+          </div>
+        </section>
+      `;
+    } else if (focus.mode === 'sticker') {
+      panel = `
+        <section class="message-focus-picker sticker-picker">
+          <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Add a sticker</strong></header>
+          <div class="message-focus-stickers">
+            ${availableChatStickers().map((sticker) => `<button data-action="attach-message-sticker" data-message-id="${esc(message.id)}" data-sticker-id="${esc(sticker.id)}"><img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}"></button>`).join('')}
+          </div>
+        </section>
+      `;
+    } else {
+      panel = `
+        <div class="message-reaction-bar">
+          ${messageReactionOptions().map((emoji) => `<button data-action="react-message" data-message-id="${esc(message.id)}" data-emoji="${esc(emoji)}" class="${(message.reactions || []).some((reaction) => reaction.emoji === emoji && (reaction.userIds || []).includes(state.me.id)) ? 'active' : ''}">${esc(emoji)}</button>`).join('')}
+          <button data-action="message-more" data-message-id="${esc(message.id)}" aria-label="More">${icon('plus')}</button>
+        </div>
+        <article class="message-focus-copy message ${mine ? 'mine' : 'theirs'} ${message.kind === 'sticker' ? 'sticker-message' : ''} ${['image', 'video', 'gif'].includes(message.kind) ? 'media-message' : ''}">
+          <div class="bubble">
+            ${message.forwardedFrom ? '<span class="forwarded-label">Forwarded</span>' : ''}
+            ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
+            ${renderMessageBody(message)}${renderMessageStickerOverlays(message)}
+          </div>
+          ${renderMessageReactions(message)}
+        </article>
+        <div class="message-action-menu">
+          <button data-action="focus-reply" data-message-id="${esc(message.id)}">${icon('back')}<span>Reply</span></button>
+          <button data-action="message-focus-mode" data-mode="sticker">${icon('sticker')}<span>Sticker</span></button>
+          <button data-action="message-focus-mode" data-mode="forward">${icon('forward')}<span>Forward</span></button>
+          <button data-action="toggle-message-pin" data-message-id="${esc(message.id)}">${icon('pin')}<span>${message.pinnedAt ? 'Unpin' : 'Pin'}</span></button>
+          <button data-action="hide-message" data-message-id="${esc(message.id)}">${icon('trash')}<span>Delete for me</span></button>
+        </div>
+      `;
+    }
+    return `
+      <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus">
+        <section class="message-focus-stage ${mine ? 'mine' : 'theirs'} ${focus.mode !== 'actions' ? 'picker-open' : ''}" data-stop-close>
+          ${panel}
+        </section>
+      </div>
     `;
   }
 
@@ -3176,7 +3333,7 @@
         ${message.attachment ? `<button data-action="download-message-file" data-message-id="${esc(message.id)}">Download file</button><button data-action="download-meta" data-message-id="${esc(message.id)}">Download metadata</button>` : ''}
         ${message.attachment && message.kind === 'image' ? `<button data-action="download-file-meta" data-message-id="${esc(message.id)}">Download image + metadata</button>` : ''}
         ${message.senderId !== state.me.id ? `<button data-action="open-report" data-report-type="message" data-message-id="${esc(message.id)}" data-user-id="${esc(message.senderId)}">Report message</button>` : ''}
-        ${message.senderId === state.me.id && !message.deletedAt ? `<button class="danger-text" data-action="delete-message" data-message-id="${esc(message.id)}">${icon('trash')} Delete message</button>` : ''}
+        ${message.senderId === state.me.id && !message.deletedAt ? `<button class="danger-text" data-action="delete-message" data-message-id="${esc(message.id)}">${icon('trash')} Unsend for everyone</button>` : ''}
       `;
     }
     if (sheet.type === 'report') {
@@ -5067,6 +5224,72 @@
     updateSidebar();
   }
 
+  async function reactToMessage(messageId, emoji = '\u2764\ufe0f') {
+    const data = await api(`/api/messages/${encodeURIComponent(messageId)}/reaction`, {
+      method: 'POST',
+      body: { emoji }
+    });
+    upsertMessage(data.message);
+    updateMessagesList({ scroll: 'preserve' });
+    updateMessageFocusSlot();
+  }
+
+  async function toggleMessagePin(messageId) {
+    const message = state.messages.find((item) => item.id === messageId);
+    if (!message) return;
+    const data = await api(`/api/messages/${encodeURIComponent(messageId)}/pin`, {
+      method: 'POST',
+      body: { pinned: !message.pinnedAt }
+    });
+    upsertMessage(data.message);
+    updateMessagesList({ scroll: 'preserve' });
+    closeMessageFocus();
+  }
+
+  async function hideMessageForMe(messageId) {
+    await api(`/api/messages/${encodeURIComponent(messageId)}/me`, { method: 'DELETE' });
+    state.messages = state.messages.filter((message) => message.id !== messageId);
+    closeMessageFocus({ immediate: true });
+    updateMessagesList({ scroll: 'preserve' });
+    await refreshChatsOnly();
+    updateSidebar();
+  }
+
+  async function forwardMessage(messageId, recipientId) {
+    const data = await api(`/api/messages/${encodeURIComponent(messageId)}/forward`, {
+      method: 'POST',
+      body: { recipientId }
+    });
+    if (state.activePeer?.id === recipientId && data.message) {
+      upsertMessage(data.message);
+      updateMessagesList({ scroll: 'bottom' });
+    }
+    closeMessageFocus();
+    pushToast({ key: `forward-${messageId}-${recipientId}`, kind: 'social', title: 'Message forwarded', body: 'Sent to the selected chat.' });
+    await refreshChatsOnly();
+    updateSidebar();
+  }
+
+  async function attachStickerToMessage(messageId, stickerId) {
+    const sticker = availableChatStickers().find((item) => item.id === stickerId);
+    if (!sticker?.dataUrl) return;
+    const type = mimeFromDataUrl(sticker.dataUrl) || 'image/png';
+    const extension = type.includes('svg') ? 'svg' : type.includes('gif') ? 'gif' : type.includes('webp') ? 'webp' : 'png';
+    const data = await api(`/api/messages/${encodeURIComponent(messageId)}/stickers`, {
+      method: 'POST',
+      body: {
+        file: {
+          name: `${sticker.name || 'sticker'}.${extension}`,
+          type,
+          dataUrl: sticker.dataUrl
+        }
+      }
+    });
+    upsertMessage(data.message);
+    updateMessagesList({ scroll: 'preserve' });
+    closeMessageFocus();
+  }
+
   let userSearchId = 0;
 
   function focusUserSearch() {
@@ -5339,6 +5562,14 @@
       await refreshChatsOnly();
       updateSidebar();
     }
+    if (event.type === 'message:updated') {
+      const activeIds = [state.me.id, state.activePeer?.id].sort().join('__');
+      if (event.chatId === activeIds && event.message) {
+        upsertMessage(event.message);
+        updateMessagesList({ scroll: 'preserve' });
+        if (state.messageFocus?.messageId === event.message.id) updateMessageFocusSlot();
+      }
+    }
     if (event.type === 'message:hidden') {
       state.messages = state.messages.filter((item) => item.id !== event.messageId);
       updateMessagesList({ scroll: 'preserve' });
@@ -5472,7 +5703,6 @@
   function createTextSticker() {
     state.stickerCreator = stickerCreatorDefaults();
     updateStickerCreatorSlot();
-    requestAnimationFrame(() => document.getElementById('sticker-creator-text')?.focus({ preventScroll: true }));
   }
 
   async function saveTextSticker() {
@@ -5771,6 +6001,7 @@
   }
 
   let overlayCloseTimer = null;
+  let messageFocusCloseTimer = null;
   let settingsCloseTimer = null;
   let storyAdvanceTimer = null;
 
@@ -5798,6 +6029,35 @@
     state.overlayClosing = false;
     state.actionSheet = sheet;
     updateActionSheetSlot();
+  }
+
+  function openMessageFocus(messageId) {
+    const message = state.messages.find((item) => item.id === messageId);
+    if (!message || message.deletedAt) return;
+    clearTimeout(messageFocusCloseTimer);
+    document.activeElement?.blur?.();
+    state.messageFocusClosing = false;
+    state.suppressClickUntil = Date.now() + 160;
+    state.messageFocus = { messageId, mode: 'actions' };
+    updateMessageFocusSlot();
+  }
+
+  function closeMessageFocus(options = {}) {
+    if (!state.messageFocus) return;
+    clearTimeout(messageFocusCloseTimer);
+    if (options.immediate) {
+      state.messageFocus = null;
+      state.messageFocusClosing = false;
+      updateMessageFocusSlot();
+      return;
+    }
+    state.messageFocusClosing = true;
+    updateMessageFocusSlot();
+    messageFocusCloseTimer = setTimeout(() => {
+      state.messageFocus = null;
+      state.messageFocusClosing = false;
+      updateMessageFocusSlot();
+    }, 180);
   }
 
   function closeOverlays() {
@@ -5863,6 +6123,7 @@
   }
 
   function updateSidebar() {
+    capturePersistentScroll();
     const current = document.querySelector('.sidebar');
     if (!current || !state.me) return false;
     const template = document.createElement('template');
@@ -5870,6 +6131,7 @@
     const next = template.content.firstElementChild;
     if (!next) return false;
     current.replaceWith(next);
+    restorePersistentScroll();
     return true;
   }
 
@@ -5892,7 +6154,7 @@
     preserveMessagesScroll(() => {
       current.replaceWith(next);
       resizeComposerInput();
-      if (hadFocus || options.focus) {
+      if ((hadFocus && !options.suppressFocus) || options.focus) {
         const nextInput = document.getElementById('composer-text');
         nextInput?.focus({ preventScroll: true });
         const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
@@ -5982,6 +6244,11 @@
   });
 
   document.addEventListener('click', async (event) => {
+    if (Date.now() < state.suppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const target = event.target.closest('[data-action]');
     if (!target) return;
     if (target.matches('a[data-action]') && (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)) return;
@@ -5994,6 +6261,7 @@
     if (action === 'close-media' && target.classList.contains('media-viewer') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-chat-customization' && target.classList.contains('chat-customization-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-sticker-creator' && target.classList.contains('sticker-creator-page') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-message-focus' && target.classList.contains('message-focus-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
       if (action === 'auth-mode') {
@@ -6024,34 +6292,7 @@
         renderAuth();
       }
       if (action === 'tab') {
-        const nextTab = target.dataset.tab;
-        const leavingPublicProfile = state.searchProfileOpen;
-        const profileReturnScroll = state.profileReturnScroll;
-        const wasChatProfileOpen = state.chatProfileOpen;
-        state.lastTab = state.tab;
-        state.tabTransition = nextTab !== state.tab;
-        state.tabDirection = tabIndex(nextTab) < tabIndex(state.tab) ? 'left' : 'right';
-        state.tab = nextTab;
-        if (leavingPublicProfile) {
-          state.searchProfileOpen = false;
-          state.searchProfileSocialView = null;
-          state.publicProfile = null;
-          history.replaceState({ appManaged: true, route: 'app' }, '', '/');
-        }
-        if (isMobileLayout()) {
-          state.activePeer = null;
-          state.chatProfileOpen = false;
-          state.chatProfileSocialView = null;
-        } else if (state.activePeer) {
-          state.chatProfileOpen = false;
-          state.chatProfileSocialView = null;
-        }
-        if (state.tab !== 'profile') state.profileSocialView = null;
-        const keepDesktopChat = !isMobileLayout() && state.activePeer && !wasChatProfileOpen && !leavingPublicProfile;
-        if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
-        else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
-        else renderApp();
-        if (leavingPublicProfile) state.profileReturnScroll = null;
+        switchMainTab(target.dataset.tab);
       }
       if (action === 'open-chat') {
         if (state.longPressTriggered) {
@@ -6108,13 +6349,20 @@
         document.getElementById('file-input')?.click();
       }
       if (action === 'sticker-toggle') {
-        state.stickerPanel = !state.stickerPanel;
-        updateChatFooter();
+        const opening = !state.stickerPanel;
+        state.stickerPanel = opening;
+        if (opening) {
+          document.activeElement?.blur?.();
+          document.documentElement.classList.remove('keyboard-open');
+          sendTypingSignal(false);
+        }
+        updateChatFooter({ suppressFocus: opening });
       }
       if (action === 'set-chat-tray') {
         state.chatTrayTab = target.dataset.tray === 'gifs' ? 'gifs' : 'stickers';
         if (state.chatTrayTab === 'gifs') await loadGifPool();
-        updateChatFooter();
+        document.activeElement?.blur?.();
+        updateChatFooter({ suppressFocus: true });
       }
       if (action === 'sticker-file-open') {
         document.getElementById('sticker-file-input')?.click();
@@ -6555,6 +6803,38 @@
           }
         }
       }
+      if (action === 'close-message-focus') {
+        closeMessageFocus();
+      }
+      if (action === 'message-focus-mode' && state.messageFocus) {
+        state.messageFocus.mode = ['forward', 'sticker'].includes(target.dataset.mode) ? target.dataset.mode : 'actions';
+        updateMessageFocusSlot();
+      }
+      if (action === 'react-message') {
+        await reactToMessage(target.dataset.messageId, target.dataset.emoji || '\u2764\ufe0f');
+      }
+      if (action === 'focus-reply') {
+        state.replyTo = state.messages.find((message) => message.id === target.dataset.messageId) || null;
+        closeMessageFocus({ immediate: true });
+        updateChatFooter({ focus: true });
+      }
+      if (action === 'message-more') {
+        const messageId = target.dataset.messageId;
+        closeMessageFocus({ immediate: true });
+        openActionSheet({ type: 'message', messageId });
+      }
+      if (action === 'toggle-message-pin') {
+        await toggleMessagePin(target.dataset.messageId);
+      }
+      if (action === 'hide-message') {
+        await hideMessageForMe(target.dataset.messageId);
+      }
+      if (action === 'forward-message') {
+        await forwardMessage(target.dataset.messageId, target.dataset.userId);
+      }
+      if (action === 'attach-message-sticker') {
+        await attachStickerToMessage(target.dataset.messageId, target.dataset.stickerId);
+      }
       if (action === 'reply-message') {
         state.replyTo = state.messages.find((message) => message.id === target.dataset.messageId) || null;
         updateChatFooter({ focus: true });
@@ -6565,7 +6845,7 @@
       }
       if (action === 'delete-message') {
         state.actionSheet = null;
-        if (confirm('Delete this message?')) await deleteMessage(target.dataset.messageId);
+        if (confirm('Unsend this message for everyone?')) await deleteMessage(target.dataset.messageId);
       }
       if (action === 'download-message-file') {
         const message = state.messages.find((item) => item.id === target.dataset.messageId);
@@ -7149,6 +7429,11 @@
   }, true);
 
   document.addEventListener('keydown', async (event) => {
+    if (event.key === 'Escape' && state.messageFocus) {
+      event.preventDefault();
+      closeMessageFocus();
+      return;
+    }
     if (event.key === 'Escape' && state.settingsOpen) {
       event.preventDefault();
       closeSettingsDrawer();
@@ -7209,8 +7494,23 @@
       state.edgeSwipe = null;
       return;
     }
-    if (state.me && !state.storyEditor && event.clientX < 24 && !event.target.closest('input,textarea,button,a')) {
-      state.edgeSwipe = { startX: event.clientX, startY: event.clientY };
+    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet ||
+      state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator;
+    if (state.me && !gestureBlocked && event.clientX < 24 && !event.target.closest('input,textarea,[contenteditable="true"]')) {
+      state.edgeSwipe = {
+        startX: event.clientX,
+        startY: event.clientY,
+        surface: event.target.closest('.chat-pane, .side-content')
+      };
+    }
+    if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !state.activePeer &&
+      !state.searchProfileOpen && !state.profileSocialView && state.tab !== 'notifications' &&
+      event.target.closest('.side-content') && !event.target.closest('input,textarea,[contenteditable="true"]')) {
+      state.tabSwipe = {
+        startX: event.clientX,
+        startY: event.clientY,
+        surface: event.target.closest('.side-content')
+      };
     }
 
     const storySticker = event.target.closest('[data-action="story-sticker-drag"]');
@@ -7439,14 +7739,18 @@
     }
 
     const message = event.target.closest('.message');
+    if (state.messageFocus) return;
     if (!message || event.target.closest('button,a,input,textarea')) return;
     clearTimeout(state.longPressTimer);
+    const messageId = message.dataset.messageId;
     state.longPressTimer = setTimeout(() => {
       state.longPressTriggered = true;
-      openActionSheet({ type: 'message', messageId: message.dataset.messageId });
+      state.drag = null;
+      navigator.vibrate?.(25);
+      openMessageFocus(messageId);
     }, 560);
     state.drag = {
-      id: message.dataset.messageId,
+      id: messageId,
       el: message,
       startX: event.clientX,
       startY: event.clientY
@@ -7596,8 +7900,36 @@
       updateCropUi();
       return;
     }
+    if (state.edgeSwipe) {
+      const dx = event.clientX - state.edgeSwipe.startX;
+      const dy = event.clientY - state.edgeSwipe.startY;
+      if (dx > 0 && Math.abs(dx) > Math.abs(dy)) {
+        event.preventDefault();
+        if (Math.abs(dx) > 12) state.edgeSwipe.moved = true;
+        const amount = Math.min(dx, window.innerWidth * 0.82);
+        if (state.edgeSwipe.surface) {
+          state.edgeSwipe.surface.style.transition = 'none';
+          state.edgeSwipe.surface.style.transform = `translateX(${amount}px)`;
+          state.edgeSwipe.surface.style.boxShadow = '-14px 0 30px rgba(0,0,0,.28)';
+        }
+      }
+    }
+    if (state.tabSwipe) {
+      const dx = event.clientX - state.tabSwipe.startX;
+      const dy = event.clientY - state.tabSwipe.startY;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        event.preventDefault();
+        if (Math.abs(dx) > 12) state.tabSwipe.moved = true;
+        const index = tabIndex(state.tab);
+        const allowed = (dx < 0 && index < 2) || (dx > 0 && index > 0);
+        const amount = allowed ? clamp(dx, -90, 90) : dx * 0.12;
+        state.tabSwipe.surface.style.transition = 'none';
+        state.tabSwipe.surface.style.transform = `translateX(${amount}px)`;
+        state.tabSwipe.surface.style.opacity = String(1 - Math.min(0.18, Math.abs(amount) / 500));
+      }
+    }
     if (state.longPressTimer) {
-      const pointer = state.drag || state.edgeSwipe;
+      const pointer = state.drag || state.edgeSwipe || state.tabSwipe;
       if (pointer && Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) > 10) {
         clearTimeout(state.longPressTimer);
         state.longPressTimer = null;
@@ -7685,17 +8017,27 @@
     if (state.edgeSwipe) {
       const dx = event.clientX - state.edgeSwipe.startX;
       const dy = event.clientY - state.edgeSwipe.startY;
+      const surface = state.edgeSwipe.surface;
+      if (state.edgeSwipe.moved) state.suppressClickUntil = Date.now() + 320;
+      if (surface) {
+        surface.style.transform = '';
+        surface.style.boxShadow = '';
+        surface.style.transition = '';
+      }
       if (dx > 90 && Math.abs(dx) > Math.abs(dy)) {
-        if (state.storyViewer) {
-          clearStoryAdvance();
-          state.storyViewer = null;
-        } else if (state.storyEditor) state.storyEditor = null;
-        else if (state.searchProfileSocialView) state.searchProfileSocialView = null;
+        if (state.searchProfileSocialView) state.searchProfileSocialView = null;
         else if (state.searchProfileOpen) {
           state.edgeSwipe = null;
           closeSearchProfileNavigation();
           return;
         }
+        else if (state.profileSocialView) state.profileSocialView = null;
+        else if (state.tab === 'notifications') {
+          state.tabTransition = true;
+          state.tabDirection = 'left';
+          state.tab = state.lastTab === 'notifications' ? 'chats' : (state.lastTab || 'chats');
+        }
+        else if (state.chatProfileSocialView) state.chatProfileSocialView = null;
         else if (state.chatProfileOpen) state.chatProfileOpen = false;
         else if (state.activePeer) state.activePeer = null;
         else if (state.lastTab && state.lastTab !== state.tab) {
@@ -7709,8 +8051,25 @@
       }
       state.edgeSwipe = null;
     }
+    if (state.tabSwipe) {
+      const dx = event.clientX - state.tabSwipe.startX;
+      const dy = event.clientY - state.tabSwipe.startY;
+      const surface = state.tabSwipe.surface;
+      if (state.tabSwipe.moved) state.suppressClickUntil = Date.now() + 320;
+      surface.style.transform = '';
+      surface.style.opacity = '';
+      surface.style.transition = '';
+      const tabs = ['chats', 'search', 'profile'];
+      const index = tabIndex(state.tab);
+      const nextIndex = Math.abs(dx) > 72 && Math.abs(dx) > Math.abs(dy)
+        ? clamp(index + (dx < 0 ? 1 : -1), 0, tabs.length - 1)
+        : index;
+      state.tabSwipe = null;
+      if (nextIndex !== index) switchMainTab(tabs[nextIndex]);
+    }
     if (state.drag) {
       const dx = event.clientX - state.drag.startX;
+      const dy = event.clientY - state.drag.startY;
       const draggedMessage = state.messages.find((message) => message.id === state.drag.id);
       const mine = draggedMessage?.senderId === state.me.id;
       const replySwipe = mine ? dx < -70 : dx > 70;
@@ -7720,9 +8079,29 @@
       if (replySwipe) {
         state.replyTo = draggedMessage || null;
         updateChatFooter({ focus: true });
+      } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10 && draggedMessage) {
+        const now = Date.now();
+        if (state.lastMessageTap?.id === draggedMessage.id && now - state.lastMessageTap.at < 320) {
+          state.lastMessageTap = null;
+          reactToMessage(draggedMessage.id, '\u2764\ufe0f').catch((error) => alert(error.message));
+        } else {
+          state.lastMessageTap = { id: draggedMessage.id, at: now };
+        }
       }
       state.drag = null;
     }
+    if (state.edgeSwipe?.surface) {
+      state.edgeSwipe.surface.style.transform = '';
+      state.edgeSwipe.surface.style.boxShadow = '';
+      state.edgeSwipe.surface.style.transition = '';
+    }
+    if (state.tabSwipe?.surface) {
+      state.tabSwipe.surface.style.transform = '';
+      state.tabSwipe.surface.style.opacity = '';
+      state.tabSwipe.surface.style.transition = '';
+    }
+    state.edgeSwipe = null;
+    state.tabSwipe = null;
   });
 
   document.addEventListener('pointercancel', () => {
@@ -7732,6 +8111,16 @@
       state.drag.el.style.transform = '';
       state.drag.el.classList.remove('reveal-time');
       state.drag = null;
+    }
+    if (state.edgeSwipe?.surface) {
+      state.edgeSwipe.surface.style.transform = '';
+      state.edgeSwipe.surface.style.boxShadow = '';
+      state.edgeSwipe.surface.style.transition = '';
+    }
+    if (state.tabSwipe?.surface) {
+      state.tabSwipe.surface.style.transform = '';
+      state.tabSwipe.surface.style.opacity = '';
+      state.tabSwipe.surface.style.transition = '';
     }
     if (state.avatarCrop?.drag) state.avatarCrop.drag = null;
     if (state.avatarCrop?.pinch) state.avatarCrop.pinch = null;
@@ -7749,6 +8138,7 @@
     cropPointers.clear();
     document.getElementById('story-object-trash')?.classList.remove('visible', 'active');
     state.edgeSwipe = null;
+    state.tabSwipe = null;
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;
   });

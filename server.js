@@ -31,6 +31,14 @@ const REPORT_REASONS = [
   'Other'
 ];
 const reportReasonsSet = new Set(REPORT_REASONS);
+const MESSAGE_REACTIONS = new Set([
+  '\u2764\ufe0f',
+  '\ud83d\ude02',
+  '\ud83d\ude2e',
+  '\ud83d\ude22',
+  '\ud83d\ude21',
+  '\ud83d\udd25'
+]);
 const followsFileExists = fs.existsSync(path.join(DATA_DIR, 'follows.json'));
 
 for (const dir of [PUBLIC_DIR, DATA_DIR, UPLOAD_DIR]) {
@@ -842,6 +850,7 @@ function messageSnippet(message) {
 function decorateMessage(message) {
   const reply = message.replyTo ? findMessage(message.replyTo)?.message : null;
   const attachment = message.attachment?.id ? publicFile(db.files[message.attachment.id]) : null;
+  const reactionEntries = Object.entries(message.reactions || {});
   return {
     id: message.id,
     chatId: message.chatId,
@@ -853,6 +862,21 @@ function decorateMessage(message) {
     replyPreview: messagePreview(reply),
     attachment: message.deletedAt ? null : attachment,
     stickerId: message.deletedAt ? null : (message.stickerId || null),
+    reactions: MESSAGE_REACTIONS.size && !message.deletedAt
+      ? Array.from(MESSAGE_REACTIONS).map((emoji) => {
+        const userIds = reactionEntries.filter(([, value]) => value === emoji).map(([userId]) => userId);
+        return { emoji, count: userIds.length, userIds };
+      }).filter((reaction) => reaction.count)
+      : [],
+    messageStickers: message.deletedAt ? [] : (message.messageStickers || []).map((sticker) => ({
+      id: sticker.id,
+      userId: sticker.userId,
+      createdAt: sticker.createdAt,
+      file: publicFile(db.files[sticker.fileId])
+    })).filter((sticker) => sticker.file),
+    pinnedAt: message.pinnedAt || null,
+    pinnedBy: message.pinnedBy || null,
+    forwardedFrom: message.forwardedFrom || null,
     createdAt: message.createdAt,
     deletedAt: message.deletedAt || null,
     deletedBy: message.deletedBy || null
@@ -1073,6 +1097,31 @@ async function saveUpload({ dataUrl, name, lastModified }, ownerId, scope) {
   };
   db.files[fileId] = record;
   await saveFiles();
+  return record;
+}
+
+async function cloneStoredFile(file, ownerId, scope) {
+  if (!file?.diskPath || !fs.existsSync(file.diskPath)) return null;
+  const ext = path.extname(file.originalName || '') || extensionForMime(file.mime);
+  const day = new Date().toISOString().slice(0, 10);
+  const folder = path.join(UPLOAD_DIR, day);
+  await fsp.mkdir(folder, { recursive: true });
+  const fileId = id('file');
+  const diskPath = path.join(folder, `${fileId}${ext}`);
+  await fsp.copyFile(file.diskPath, diskPath);
+  const record = {
+    id: fileId,
+    ownerId,
+    scope,
+    originalName: file.originalName,
+    mime: file.mime,
+    size: file.size,
+    uploadedAt: nowIso(),
+    originalLastModified: file.originalLastModified || null,
+    diskPath,
+    messageId: null
+  };
+  db.files[fileId] = record;
   return record;
 }
 
@@ -2085,6 +2134,11 @@ async function handleApi(req, res, pathname, query) {
       } : null,
       stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
       hiddenFor: [],
+      reactions: {},
+      messageStickers: [],
+      pinnedAt: null,
+      pinnedBy: null,
+      forwardedFrom: null,
       createdAt: nowIso(),
       deletedAt: null,
       deletedBy: null
@@ -2165,6 +2219,151 @@ async function handleApi(req, res, pathname, query) {
     };
     await saveReports();
     return sendJson(res, 201, { ok: true, reportId: report.id, emailSent: report.email.sent });
+  }
+
+  const reactionMatch = /^\/api\/messages\/([^/]+)\/reaction$/.exec(pathname);
+  if (req.method === 'POST' && reactionMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const found = findMessage(decodeURIComponent(reactionMatch[1]));
+    if (!found) return sendError(res, 404, 'Message not found.');
+    const { chatId, message } = found;
+    const peerId = message.senderId === user.id ? message.recipientId : message.senderId;
+    if (![message.senderId, message.recipientId].includes(user.id) || !canViewChat(user.id, peerId) || (message.hiddenFor || []).includes(user.id)) {
+      return sendError(res, 404, 'Message not found.');
+    }
+    if (message.deletedAt) return sendError(res, 400, 'Deleted messages cannot be reacted to.');
+    const body = await readJsonBody(req);
+    const emoji = String(body.emoji || '');
+    if (emoji && !MESSAGE_REACTIONS.has(emoji)) return sendError(res, 400, 'Choose a supported reaction.');
+    if (!message.reactions || typeof message.reactions !== 'object') message.reactions = {};
+    if (!emoji || message.reactions[user.id] === emoji) delete message.reactions[user.id];
+    else message.reactions[user.id] = emoji;
+    await saveMessages();
+    const decorated = decorateMessage(message);
+    pushToUsers(participantsForChatId(chatId), { type: 'message:updated', chatId, message: decorated });
+    return sendJson(res, 200, { message: decorated });
+  }
+
+  const pinMessageMatch = /^\/api\/messages\/([^/]+)\/pin$/.exec(pathname);
+  if (req.method === 'POST' && pinMessageMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const found = findMessage(decodeURIComponent(pinMessageMatch[1]));
+    if (!found) return sendError(res, 404, 'Message not found.');
+    const { chatId, message } = found;
+    const peerId = message.senderId === user.id ? message.recipientId : message.senderId;
+    if (![message.senderId, message.recipientId].includes(user.id) || !canViewChat(user.id, peerId) || (message.hiddenFor || []).includes(user.id)) {
+      return sendError(res, 404, 'Message not found.');
+    }
+    if (message.deletedAt) return sendError(res, 400, 'Deleted messages cannot be pinned.');
+    const body = await readJsonBody(req);
+    const pinned = typeof body.pinned === 'boolean' ? body.pinned : !message.pinnedAt;
+    message.pinnedAt = pinned ? nowIso() : null;
+    message.pinnedBy = pinned ? user.id : null;
+    await saveMessages();
+    const decorated = decorateMessage(message);
+    pushToUsers(participantsForChatId(chatId), { type: 'message:updated', chatId, message: decorated });
+    return sendJson(res, 200, { message: decorated });
+  }
+
+  const messageStickerMatch = /^\/api\/messages\/([^/]+)\/stickers$/.exec(pathname);
+  if (req.method === 'POST' && messageStickerMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const found = findMessage(decodeURIComponent(messageStickerMatch[1]));
+    if (!found) return sendError(res, 404, 'Message not found.');
+    const { chatId, message } = found;
+    const peerId = message.senderId === user.id ? message.recipientId : message.senderId;
+    if (![message.senderId, message.recipientId].includes(user.id) || !canChat(user.id, peerId)) {
+      return sendError(res, 404, 'Message not found.');
+    }
+    if (message.deletedAt) return sendError(res, 400, 'Deleted messages cannot have stickers.');
+    const body = await readJsonBody(req);
+    if (!body.file?.dataUrl || !mimeFromDataUrl(body.file.dataUrl).startsWith('image/')) {
+      return sendError(res, 400, 'Choose an image sticker.');
+    }
+    const file = await saveUpload(body.file, user.id, 'message-sticker-overlay');
+    file.messageId = message.id;
+    if (!Array.isArray(message.messageStickers)) message.messageStickers = [];
+    message.messageStickers.push({ id: id('msticker'), userId: user.id, fileId: file.id, createdAt: nowIso() });
+    message.messageStickers = message.messageStickers.slice(-6);
+    await Promise.all([saveFiles(), saveMessages()]);
+    const decorated = decorateMessage(message);
+    pushToUsers(participantsForChatId(chatId), { type: 'message:updated', chatId, message: decorated });
+    return sendJson(res, 201, { message: decorated });
+  }
+
+  const forwardMessageMatch = /^\/api\/messages\/([^/]+)\/forward$/.exec(pathname);
+  if (req.method === 'POST' && forwardMessageMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const found = findMessage(decodeURIComponent(forwardMessageMatch[1]));
+    if (!found) return sendError(res, 404, 'Message not found.');
+    const source = found.message;
+    const sourcePeerId = source.senderId === user.id ? source.recipientId : source.senderId;
+    if (![source.senderId, source.recipientId].includes(user.id) || !canViewChat(user.id, sourcePeerId) || (source.hiddenFor || []).includes(user.id) || source.deletedAt) {
+      return sendError(res, 404, 'Message not found.');
+    }
+    const body = await readJsonBody(req);
+    const peer = db.users[cleanText(body.recipientId || '', 120)];
+    if (!peer || !canChat(user.id, peer.id)) return sendError(res, 404, 'Chat not found.');
+    const chatId = chatIdFor(user.id, peer.id);
+    const list = ensureChatMessages(chatId);
+    const sourceFile = source.attachment?.id ? db.files[source.attachment.id] : null;
+    const file = sourceFile?.scope === 'gif'
+      ? sourceFile
+      : await cloneStoredFile(sourceFile, user.id, `forward-${source.kind}`);
+    if (source.attachment && !file) return sendError(res, 404, 'The attached file is no longer available.');
+    const message = {
+      id: id('msg'),
+      chatId,
+      senderId: user.id,
+      recipientId: peer.id,
+      kind: source.kind,
+      text: source.text || '',
+      replyTo: null,
+      attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      stickerId: source.stickerId || null,
+      hiddenFor: [],
+      reactions: {},
+      messageStickers: [],
+      pinnedAt: null,
+      pinnedBy: null,
+      forwardedFrom: source.id,
+      createdAt: nowIso(),
+      deletedAt: null,
+      deletedBy: null
+    };
+    if (file && file.scope !== 'gif') file.messageId = message.id;
+    list.push(message);
+    const decorated = decorateMessage(message);
+    const notification = addNotification(peer.id, 'message', user.id, null, `${user.username}: Forwarded ${messageSnippet(message)}`);
+    await Promise.all([saveFiles(), saveMessages(), saveNotifications()]);
+    pushToUsers([user.id, peer.id], { type: 'message:new', chatId, message: decorated });
+    if (notification) {
+      pushToUser(peer.id, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(peer.id).length,
+        notification: publicNotification(notification, peer.id)
+      });
+    }
+    return sendJson(res, 201, { message: decorated });
+  }
+
+  const hideMessageMatch = /^\/api\/messages\/([^/]+)\/me$/.exec(pathname);
+  if (req.method === 'DELETE' && hideMessageMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const found = findMessage(decodeURIComponent(hideMessageMatch[1]));
+    if (!found) return sendError(res, 404, 'Message not found.');
+    const { chatId, message } = found;
+    if (![message.senderId, message.recipientId].includes(user.id)) return sendError(res, 404, 'Message not found.');
+    if (!Array.isArray(message.hiddenFor)) message.hiddenFor = [];
+    if (!message.hiddenFor.includes(user.id)) message.hiddenFor.push(user.id);
+    await saveMessages();
+    pushToUser(user.id, { type: 'message:hidden', chatId, messageId: message.id });
+    return sendJson(res, 200, { ok: true });
   }
 
   const deleteMessageMatch = /^\/api\/messages\/([^/]+)$/.exec(pathname);

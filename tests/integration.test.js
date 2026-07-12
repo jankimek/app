@@ -127,7 +127,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function resizeStoryTextInput/);
   assert.match(clientSource, /function centerStoryActiveChoice/);
   assert.match(clientSource, /const continuingTextGesture = storyTextPointers\.size > 0/);
-  assert.match(clientSource, /state\.me && !state\.storyEditor && event\.clientX < 24/);
+  assert.match(clientSource, /state\.me && !gestureBlocked && event\.clientX < 24/);
+  assert.match(clientSource, /function renderMessageFocus/);
+  assert.match(clientSource, /function capturePersistentScroll/);
+  assert.match(clientSource, /state\.tabSwipe = \{/);
+  assert.match(styleSource, /background-attachment: fixed/);
+  assert.match(styleSource, /class="message-focus-overlay"|\.message-focus-overlay/);
   assert.match(clientSource, /initialTool = null/);
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
   assert.match(clientSource, /class="story-effects-panel"/);
@@ -470,6 +475,45 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
 
   assert.equal((await bob.request(imageMessage.data.message.attachment.metaUrl)).status, 200);
   assert.equal((await bob.request(imageMessage.data.message.attachment.downloadUrl)).status, 200);
+
+  const reaction = await bob.request(`/api/messages/${textMessage.data.message.id}/reaction`, {
+    method: 'POST',
+    body: { emoji: '\u2764\ufe0f' }
+  });
+  assert.equal(reaction.status, 200);
+  assert.equal(reaction.data.message.reactions[0].count, 1);
+  assert.ok(reaction.data.message.reactions[0].userIds.includes(bobUser.id));
+
+  const pin = await alice.request(`/api/messages/${textMessage.data.message.id}/pin`, {
+    method: 'POST',
+    body: { pinned: true }
+  });
+  assert.equal(pin.status, 200);
+  assert.ok(pin.data.message.pinnedAt);
+  assert.equal(pin.data.message.pinnedBy, aliceUser.id);
+
+  const messageSticker = await bob.request(`/api/messages/${imageMessage.data.message.id}/stickers`, {
+    method: 'POST',
+    body: { file: { name: 'message-reaction.svg', type: 'image/svg+xml', dataUrl: SVG_DATA } }
+  });
+  assert.equal(messageSticker.status, 201);
+  assert.equal(messageSticker.data.message.messageStickers.length, 1);
+  assert.equal((await alice.request(messageSticker.data.message.messageStickers[0].file.url)).status, 200);
+
+  const forwarded = await alice.request(`/api/messages/${imageMessage.data.message.id}/forward`, {
+    method: 'POST',
+    body: { recipientId: bobUser.id }
+  });
+  assert.equal(forwarded.status, 201);
+  assert.equal(forwarded.data.message.kind, 'image');
+  assert.equal(forwarded.data.message.forwardedFrom, imageMessage.data.message.id);
+  assert.equal((await bob.request(forwarded.data.message.attachment.url)).status, 200);
+
+  assert.equal((await bob.request(`/api/messages/${longMessage.data.message.id}/me`, { method: 'DELETE' })).status, 200);
+  const bobAfterHide = await bob.request(`/api/chats/${aliceUser.id}/messages?limit=200`);
+  const aliceAfterHide = await alice.request(`/api/chats/${bobUser.id}/messages?limit=200`);
+  assert.ok(!bobAfterHide.data.messages.some((message) => message.id === longMessage.data.message.id));
+  assert.ok(aliceAfterHide.data.messages.some((message) => message.id === longMessage.data.message.id));
 
   for (let index = 0; index < 6; index += 1) {
     assert.equal((await sendMessage(alice, bobUser.id, { kind: 'text', text: `Page message ${index}` })).status, 201);
