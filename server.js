@@ -1575,14 +1575,15 @@ async function handleApi(req, res, pathname, query) {
     const trimStart = storyNumber(body.edits?.trimStart, 0, 3600, 0);
     const requestedTrimEnd = storyNumber(body.edits?.trimEnd, 0, 3600, 0);
     const trimEnd = requestedTrimEnd > trimStart ? Math.min(requestedTrimEnd, trimStart + 60) : 0;
+    const saved = body.saved === true;
     const story = {
       id: id('story'),
       ownerId: user.id,
       fileId: file.id,
       audioFileId: audioFile?.id || null,
       createdAt: nowIso(),
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      saved: false,
+      expiresAt: saved ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      saved,
       edits: {
         compositionVersion: Number(body.edits?.compositionVersion) >= 3 ? 3 : Number(body.edits?.compositionVersion) >= 2 ? 2 : 1,
         filter: [

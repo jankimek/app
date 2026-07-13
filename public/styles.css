@@ -1,7 +1,7 @@
 :root {
   color-scheme: dark;
-  --app-height: 100vh;
-  --visual-height: 100vh;
+  --app-height: 100dvh;
+  --visual-height: 100dvh;
   --visual-top: 0px;
   --bg: #05070b;
   --bg-2: #090d14;
@@ -4325,13 +4325,16 @@ html.keyboard-open .bottom-tabs {
 
 .story-progress i {
   display: block;
-  width: 0;
+  width: 100%;
   height: 100%;
   background: #fff;
+  transform: scaleX(0);
+  transform-origin: left center;
+  will-change: transform;
 }
 
 .story-progress .complete i {
-  width: 100%;
+  transform: scaleX(1);
 }
 
 .story-progress .active i {
@@ -4453,7 +4456,7 @@ html.keyboard-open .bottom-tabs {
 
 @keyframes storyProgress {
   to {
-    width: 100%;
+    transform: scaleX(1);
   }
 }
 
@@ -8745,10 +8748,12 @@ html.keyboard-open .bottom-tabs {
 
 /* Refined message focus, comments, sticker sets, and page gestures */
 .chat-pane.active-chat .message .bubble {
-  background-color: var(--message-bubble-color, var(--chat-bubble-top, #55339a));
-  background-image: none;
-  background-attachment: scroll;
-  transition: background-color 0.14s linear, border-color 0.14s ease;
+  background-color: var(--chat-bubble-top, #55339a);
+  background-image: linear-gradient(180deg, var(--chat-bubble-top, #55339a), var(--chat-bubble-bottom, #182131));
+  background-attachment: fixed;
+  background-size: 100vw var(--visual-height);
+  background-position: 0 var(--visual-top);
+  transition: border-color 0.14s ease;
 }
 
 .chat-pane.chat-opening {
@@ -9352,5 +9357,170 @@ html.keyboard-open .bottom-tabs {
 
   .sticker-save-sheet {
     margin-bottom: 8px;
+  }
+}
+
+/* Compact social controls and lightweight chat loading states. */
+.chat-loading-state {
+  min-height: 100%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 9px;
+  color: #7f8996;
+}
+
+.chat-loading-state small {
+  font-size: 10px;
+}
+
+.chat-loading-indicator {
+  position: sticky;
+  top: 4px;
+  z-index: 3;
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  margin: -8px auto 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #c8d0da;
+  background: rgba(13, 18, 25, 0.84);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(8px);
+}
+
+.chat-loading-indicator .spinner {
+  width: 13px;
+  height: 13px;
+}
+
+.account-action,
+.search-profile-actions .mini-btn,
+.peer-profile-hero .toolbar .mini-btn,
+.notification-row .mini-btn {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #d9dfe7;
+  background: #171c23;
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.account-action.primary-action,
+.profile-primary-action,
+.notification-row .mini-btn:not(.danger) {
+  color: #f5f7fa;
+  background: #284e6e;
+}
+
+.account-action:is(:hover, :focus-visible),
+.search-profile-actions .mini-btn:is(:hover, :focus-visible),
+.peer-profile-hero .toolbar .mini-btn:is(:hover, :focus-visible),
+.notification-row .mini-btn:is(:hover, :focus-visible) {
+  background: #222933;
+}
+
+.account-action.primary-action:is(:hover, :focus-visible),
+.profile-primary-action:is(:hover, :focus-visible),
+.notification-row .mini-btn:not(.danger):is(:hover, :focus-visible) {
+  background: #32658e;
+}
+
+.notification-row .mini-btn.danger {
+  color: #c8ced6;
+  background: transparent;
+}
+
+.recommend-card > .account-action {
+  width: calc(100% - 16px);
+  margin: 0 8px 8px;
+}
+
+.profile-control-list {
+  overflow: hidden;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.profile-control-list > button,
+.profile-control-list > .secondary,
+.profile-control-list > .danger {
+  width: 100%;
+  min-height: 44px;
+  justify-content: flex-start;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 0;
+  color: #d7dde5;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+.profile-control-list > button + button {
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.profile-control-list > .danger {
+  color: #ff7788;
+}
+
+.profile-control-list .ui-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.chat-export-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-export-panel h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.chat-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-export-actions button {
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #cfd5dd;
+  background: #171d25;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.chat-export-actions button:is(:hover, :focus-visible) {
+  color: #fff;
+  background: #222a34;
+}
+
+.chat-export-actions .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-pane.chat-opening,
+  .chat-loading-indicator .spinner {
+    animation-duration: 0.01ms !important;
   }
 }

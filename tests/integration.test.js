@@ -132,8 +132,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function renderMessageFocus/);
   assert.match(clientSource, /function capturePersistentScroll/);
   assert.match(clientSource, /state\.tabSwipe = \{/);
-  assert.match(clientSource, /function updateBubbleViewportColors/);
-  assert.match(styleSource, /--message-bubble-color/);
+  assert.match(styleSource, /background-attachment: fixed/);
+  assert.match(clientSource, /data-highlight="true"/);
+  assert.match(clientSource, /saved: Boolean\(editor\.publishAsHighlight\)/);
+  assert.match(clientSource, /conversationCache: new Map\(\)/);
+  assert.match(clientSource, /function updateChatPane/);
   assert.match(styleSource, /class="message-focus-overlay"|\.message-focus-overlay/);
   assert.match(clientSource, /class="message-focus-host"/);
   assert.match(clientSource, /function renderStickerManager/);
@@ -682,6 +685,19 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(storyResponse.data.story.edits.stickers.find((sticker) => sticker.id === 'weather_test').data.region, 'Berlin, Germany');
   const story = storyResponse.data.story;
 
+  const directHighlight = await alice.request('/api/me/story', {
+    method: 'POST',
+    body: {
+      file: { name: 'highlight.png', type: 'image/png', dataUrl: PNG_DATA },
+      edits: { text: 'Permanent highlight' },
+      saved: true
+    }
+  });
+  assert.equal(directHighlight.status, 201);
+  assert.equal(directHighlight.data.story.saved, true);
+  assert.equal(directHighlight.data.story.expiresAt, null);
+  assert.ok(directHighlight.data.user.stories.some((item) => item.id === directHighlight.data.story.id && item.saved));
+
   const privatePublicView = await anonymous.request('/api/users/alice_test');
   assert.equal(privatePublicView.status, 200);
   assert.equal(privatePublicView.data.user.stories.length, 0);
@@ -796,6 +812,7 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(savedStory.data.story.saved, true);
   assert.equal(savedStory.data.story.expiresAt, null);
   assert.equal(savedStory.data.story.edits.textAnimation, 'bounce');
+  assert.equal((await alice.request(`/api/stories/${directHighlight.data.story.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await alice.request(`/api/stories/${story.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await bob.request(`/api/stories/${story.id}/view`, { method: 'POST' })).status, 404);
 

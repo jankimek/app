@@ -58,7 +58,9 @@
     chatProfileOpen: false,
     chatReturnAnimation: false,
     chatOpening: false,
+    chatLoading: false,
     chatOpenToken: 0,
+    conversationCache: new Map(),
     messages: [],
     hasOlderMessages: false,
     loadingOlderMessages: false,
@@ -522,6 +524,31 @@
     return state.activeGroup?.id || state.activePeer?.id || null;
   }
 
+  function conversationCacheKey(kind, id) {
+    return id ? `${kind}:${id}` : null;
+  }
+
+  function rememberConversation(key, value) {
+    if (!key || !value) return;
+    state.conversationCache.delete(key);
+    state.conversationCache.set(key, value);
+    while (state.conversationCache.size > 8) {
+      state.conversationCache.delete(state.conversationCache.keys().next().value);
+    }
+  }
+
+  function rememberActiveConversation() {
+    const key = state.activeGroup
+      ? conversationCacheKey('group', state.activeGroup.id)
+      : conversationCacheKey('peer', state.activePeer?.id);
+    if (!key) return;
+    rememberConversation(key, {
+      messages: state.messages,
+      appearance: state.chatAppearance,
+      hasMore: state.hasOlderMessages
+    });
+  }
+
   function activeChatId() {
     if (state.activeGroup) return state.activeGroup.id;
     return state.activePeer ? [state.me.id, state.activePeer.id].sort().join('__') : null;
@@ -559,6 +586,8 @@
     if (isMobileLayout()) {
       state.activePeer = null;
       state.activeGroup = null;
+      state.chatLoading = false;
+      state.chatOpenToken += 1;
       state.chatProfileOpen = false;
       state.chatProfileSocialView = null;
     } else if (hasActiveConversation()) {
@@ -866,21 +895,31 @@
     const messages = document.getElementById('messages');
     if (!messages) return;
     let cancelled = false;
-    const cancel = () => { cancelled = true; };
+    let frame = 0;
+    let observer = null;
+    const cancel = () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
     messages.addEventListener('pointerdown', cancel, { once: true, passive: true });
     messages.addEventListener('touchstart', cancel, { once: true, passive: true });
     messages.addEventListener('wheel', cancel, { once: true, passive: true });
     const settle = () => {
       if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
       messages.scrollTop = messages.scrollHeight;
-      updateBubbleViewportColors();
     };
-    requestAnimationFrame(settle);
-    [60, 140, 260, 480, 760, 1100, 1500].forEach((delay) => setTimeout(settle, delay));
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(settle);
+    };
+    schedule();
+    setTimeout(schedule, 120);
+    setTimeout(schedule, 420);
     if (window.ResizeObserver) {
-      const observer = new ResizeObserver(settle);
+      observer = new ResizeObserver(schedule);
       observer.observe(messages);
-      setTimeout(() => observer.disconnect(), 1600);
+      setTimeout(() => observer?.disconnect(), 900);
     }
   }
 
@@ -923,7 +962,6 @@
     applyRenderScroll(scrollMode, scrollSnapshot);
     restorePersistentScroll();
     if (forwardEntry) restorePreviewScroll(document.querySelector('.route-preview-forward'), forwardEntry);
-    updateBubbleViewportColors();
     setTimeout(() => {
       resizeComposerInput();
       if (state.storyEditor?.textEditing) {
@@ -933,9 +971,6 @@
         resizeStoryTextInput(storyText);
         centerStoryActiveChoice();
       }
-      applyRenderScroll(scrollMode, scrollSnapshot);
-      restorePersistentScroll();
-      updateBubbleViewportColors();
       if (scrollMode === 'bottom') stabilizeBottomScroll();
       attachCallStreams();
       attachStoryEditorVideo();
@@ -2856,7 +2891,7 @@
         </div>
         <div class="highlight-row">
           ${own ? `
-            <button class="highlight-add" data-action="open-story-create" aria-label="Add highlight">
+            <button class="highlight-add" data-action="open-story-create" data-highlight="true" aria-label="Add highlight">
               <span>+</span>
               <small>New</small>
             </button>
@@ -3063,33 +3098,6 @@
     return `--chat-bg:${backgroundColor};--chat-bubble-top:${mineColor};--chat-bubble-bottom:${theirsColor};--chat-bubble-text:${readableTextColor(mineColor)};--chat-mine:${mineColor};--chat-mine-text:${readableTextColor(mineColor)};--chat-theirs:${theirsColor};--chat-theirs-text:${readableTextColor(theirsColor)};`;
   }
 
-  function chatRgb(hex, fallback) {
-    const match = /^#([0-9a-f]{6})$/i.exec(chatColor(hex, fallback));
-    const value = parseInt(match[1], 16);
-    return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-  }
-
-  let bubbleColorFrame = 0;
-  function updateBubbleViewportColors() {
-    cancelAnimationFrame(bubbleColorFrame);
-    bubbleColorFrame = requestAnimationFrame(() => {
-      const pane = document.querySelector('.chat-pane.active-chat');
-      const messages = document.getElementById('messages');
-      if (!pane || !messages) return;
-      const topColor = chatRgb(state.chatAppearance?.mineColor, defaultChatAppearance().mineColor);
-      const bottomColor = chatRgb(state.chatAppearance?.theirsColor, defaultChatAppearance().theirsColor);
-      const bounds = messages.getBoundingClientRect();
-      const height = Math.max(1, bounds.height);
-      messages.querySelectorAll('.message:not(.media-message):not(.sticker-message) .bubble').forEach((bubble) => {
-        const rect = bubble.getBoundingClientRect();
-        const center = rect.top + Math.min(rect.height, height) / 2;
-        const ratio = clamp((center - bounds.top) / height, 0, 1);
-        const rgb = topColor.map((value, index) => Math.round(value + (bottomColor[index] - value) * ratio));
-        bubble.style.setProperty('--message-bubble-color', `rgb(${rgb.join(',')})`);
-      });
-    });
-  }
-
   function renderChatCustomization() {
     if (!state.chatCustomizationOpen || !hasActiveConversation()) return '';
     const settings = { ...defaultChatAppearance(), ...(state.chatAppearance || {}) };
@@ -3139,6 +3147,7 @@
     if (!hasActiveConversation()) return;
     const data = await api(activeAppearanceUrl(), { method: 'PATCH', body: patch });
     state.chatAppearance = data.settings;
+    rememberActiveConversation();
     applyChatAppearanceUi();
     updateChatCustomizationSlot();
   }
@@ -3150,7 +3159,6 @@
       pane.classList.toggle(`chat-background-${name}`, state.chatAppearance?.background === name);
     }
     pane.setAttribute('style', chatAppearanceStyle());
-    updateBubbleViewportColors();
   }
 
   function renderChatPane() {
@@ -3253,11 +3261,11 @@
           </div>
           ${renderHighlights(peer, false)}
           ${renderProfileSuggestions(peer)}
-          <section class="panel-card">
-            <h2>Chat</h2>
-            <div class="toolbar">
-              <button class="secondary" data-action="export-chat" data-format="json">Save chatlog JSON</button>
-              <button class="secondary" data-action="export-chat" data-format="html">Save chatlog HTML</button>
+          <section class="panel-card chat-export-panel">
+            <h2>Export chat</h2>
+            <div class="chat-export-actions">
+              <button data-action="export-chat" data-format="json" title="Save chat as JSON">${icon('download')}<span>JSON</span></button>
+              <button data-action="export-chat" data-format="html" title="Save chat as HTML">${icon('download')}<span>HTML</span></button>
             </div>
           </section>
           <section class="panel-card chat-profile-appearance">
@@ -3653,7 +3661,9 @@
 
   function renderMessagesList() {
     const olderLoader = state.loadingOlderMessages ? '<div class="older-loader"><span class="spinner"></span></div>' : '';
-    if (state.messages.length) return `${olderLoader}${state.messages.map(renderMessage).join('')}${renderTypingIndicator()}`;
+    const openingLoader = state.chatLoading ? '<div class="chat-loading-indicator" role="status" aria-label="Loading messages"><span class="spinner"></span></div>' : '';
+    if (state.messages.length) return `${openingLoader}${olderLoader}${state.messages.map(renderMessage).join('')}${renderTypingIndicator()}`;
+    if (state.chatLoading) return '<div class="chat-loading-state" role="status"><span class="spinner"></span><small>Loading messages</small></div>';
     if ((state.activePeer && state.typingPeerId === state.activePeer.id) || (state.activeGroup && state.typingGroup?.groupId === state.activeGroup.id)) return renderTypingIndicator();
     return '<div class="empty-state">No messages yet. Send the first one.</div>';
   }
@@ -4148,9 +4158,9 @@
             ${state.storyPublishing ? '<span class="story-upload-progress" aria-label="Posting story"><i></i></span>' : ''}
             <button class="story-share-pill" data-action="publish-story" ${state.storyPublishing ? 'disabled' : ''}>
               ${avatarHtml(state.me)}
-              <strong>${state.storyPublishing ? 'Posting...' : 'Your story'}</strong>
+              <strong>${state.storyPublishing ? 'Posting...' : (editor.publishAsHighlight ? 'Add to highlights' : 'Your story')}</strong>
             </button>
-            <button class="story-share-send" data-action="publish-story" aria-label="Share story" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : icon('send')}</button>
+            <button class="story-share-send" data-action="publish-story" aria-label="${editor.publishAsHighlight ? 'Add to highlights' : 'Share story'}" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : icon('send')}</button>
           </div>
         `}
       </div>
@@ -4493,7 +4503,10 @@
   async function openChat(userId, highlightMessageId = null, options = {}) {
     const peer = userById(userId);
     if (!peer) return;
+    if (state.activePeer?.id === userId && !state.chatProfileOpen && !highlightMessageId && !state.chatLoading) return;
     const navigationEntry = isMobileLayout() && options.pushNavigation !== false ? captureNavigationEntry('chat') : null;
+    const cacheKey = conversationCacheKey('peer', userId);
+    const cached = state.conversationCache.get(cacheKey);
     state.activePeer = peer;
     state.activeGroup = null;
     if (state.searchProfileOpen) {
@@ -4507,31 +4520,58 @@
       state.profileSocialView = null;
     }
     state.chatOpening = !highlightMessageId;
-    state.chatOpenToken += 1;
+    const openToken = ++state.chatOpenToken;
+    state.chatLoading = true;
     state.chatProfileOpen = false;
     state.chatProfileSocialView = null;
     state.replyTo = null;
     state.stickerPanel = false;
     state.typingPeerId = null;
     state.highlightMessageId = highlightMessageId;
-    state.hasOlderMessages = false;
+    state.messages = cached?.messages || [];
+    state.chatAppearance = cached?.appearance || defaultChatAppearance();
+    state.hasOlderMessages = Boolean(cached?.hasMore);
     state.loadingOlderMessages = false;
     delete state.unreadByPeer[userId];
-    const [data, appearance] = await Promise.all([
-      api(`/api/chats/${encodeURIComponent(userId)}/messages?limit=200`),
-      api(`/api/chats/${encodeURIComponent(userId)}/appearance`).catch(() => ({ settings: defaultChatAppearance() }))
-    ]);
-    state.messages = data.messages;
-    state.chatAppearance = appearance.settings || defaultChatAppearance();
-    state.hasOlderMessages = Boolean(data.hasMore);
     if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
-    renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
+    const scrollMode = highlightMessageId ? 'preserve' : 'bottom';
+    if (navigationEntry || !updateChatPane({ scroll: scrollMode })) renderApp({ scroll: scrollMode });
+    else updateSidebar();
+    try {
+      const [data, appearance] = await Promise.all([
+        api(`/api/chats/${encodeURIComponent(userId)}/messages?limit=200`),
+        api(`/api/chats/${encodeURIComponent(userId)}/appearance`).catch(() => ({ settings: defaultChatAppearance() }))
+      ]);
+      const cacheValue = {
+        messages: data.messages || [],
+        appearance: appearance.settings || defaultChatAppearance(),
+        hasMore: Boolean(data.hasMore)
+      };
+      rememberConversation(cacheKey, cacheValue);
+      if (openToken !== state.chatOpenToken || state.activePeer?.id !== userId) return;
+      state.messages = cacheValue.messages;
+      state.chatAppearance = cacheValue.appearance;
+      state.hasOlderMessages = cacheValue.hasMore;
+      state.chatLoading = false;
+      applyChatAppearanceUi();
+      updateMessagesList({ scroll: scrollMode });
+      if (scrollMode === 'bottom') stabilizeBottomScroll();
+    } catch (error) {
+      if (openToken === state.chatOpenToken && state.activePeer?.id === userId) {
+        state.chatLoading = false;
+        updateMessagesList({ scroll: 'preserve' });
+      }
+      throw error;
+    }
   }
 
   async function openGroup(groupId, highlightMessageId = null, options = {}) {
     const group = state.groups.find((item) => item.id === groupId);
     if (!group) return;
+    if (state.activeGroup?.id === groupId && !state.chatProfileOpen && !highlightMessageId && !state.chatLoading) return;
     const navigationEntry = isMobileLayout() && options.pushNavigation !== false ? captureNavigationEntry('group-chat') : null;
+    const cacheKey = conversationCacheKey('group', groupId);
+    const cached = state.conversationCache.get(cacheKey);
     state.activeGroup = group;
     state.activePeer = null;
     state.chatProfileOpen = false;
@@ -4541,25 +4581,49 @@
     state.typingPeerId = null;
     state.typingGroup = null;
     state.highlightMessageId = highlightMessageId;
-    state.hasOlderMessages = false;
+    state.messages = cached?.messages || [];
+    state.chatAppearance = cached?.appearance || defaultChatAppearance();
+    state.hasOlderMessages = Boolean(cached?.hasMore);
     state.loadingOlderMessages = false;
     state.chatOpening = !highlightMessageId;
-    state.chatOpenToken += 1;
+    const openToken = ++state.chatOpenToken;
+    state.chatLoading = true;
     delete state.unreadByPeer[groupId];
     if (isMobileLayout()) {
       state.tab = 'chats';
       state.lastTab = 'chats';
     }
-    const [data, appearance] = await Promise.all([
-      api(`/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`),
-      api(`/api/groups/${encodeURIComponent(groupId)}/appearance`).catch(() => ({ settings: defaultChatAppearance() }))
-    ]);
-    state.activeGroup = data.group || group;
-    state.messages = data.messages || [];
-    state.chatAppearance = appearance.settings || defaultChatAppearance();
-    state.hasOlderMessages = Boolean(data.hasMore);
     if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
-    renderApp({ scroll: highlightMessageId ? 'preserve' : 'bottom' });
+    const scrollMode = highlightMessageId ? 'preserve' : 'bottom';
+    if (navigationEntry || !updateChatPane({ scroll: scrollMode })) renderApp({ scroll: scrollMode });
+    else updateSidebar();
+    try {
+      const [data, appearance] = await Promise.all([
+        api(`/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`),
+        api(`/api/groups/${encodeURIComponent(groupId)}/appearance`).catch(() => ({ settings: defaultChatAppearance() }))
+      ]);
+      const cacheValue = {
+        messages: data.messages || [],
+        appearance: appearance.settings || defaultChatAppearance(),
+        hasMore: Boolean(data.hasMore)
+      };
+      rememberConversation(cacheKey, cacheValue);
+      if (openToken !== state.chatOpenToken || state.activeGroup?.id !== groupId) return;
+      state.activeGroup = data.group || group;
+      state.messages = cacheValue.messages;
+      state.chatAppearance = cacheValue.appearance;
+      state.hasOlderMessages = cacheValue.hasMore;
+      state.chatLoading = false;
+      applyChatAppearanceUi();
+      updateMessagesList({ scroll: scrollMode });
+      if (scrollMode === 'bottom') stabilizeBottomScroll();
+    } catch (error) {
+      if (openToken === state.chatOpenToken && state.activeGroup?.id === groupId) {
+        state.chatLoading = false;
+        updateMessagesList({ scroll: 'preserve' });
+      }
+      throw error;
+    }
   }
 
   function userById(userId) {
@@ -4585,6 +4649,7 @@
     if (index >= 0) state.messages[index] = message;
     else state.messages.push(message);
     state.messages.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    rememberActiveConversation();
   }
 
   async function loadOlderMessages() {
@@ -4601,6 +4666,7 @@
       const older = (data.messages || []).filter((message) => !existing.has(message.id));
       state.messages = [...older, ...state.messages].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
       state.hasOlderMessages = Boolean(data.hasMore);
+      rememberActiveConversation();
     } finally {
       state.loadingOlderMessages = false;
       updateMessagesList({ scroll: 'preserve' });
@@ -4948,7 +5014,7 @@
     await uploadAvatarData(canvas.toDataURL('image/png'), `cropped-${crop.name.replace(/\.[^.]+$/, '')}.png`, crop.lastModified);
   }
 
-  function createStoryEditorState({ dataUrl, name, type, lastModified, textEditing = false, isBlankStory = false, initialTool = null }) {
+  function createStoryEditorState({ dataUrl, name, type, lastModified, textEditing = false, isBlankStory = false, initialTool = null, publishAsHighlight = false }) {
     return {
       dataUrl,
       name: name || 'story',
@@ -4956,6 +5022,7 @@
       lastModified: lastModified || Date.now(),
       isVideo: String(type || '').startsWith('video/'),
       isBlankStory,
+      publishAsHighlight: Boolean(publishAsHighlight),
       activeTool: textEditing ? 'text' : initialTool,
       textEditing,
       textPanel: 'font',
@@ -5072,23 +5139,26 @@
 
   async function beginStoryEditor(file) {
     if (!file) return;
+    const publishAsHighlight = Boolean(state.storyEditor?.publishAsHighlight);
     state.storyEditor = createStoryEditorState({
       dataUrl: await fileToDataUrl(file),
       name: file.name || 'story',
       type: file.type || 'application/octet-stream',
-      lastModified: file.lastModified || Date.now()
+      lastModified: file.lastModified || Date.now(),
+      publishAsHighlight
     });
     updateStoryEditorView();
   }
 
-  function beginBlankStoryEditor() {
+  function beginBlankStoryEditor(options = {}) {
     state.storyEditor = createStoryEditorState({
       dataUrl: createStoryBackgroundDataUrl('midnight'),
       name: 'story.png',
       type: 'image/png',
       lastModified: Date.now(),
       textEditing: false,
-      isBlankStory: true
+      isBlankStory: true,
+      publishAsHighlight: Boolean(options.publishAsHighlight)
     });
     updateStoryEditorView();
   }
@@ -5664,13 +5734,20 @@
             type: editor.audio.type,
             dataUrl: editor.audio.dataUrl,
             lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
-          } : null
+          } : null,
+          saved: Boolean(editor.publishAsHighlight)
         }
       });
       state.me = data.user;
       state.storyEditor = null;
       updateStoryEditorView();
       updateSidebar();
+      pushToast({
+        key: `story-published-${data.story.id}`,
+        kind: 'social',
+        title: editor.publishAsHighlight ? 'Added to highlights' : 'Story shared',
+        body: editor.publishAsHighlight ? 'This highlight now appears on your profile.' : 'Your story is live for 24 hours.'
+      });
     } finally {
       state.storyPublishing = false;
       if (state.storyEditor === editor) updateStoryEditorView();
@@ -6017,6 +6094,7 @@
   async function hideMessageForMe(messageId) {
     await api(`/api/messages/${encodeURIComponent(messageId)}/me`, { method: 'DELETE' });
     state.messages = state.messages.filter((message) => message.id !== messageId);
+    rememberActiveConversation();
     closeMessageFocus({ immediate: true });
     updateMessagesList({ scroll: 'preserve' });
     await refreshChatsOnly();
@@ -6355,6 +6433,7 @@
     }
     if (event.type === 'message:hidden') {
       state.messages = state.messages.filter((item) => item.id !== event.messageId);
+      rememberActiveConversation();
       updateMessagesList({ scroll: 'preserve' });
       await refreshChatsOnly();
       updateSidebar();
@@ -7005,7 +7084,25 @@
     messages.innerHTML = renderMessagesList();
     if (options.scroll === 'bottom' || (options.scroll === 'auto' && wasNearBottom)) scrollMessagesToBottom();
     else restoreMessagesScroll(snapshot, options.anchor === 'bottom' ? { anchor: 'bottom' } : {});
-    updateBubbleViewportColors();
+    return true;
+  }
+
+  function updateChatPane(options = {}) {
+    const current = document.querySelector('.chat-pane');
+    if (!current || !state.me) return false;
+    const template = document.createElement('template');
+    template.innerHTML = renderChatPane().trim();
+    const next = template.content.firstElementChild;
+    if (!next) return false;
+    current.replaceWith(next);
+    currentAppShell()?.classList.toggle('chat-open', hasActiveConversation());
+    resizeComposerInput();
+    applyRenderScroll(options.scroll || 'preserve', options.scrollSnapshot || null);
+    if (options.scroll === 'bottom') stabilizeBottomScroll();
+    setTimeout(() => {
+      next.classList.remove('chat-opening');
+      state.chatOpening = false;
+    }, 300);
     return true;
   }
 
@@ -7091,6 +7188,8 @@
         state.lastTab = 'chats';
         state.activePeer = null;
         state.activeGroup = null;
+        state.chatLoading = false;
+        state.conversationCache.clear();
         state.navigationStack = [];
         state.routeForward = null;
         state.navigationBusy = false;
@@ -7176,6 +7275,9 @@
         state.me = null;
         state.activePeer = null;
         state.activeGroup = null;
+        state.chatLoading = false;
+        state.chatOpenToken += 1;
+        state.conversationCache.clear();
         state.navigationStack = [];
         state.routeForward = null;
         state.navigationBusy = false;
@@ -7241,6 +7343,8 @@
         navigationBackOr(() => {
           state.activePeer = null;
           state.activeGroup = null;
+          state.chatLoading = false;
+          state.chatOpenToken += 1;
           state.tab = 'chats';
           state.lastTab = 'chats';
           state.chatProfileOpen = false;
@@ -8064,7 +8168,7 @@
         state.actionSheet = null;
         state.overlayClosing = false;
         updateActionSheetSlot();
-        beginBlankStoryEditor();
+        beginBlankStoryEditor({ publishAsHighlight: target.dataset.highlight === 'true' });
       }
       if (action === 'change-profile-picture') {
         document.getElementById('avatar-input')?.click();
@@ -8494,7 +8598,6 @@
 
   document.addEventListener('scroll', (event) => {
     if (event.target?.id === 'messages') {
-      updateBubbleViewportColors();
       if (event.target.scrollTop < 80) loadOlderMessages().catch((error) => alert(error.message));
     }
   }, true);
