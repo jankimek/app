@@ -312,15 +312,17 @@ function publicGif(gif, viewerId) {
 function basicPublicUser(user, viewerId = null) {
   if (!user) return null;
   const avatar = user.profile.avatarFileId ? db.files[user.profile.avatarFileId] : null;
+  const canSeeStories = canViewStories(user.id, viewerId);
   return {
     id: user.id,
     username: user.username,
     displayName: user.profile.displayName || user.username,
     bio: user.profile.bio || '',
     avatar: publicFile(avatar),
-    stories: canViewStories(user.id, viewerId)
+    stories: canSeeStories
       ? activeStoriesFor(user.id).map((story) => publicStory(story, viewerId))
       : [],
+    highlights: canSeeStories ? publicHighlightsFor(user, viewerId) : [],
     url: `/u/${encodeURIComponent(user.username)}`,
     createdAt: user.createdAt,
     socialPublic: user.profile?.socialPublic !== false,
@@ -709,6 +711,130 @@ function publicStory(story, viewerId = null) {
       };
     })
   };
+}
+
+function cleanHighlightTitle(value, fallback = 'Highlight') {
+  return cleanText(value || '', 32).trim() || fallback;
+}
+
+function legacyHighlightTitle(story) {
+  const text = cleanHighlightTitle(story?.edits?.text || '', 'Highlight');
+  return text.length > 24 ? `${text.slice(0, 23).trim()}...` : text;
+}
+
+function ensureUserHighlights(user) {
+  if (!user) return [];
+  if (!user.profile || typeof user.profile !== 'object') user.profile = {};
+  const rawHighlights = Array.isArray(user.profile.highlights) ? user.profile.highlights : [];
+  const normalized = [];
+  const referencedStoryIds = new Set();
+
+  rawHighlights.slice(0, 100).forEach((raw) => {
+    const storyIds = Array.from(new Set((Array.isArray(raw?.storyIds) ? raw.storyIds : [])
+      .map(String)
+      .filter((storyId) => {
+        const story = db.stories[storyId];
+        return story && story.ownerId === user.id && !story.deletedAt;
+      }))).slice(0, 100);
+    if (!storyIds.length) return;
+    storyIds.forEach((storyId) => referencedStoryIds.add(storyId));
+    const coverStoryId = storyIds.includes(raw?.coverStoryId) ? raw.coverStoryId : storyIds[0];
+    normalized.push({
+      id: cleanText(raw?.id || '', 120) || id('highlight'),
+      title: cleanHighlightTitle(raw?.title),
+      storyIds,
+      coverStoryId,
+      createdAt: raw?.createdAt || db.stories[storyIds[0]]?.createdAt || nowIso(),
+      updatedAt: raw?.updatedAt || raw?.createdAt || nowIso()
+    });
+  });
+
+  Object.values(db.stories)
+    .filter((story) => story.ownerId === user.id && story.saved && !story.deletedAt && !referencedStoryIds.has(story.id))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+    .forEach((story) => {
+      normalized.push({
+        id: id('highlight'),
+        title: legacyHighlightTitle(story),
+        storyIds: [story.id],
+        coverStoryId: story.id,
+        createdAt: story.createdAt,
+        updatedAt: story.createdAt
+      });
+      referencedStoryIds.add(story.id);
+    });
+
+  user.profile.highlights = normalized;
+  return normalized;
+}
+
+function highlightFor(user, highlightId) {
+  return ensureUserHighlights(user).find((highlight) => highlight.id === highlightId) || null;
+}
+
+function createHighlight(user, title, story = null) {
+  const timestamp = nowIso();
+  const highlight = {
+    id: id('highlight'),
+    title: cleanHighlightTitle(title),
+    storyIds: [],
+    coverStoryId: null,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+  ensureUserHighlights(user).push(highlight);
+  if (story) addStoryToHighlight(user, highlight, story);
+  return highlight;
+}
+
+function addStoryToHighlight(user, highlight, story) {
+  if (!user || !highlight || !story || story.ownerId !== user.id || story.deletedAt) return false;
+  if (!Array.isArray(highlight.storyIds)) highlight.storyIds = [];
+  if (!highlight.storyIds.includes(story.id)) highlight.storyIds.push(story.id);
+  highlight.storyIds = highlight.storyIds.slice(-100);
+  if (!highlight.coverStoryId || !highlight.storyIds.includes(highlight.coverStoryId)) {
+    highlight.coverStoryId = story.id;
+  }
+  highlight.updatedAt = nowIso();
+  story.saved = true;
+  story.expiresAt = null;
+  return true;
+}
+
+function publicHighlight(highlight, viewerId = null) {
+  if (!highlight) return null;
+  const stories = (highlight.storyIds || [])
+    .map((storyId) => db.stories[storyId])
+    .filter((story) => canViewStory(story, viewerId))
+    .map((story) => publicStory(story, viewerId));
+  if (!stories.length) return null;
+  const cover = stories.find((story) => story.id === highlight.coverStoryId) || stories[0];
+  return {
+    id: highlight.id,
+    title: highlight.title,
+    storyCount: stories.length,
+    coverStoryId: cover.id,
+    cover,
+    stories,
+    createdAt: highlight.createdAt,
+    updatedAt: highlight.updatedAt
+  };
+}
+
+function publicHighlightsFor(user, viewerId = null) {
+  return ensureUserHighlights(user)
+    .map((highlight) => publicHighlight(highlight, viewerId))
+    .filter(Boolean);
+}
+
+let migratedLegacyHighlights = false;
+Object.values(db.users).forEach((user) => {
+  const before = JSON.stringify(user.profile?.highlights || []);
+  ensureUserHighlights(user);
+  if (JSON.stringify(user.profile.highlights) !== before) migratedLegacyHighlights = true;
+});
+if (migratedLegacyHighlights) {
+  fs.writeFileSync(path.join(DATA_DIR, 'users.json'), JSON.stringify(db.users, null, 2));
 }
 
 function cleanStoryDrawings(raw) {
@@ -1347,7 +1473,8 @@ async function handleApi(req, res, pathname, query) {
         allowGroupAdds: true,
         mentionPermission: 'everyone',
         storyReplies: 'everyone',
-        friendRequests: 'everyone'
+        friendRequests: 'everyone',
+        highlights: []
       },
       twoFactor: {
         enabled: false,
@@ -1583,7 +1710,7 @@ async function handleApi(req, res, pathname, query) {
       audioFileId: audioFile?.id || null,
       createdAt: nowIso(),
       expiresAt: saved ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      saved,
+      saved: false,
       edits: {
         compositionVersion: Number(body.edits?.compositionVersion) >= 3 ? 3 : Number(body.edits?.compositionVersion) >= 2 ? 2 : 1,
         filter: [
@@ -1643,14 +1770,77 @@ async function handleApi(req, res, pathname, query) {
       deletedAt: null
     };
     db.stories[story.id] = story;
+    let highlight = null;
+    if (saved) {
+      highlight = body.highlightId ? highlightFor(user, cleanText(body.highlightId, 120)) : null;
+      if (!highlight) highlight = createHighlight(user, body.highlightTitle || legacyHighlightTitle(story));
+      addStoryToHighlight(user, highlight, story);
+    }
     const mentionText = [
       story.edits.text,
       story.edits.pollQuestion,
       ...story.edits.stickers.map((sticker) => sticker.label)
     ].join(' ');
     notifyMentions(user, mentionText, 'in a story');
-    await Promise.all([saveStories(), saveNotifications()]);
-    return sendJson(res, 201, { story: publicStory(story, user.id), user: publicUser(user, user.id) });
+    await Promise.all([saveStories(), saveNotifications(), ...(highlight ? [saveUsers()] : [])]);
+    return sendJson(res, 201, {
+      story: publicStory(story, user.id),
+      highlight: publicHighlight(highlight, user.id),
+      user: publicUser(user, user.id)
+    });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/highlights') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const title = cleanHighlightTitle(body.title, 'New highlight');
+    if (!body.storyId) return sendError(res, 400, 'Choose a story for this highlight.');
+    const story = body.storyId ? db.stories[cleanText(body.storyId, 120)] : null;
+    if (body.storyId && (!story || story.ownerId !== user.id || story.deletedAt)) {
+      return sendError(res, 404, 'Story not found.');
+    }
+    const highlight = createHighlight(user, title, story);
+    await Promise.all([saveUsers(), ...(story ? [saveStories()] : [])]);
+    return sendJson(res, 201, {
+      highlight: publicHighlight(highlight, user.id),
+      user: publicUser(user, user.id)
+    });
+  }
+
+  const highlightMatch = /^\/api\/highlights\/([^/]+)$/.exec(pathname);
+  if (req.method === 'PATCH' && highlightMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const highlight = highlightFor(user, decodeURIComponent(highlightMatch[1]));
+    if (!highlight) return sendError(res, 404, 'Highlight not found.');
+    const body = await readJsonBody(req);
+    const title = cleanText(body.title || '', 32).trim();
+    if (!title) return sendError(res, 400, 'Choose a name for this highlight.');
+    highlight.title = title;
+    highlight.updatedAt = nowIso();
+    await saveUsers();
+    return sendJson(res, 200, {
+      highlight: publicHighlight(highlight, user.id),
+      user: publicUser(user, user.id)
+    });
+  }
+
+  const highlightStoryMatch = /^\/api\/highlights\/([^/]+)\/stories$/.exec(pathname);
+  if (req.method === 'POST' && highlightStoryMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const highlight = highlightFor(user, decodeURIComponent(highlightStoryMatch[1]));
+    if (!highlight) return sendError(res, 404, 'Highlight not found.');
+    const body = await readJsonBody(req);
+    const story = db.stories[cleanText(body.storyId || '', 120)];
+    if (!story || story.ownerId !== user.id || story.deletedAt) return sendError(res, 404, 'Story not found.');
+    addStoryToHighlight(user, highlight, story);
+    await Promise.all([saveUsers(), saveStories()]);
+    return sendJson(res, 200, {
+      highlight: publicHighlight(highlight, user.id),
+      user: publicUser(user, user.id)
+    });
   }
 
   const storySaveMatch = /^\/api\/stories\/([^/]+)\/save$/.exec(pathname);
@@ -1659,10 +1849,16 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const story = db.stories[decodeURIComponent(storySaveMatch[1])];
     if (!story || story.ownerId !== user.id) return sendError(res, 404, 'Story not found.');
-    story.saved = true;
-    story.expiresAt = null;
-    await saveStories();
-    return sendJson(res, 200, { story: publicStory(story, user.id), user: publicUser(user, user.id) });
+    const body = await readJsonBody(req);
+    let highlight = body.highlightId ? highlightFor(user, cleanText(body.highlightId, 120)) : null;
+    if (!highlight) highlight = createHighlight(user, body.highlightTitle || legacyHighlightTitle(story));
+    addStoryToHighlight(user, highlight, story);
+    await Promise.all([saveStories(), saveUsers()]);
+    return sendJson(res, 200, {
+      story: publicStory(story, user.id),
+      highlight: publicHighlight(highlight, user.id),
+      user: publicUser(user, user.id)
+    });
   }
 
   const storyViewMatch = /^\/api\/stories\/([^/]+)\/view$/.exec(pathname);
@@ -1795,7 +1991,12 @@ async function handleApi(req, res, pathname, query) {
     const story = db.stories[decodeURIComponent(storyDeleteMatch[1])];
     if (!story || story.ownerId !== user.id) return sendError(res, 404, 'Story not found.');
     story.deletedAt = nowIso();
-    await saveStories();
+    ensureUserHighlights(user).forEach((highlight) => {
+      highlight.storyIds = highlight.storyIds.filter((storyId) => storyId !== story.id);
+      if (highlight.coverStoryId === story.id) highlight.coverStoryId = highlight.storyIds[0] || null;
+    });
+    user.profile.highlights = user.profile.highlights.filter((highlight) => highlight.storyIds.length);
+    await Promise.all([saveStories(), saveUsers()]);
     return sendJson(res, 200, { ok: true, user: publicUser(user, user.id) });
   }
 

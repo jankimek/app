@@ -133,8 +133,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function capturePersistentScroll/);
   assert.match(clientSource, /state\.tabSwipe = \{/);
   assert.match(styleSource, /background-attachment: fixed/);
-  assert.match(clientSource, /data-highlight="true"/);
-  assert.match(clientSource, /saved: Boolean\(editor\.publishAsHighlight\)/);
+  assert.match(clientSource, /data-action="open-highlight-composer"/);
+  assert.match(clientSource, /saved: publishToHighlight/);
+  assert.match(clientSource, /function renderHighlightComposer/);
+  assert.match(clientSource, /data-action="rename-highlight"/);
+  assert.match(clientSource, /data-action="publish-story-only"/);
   assert.match(clientSource, /conversationCache: new Map\(\)/);
   assert.match(clientSource, /function updateChatPane/);
   assert.match(styleSource, /class="message-focus-overlay"|\.message-focus-overlay/);
@@ -697,10 +700,28 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(directHighlight.data.story.saved, true);
   assert.equal(directHighlight.data.story.expiresAt, null);
   assert.ok(directHighlight.data.user.stories.some((item) => item.id === directHighlight.data.story.id && item.saved));
+  assert.equal(directHighlight.data.highlight.storyCount, 1);
+  assert.equal(directHighlight.data.user.highlights.length, 1);
+  const highlightId = directHighlight.data.highlight.id;
+  const renamedHighlight = await alice.request(`/api/highlights/${highlightId}`, {
+    method: 'PATCH',
+    body: { title: 'Summer memories' }
+  });
+  assert.equal(renamedHighlight.status, 200);
+  assert.equal(renamedHighlight.data.highlight.title, 'Summer memories');
+  const expandedHighlight = await alice.request(`/api/highlights/${highlightId}/stories`, {
+    method: 'POST',
+    body: { storyId: story.id }
+  });
+  assert.equal(expandedHighlight.status, 200);
+  assert.equal(expandedHighlight.data.highlight.storyCount, 2);
+  assert.deepEqual(expandedHighlight.data.highlight.stories.map((item) => item.id), [directHighlight.data.story.id, story.id]);
+  assert.equal(expandedHighlight.data.user.highlights.find((item) => item.id === highlightId).title, 'Summer memories');
 
   const privatePublicView = await anonymous.request('/api/users/alice_test');
   assert.equal(privatePublicView.status, 200);
   assert.equal(privatePublicView.data.user.stories.length, 0);
+  assert.equal(privatePublicView.data.user.highlights.length, 0);
   const privateNonFollowerView = await charlie.request('/api/users/alice_test');
   assert.equal(privateNonFollowerView.data.user.stories.length, 0);
   assert.equal((await charlie.request(`/api/stories/${story.id}/view`, { method: 'POST' })).status, 404);

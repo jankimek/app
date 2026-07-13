@@ -108,6 +108,7 @@
     avatarCrop: null,
     storyEditor: null,
     storyViewer: null,
+    highlightComposer: null,
     mediaViewer: null,
     stickerPanel: false,
     chatTrayTab: 'stickers',
@@ -749,7 +750,7 @@
       `;
       return;
     }
-    const highlights = (user.stories || []).filter((story) => story.saved && story.file);
+    const highlights = (user.highlights || []).filter((highlight) => highlight.cover?.file);
     app.innerHTML = `
       <main class="public-profile-screen">
         <section class="public-profile-page">
@@ -775,14 +776,14 @@
             <section class="highlight-strip public-highlights">
               <div class="highlight-head"><strong>Highlights</strong></div>
               <div class="highlight-row">
-                ${highlights.map((story) => `
+                ${highlights.map((highlight) => `
                   <article class="highlight-item">
                     <span class="highlight-media">
-                      ${story.file.mime?.startsWith('video/')
-                        ? `<video src="${esc(story.file.url)}" muted playsinline preload="metadata"></video>`
-                        : `<img src="${esc(story.file.url)}" alt="">`}
+                      ${highlight.cover.file.mime?.startsWith('video/')
+                        ? `<video src="${esc(highlight.cover.file.url)}" muted playsinline preload="metadata"></video>`
+                        : `<img src="${esc(highlight.cover.file.url)}" alt="">`}
                     </span>
-                    <small>${esc(String(story.edits?.text || '').trim().slice(0, 16) || 'Highlight')}</small>
+                    <small>${esc(highlight.title || 'Highlight')}</small>
                   </article>
                 `).join('')}
               </div>
@@ -947,6 +948,7 @@
       <div id="avatar-crop-slot">${renderAvatarCropper()}</div>
       <div id="story-editor-slot">${renderStoryEditor()}</div>
       <div id="story-viewer-slot">${renderStoryViewer()}</div>
+      <div id="highlight-composer-slot">${renderHighlightComposer()}</div>
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
       <div id="chat-customization-slot">${renderChatCustomization()}</div>
       <div id="sticker-creator-slot">${renderStickerCreator()}</div>
@@ -1035,6 +1037,10 @@
       startStoryCountdownClock();
     });
     return true;
+  }
+
+  function updateHighlightComposerSlot() {
+    return updateSlot('highlight-composer-slot', renderHighlightComposer());
   }
 
   function updateMediaViewerSlot() {
@@ -2882,7 +2888,7 @@
   }
 
   function renderHighlights(user, own) {
-    const highlights = (user.stories || []).filter((story) => story.saved);
+    const highlights = (user.highlights || []).filter((highlight) => highlight.cover?.file && highlight.stories?.length);
     if (!own && !highlights.length) return '';
     return `
       <section class="highlight-strip">
@@ -2891,21 +2897,103 @@
         </div>
         <div class="highlight-row">
           ${own ? `
-            <button class="highlight-add" data-action="open-story-create" data-highlight="true" aria-label="Add highlight">
+            <button class="highlight-add" data-action="open-highlight-composer" aria-label="Add highlight">
               <span>+</span>
               <small>New</small>
             </button>
           ` : ''}
-          ${highlights.map((story) => `
+          ${highlights.map((highlight) => `
             <article class="highlight-item">
-              <button class="highlight-media" data-action="view-story" data-story-id="${esc(story.id)}">
-                ${renderStoryMedia(story, true)}
+              <button class="highlight-media" data-action="view-story" data-story-id="${esc(highlight.stories[0].id)}" data-highlight-id="${esc(highlight.id)}" aria-label="View ${esc(highlight.title)}">
+                ${renderStoryMedia(highlight.cover, true)}
               </button>
-              <small>${esc(String(story.edits?.text || '').trim().slice(0, 16) || 'Highlight')}</small>
+              ${own
+                ? `<button class="highlight-title" data-action="rename-highlight" data-highlight-id="${esc(highlight.id)}">${esc(highlight.title || 'Highlight')}</button>`
+                : `<small>${esc(highlight.title || 'Highlight')}</small>`}
             </article>
           `).join('') || (own ? '' : '<p class="hint">Save a story to keep it here.</p>')}
         </div>
       </section>
+    `;
+  }
+
+  function highlightById(user, highlightId) {
+    return (user?.highlights || []).find((highlight) => highlight.id === highlightId) || null;
+  }
+
+  function highlightMembershipCount(user, storyId) {
+    return (user?.highlights || []).filter((highlight) => (
+      highlight.stories || []
+    ).some((story) => story.id === storyId)).length;
+  }
+
+  function renderHighlightComposer() {
+    const composer = state.highlightComposer;
+    if (!composer || !state.me) return '';
+    const highlights = state.me.highlights || [];
+    const postedStories = (state.me.stories || []).filter((story) => story.file);
+    const isTarget = composer.mode === 'target';
+    const isRename = composer.mode === 'rename';
+    const heading = isRename ? 'Rename highlight' : isTarget ? 'Choose highlight' : 'Add to highlight';
+    return `
+      <div class="highlight-composer-overlay" data-action="close-highlight-composer">
+        <section class="highlight-composer" data-stop-close>
+          <header class="highlight-composer-head">
+            ${isTarget && composer.source === 'existing'
+              ? `<button class="highlight-composer-icon" data-action="highlight-composer-back" aria-label="Back">${icon('back')}</button>`
+              : '<span class="highlight-composer-head-spacer"></span>'}
+            <strong>${heading}</strong>
+            <button class="highlight-composer-icon" data-action="close-highlight-composer" aria-label="Close">${icon('x')}</button>
+          </header>
+          ${isRename ? `
+            <div class="highlight-name-editor">
+              <label for="highlight-rename-input">Name</label>
+              <input id="highlight-rename-input" maxlength="32" value="${esc(composer.title || '')}" autocomplete="off" autofocus>
+              <button class="highlight-confirm" data-action="save-highlight-name" data-highlight-id="${esc(composer.highlightId)}">Save</button>
+            </div>
+          ` : isTarget ? `
+            <div class="highlight-target-body">
+              ${highlights.length ? `
+                <div class="highlight-target-list">
+                  ${highlights.map((highlight) => `
+                    <button class="highlight-target-row" data-action="choose-highlight-target" data-highlight-id="${esc(highlight.id)}">
+                      <span class="highlight-target-cover">
+                        ${highlight.cover?.file ? renderStoryMedia(highlight.cover, true) : icon('plus')}
+                      </span>
+                      <span><strong>${esc(highlight.title || 'Highlight')}</strong><small>${highlight.storyCount || highlight.stories?.length || 0} ${(highlight.storyCount || highlight.stories?.length || 0) === 1 ? 'story' : 'stories'}</small></span>
+                      ${icon('chevron')}
+                    </button>
+                  `).join('')}
+                </div>
+              ` : '<p class="highlight-empty">Create your first highlight for this story.</p>'}
+              <div class="highlight-new-target">
+                <input id="highlight-new-name" maxlength="32" placeholder="New highlight name" autocomplete="off">
+                <button data-action="create-highlight-target">Create</button>
+              </div>
+            </div>
+          ` : `
+            <button class="highlight-create-story" data-action="highlight-create-story">
+              <span>${icon('plus')}</span>
+              <span><strong>Create new story</strong><small>Edit a photo or video, then add it here</small></span>
+              ${icon('chevron')}
+            </button>
+            <div class="highlight-library-head">
+              <strong>Posted stories</strong>
+              <small>Choose one to add to a highlight</small>
+            </div>
+            ${postedStories.length ? `
+              <div class="highlight-story-grid">
+                ${postedStories.map((story) => `
+                  <button data-action="select-highlight-story" data-story-id="${esc(story.id)}" aria-label="Add posted story">
+                    ${renderStoryMedia(story, true)}
+                    ${highlightMembershipCount(state.me, story.id) ? `<span>${highlightMembershipCount(state.me, story.id)}</span>` : ''}
+                  </button>
+                `).join('')}
+              </div>
+            ` : '<p class="highlight-empty">Your posted stories will appear here.</p>'}
+          `}
+        </section>
+      </div>
     `;
   }
 
@@ -4064,14 +4152,14 @@
     }
     if (sheet.type === 'story-owner') {
       const story = storyById(sheet.storyId);
+      const highlightCount = story ? highlightMembershipCount(state.me, story.id) : 0;
       body = story ? `
         <header class="story-owner-menu-head">
           <strong>Story</strong>
           <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close story menu">${icon('x')}</button>
         </header>
-        ${story.saved
-          ? '<span class="story-owner-saved">Saved to highlights</span>'
-          : `<button class="story-owner-action" data-action="save-story" data-story-id="${esc(story.id)}">${icon('download')}<span>Save to highlights</span></button>`}
+        ${highlightCount ? `<span class="story-owner-saved">In ${highlightCount} ${highlightCount === 1 ? 'highlight' : 'highlights'}</span>` : ''}
+        <button class="story-owner-action" data-action="save-story" data-story-id="${esc(story.id)}">${icon('plus')}<span>${highlightCount ? 'Add to another highlight' : 'Add to highlight'}</span></button>
         <button class="story-owner-action danger-text" data-action="delete-story" data-story-id="${esc(story.id)}">${icon('trash')}<span>Delete story</span></button>
       ` : '';
     }
@@ -4156,11 +4244,13 @@
         ${editor.activeTool ? '' : `
           <div class="story-share-bar" data-stop-close>
             ${state.storyPublishing ? '<span class="story-upload-progress" aria-label="Posting story"><i></i></span>' : ''}
-            <button class="story-share-pill" data-action="publish-story" ${state.storyPublishing ? 'disabled' : ''}>
+            <button class="story-share-pill" data-action="${editor.publishAsHighlight ? 'choose-highlight-for-new-story' : 'publish-story'}" ${state.storyPublishing ? 'disabled' : ''}>
               ${avatarHtml(state.me)}
-              <strong>${state.storyPublishing ? 'Posting...' : (editor.publishAsHighlight ? 'Add to highlights' : 'Your story')}</strong>
+              <strong>${state.storyPublishing ? 'Posting...' : (editor.publishAsHighlight ? 'Add to highlight' : 'Your story')}</strong>
             </button>
-            <button class="story-share-send" data-action="publish-story" aria-label="${editor.publishAsHighlight ? 'Add to highlights' : 'Share story'}" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : icon('send')}</button>
+            ${editor.publishAsHighlight
+              ? `<button class="story-send-story" data-action="publish-story-only" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : 'Send to story'}</button>`
+              : `<button class="story-share-send" data-action="publish-story" aria-label="Share story" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : icon('send')}</button>`}
           </div>
         `}
       </div>
@@ -4171,17 +4261,24 @@
     return storyUsers().find((user) => (user.stories || []).some((story) => story.id === storyId)) || null;
   }
 
+  function storiesForViewer(owner, currentStory) {
+    const highlightId = state.storyViewer?.highlightId;
+    if (highlightId) {
+      const highlight = highlightById(owner, highlightId);
+      if (highlight) return (highlight.stories || []).filter((story) => story.file);
+    }
+    return (owner?.stories || []).filter((story) => (
+      story.file && !story.saved && new Date(story.expiresAt || 0).getTime() > Date.now()
+    ));
+  }
+
   function renderStoryViewer() {
     const storyId = state.storyViewer?.storyId;
     if (!storyId) return '';
     const story = storyById(storyId);
     const owner = storyOwnerById(storyId);
     if (!story || !owner) return '';
-    const stories = (owner.stories || []).filter((item) => (
-      item.file && (story.saved
-        ? item.saved
-        : !item.saved && new Date(item.expiresAt || 0).getTime() > Date.now())
-    ));
+    const stories = storiesForViewer(owner, story);
     const index = Math.max(0, stories.findIndex((item) => item.id === story.id));
     const isVideo = story.file?.mime?.startsWith('video/');
     const ownStory = owner.id === state.me?.id;
@@ -5713,9 +5810,12 @@
     }
   }
 
-  async function publishStory() {
+  async function publishStory(options = {}) {
     const editor = state.storyEditor;
     if (!editor || state.storyPublishing) return;
+    const highlightId = options.highlightId || null;
+    const highlightTitle = String(options.highlightTitle || '').trim();
+    const publishToHighlight = Boolean(highlightId || highlightTitle);
     state.storyPublishing = true;
     updateStoryEditorView();
     try {
@@ -5735,18 +5835,22 @@
             dataUrl: editor.audio.dataUrl,
             lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
           } : null,
-          saved: Boolean(editor.publishAsHighlight)
+          saved: publishToHighlight,
+          highlightId,
+          highlightTitle
         }
       });
       state.me = data.user;
       state.storyEditor = null;
+      state.highlightComposer = null;
       updateStoryEditorView();
+      updateHighlightComposerSlot();
       updateSidebar();
       pushToast({
         key: `story-published-${data.story.id}`,
         kind: 'social',
-        title: editor.publishAsHighlight ? 'Added to highlights' : 'Story shared',
-        body: editor.publishAsHighlight ? 'This highlight now appears on your profile.' : 'Your story is live for 24 hours.'
+        title: publishToHighlight ? 'Added to highlight' : 'Story shared',
+        body: publishToHighlight ? 'The story was added to your highlight.' : 'Your story is live for 24 hours.'
       });
     } finally {
       state.storyPublishing = false;
@@ -5754,13 +5858,76 @@
     }
   }
 
-  async function saveStory(storyId) {
-    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/save`, { method: 'POST' });
-    state.me = data.user;
+  function openHighlightComposer(options = {}) {
     state.actionSheet = null;
+    state.overlayClosing = false;
     updateActionSheetSlot();
+    state.highlightComposer = options.mode
+      ? options
+      : { mode: 'source' };
+    updateHighlightComposerSlot();
+  }
+
+  async function addStoryToHighlightCollection(storyId, highlightId) {
+    const data = await api(`/api/highlights/${encodeURIComponent(highlightId)}/stories`, {
+      method: 'POST',
+      body: { storyId }
+    });
+    state.me = data.user;
+    state.highlightComposer = null;
+    updateHighlightComposerSlot();
     updateStoryViewerView();
     updateSidebar();
+    pushToast({
+      key: `highlight-added-${storyId}-${highlightId}`,
+      kind: 'social',
+      title: 'Added to highlight',
+      body: `Saved in ${data.highlight?.title || 'your highlight'}.`
+    });
+  }
+
+  async function createHighlightTarget(title) {
+    const composer = state.highlightComposer;
+    if (!composer) return;
+    const cleanTitle = String(title || '').trim();
+    if (!cleanTitle) throw new Error('Choose a name for the highlight.');
+    if (composer.source === 'editor') {
+      await publishStory({ highlightTitle: cleanTitle });
+      return;
+    }
+    const data = await api('/api/highlights', {
+      method: 'POST',
+      body: { title: cleanTitle, storyId: composer.storyId }
+    });
+    state.me = data.user;
+    state.highlightComposer = null;
+    updateHighlightComposerSlot();
+    updateStoryViewerView();
+    updateSidebar();
+    pushToast({
+      key: `highlight-created-${data.highlight?.id || Date.now()}`,
+      kind: 'social',
+      title: 'Highlight created',
+      body: `${cleanTitle} is now on your profile.`
+    });
+  }
+
+  async function renameHighlight(highlightId, title) {
+    const cleanTitle = String(title || '').trim();
+    if (!cleanTitle) throw new Error('Choose a name for the highlight.');
+    const data = await api(`/api/highlights/${encodeURIComponent(highlightId)}`, {
+      method: 'PATCH',
+      body: { title: cleanTitle }
+    });
+    state.me = data.user;
+    state.highlightComposer = null;
+    updateHighlightComposerSlot();
+    updateStoryViewerView();
+    updateSidebar();
+  }
+
+  function saveStory(storyId) {
+    openHighlightComposer({ mode: 'target', source: 'existing', storyId });
   }
 
   async function deleteStory(storyId) {
@@ -5807,13 +5974,18 @@
       if (index >= 0) stories[index] = { ...stories[index], ...updatedStory };
       else stories.unshift(updatedStory);
       user.stories = stories.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      (user.highlights || []).forEach((highlight) => {
+        const highlightIndex = (highlight.stories || []).findIndex((story) => story.id === updatedStory.id);
+        if (highlightIndex >= 0) highlight.stories[highlightIndex] = { ...highlight.stories[highlightIndex], ...updatedStory };
+        if (highlight.cover?.id === updatedStory.id) highlight.cover = { ...highlight.cover, ...updatedStory };
+      });
     }
   }
 
-  async function viewStory(storyId) {
+  async function viewStory(storyId, highlightId = null) {
     const data = await api(`/api/stories/${encodeURIComponent(storyId)}/view`, { method: 'POST' });
     replaceStory(data.story);
-    state.storyViewer = data.story?.file ? { storyId: data.story.id } : null;
+    state.storyViewer = data.story?.file ? { storyId: data.story.id, highlightId: highlightId || null } : null;
     state.mediaViewer = null;
     updateMediaViewerSlot();
     updateStoryViewerView();
@@ -5824,11 +5996,8 @@
     const storyId = state.storyViewer?.storyId;
     const owner = storyOwnerById(storyId);
     const currentStory = storyById(storyId);
-    const stories = (owner?.stories || []).filter((story) => (
-      story.file && (currentStory?.saved
-        ? story.saved
-        : !story.saved && new Date(story.expiresAt || 0).getTime() > Date.now())
-    ));
+    const highlightId = state.storyViewer?.highlightId || null;
+    const stories = storiesForViewer(owner, currentStory);
     const index = stories.findIndex((story) => story.id === storyId);
     const next = stories[index + direction];
     if (!next) {
@@ -5837,7 +6006,7 @@
       updateStoryViewerView();
       return;
     }
-    await viewStory(next.id);
+    await viewStory(next.id, highlightId);
   }
 
   async function toggleStoryLike(storyId) {
@@ -7248,6 +7417,7 @@
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-highlight-composer' && target.classList.contains('highlight-composer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-media' && target.classList.contains('media-viewer') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-chat-customization' && target.classList.contains('chat-customization-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-sticker-creator' && target.classList.contains('sticker-creator-page') && event.target.closest('[data-stop-close]')) return;
@@ -7561,11 +7731,13 @@
       }
       if (action === 'close-story-editor') {
         state.storyEditor = null;
+        state.highlightComposer = null;
         state.storyVideoTrimDrag = null;
         storyTextPointers.clear();
         storyMediaPointers.clear();
         storyStickerPointers.clear();
         updateStoryEditorView();
+        updateHighlightComposerSlot();
       }
       if (action === 'story-filter-panel') {
         if (state.storyEditor) state.storyEditor.filterPanel = target.dataset.panel || 'filters';
@@ -7853,8 +8025,14 @@
       if (action === 'publish-story') {
         await publishStory();
       }
+      if (action === 'publish-story-only') {
+        await publishStory();
+      }
+      if (action === 'choose-highlight-for-new-story') {
+        openHighlightComposer({ mode: 'target', source: 'editor' });
+      }
       if (action === 'view-story') {
-        await viewStory(target.dataset.storyId);
+        await viewStory(target.dataset.storyId, target.dataset.highlightId || null);
       }
       if (action === 'close-story-viewer') {
         clearStoryAdvance();
@@ -8169,6 +8347,45 @@
         state.overlayClosing = false;
         updateActionSheetSlot();
         beginBlankStoryEditor({ publishAsHighlight: target.dataset.highlight === 'true' });
+      }
+      if (action === 'open-highlight-composer') {
+        openHighlightComposer();
+      }
+      if (action === 'close-highlight-composer') {
+        state.highlightComposer = null;
+        updateHighlightComposerSlot();
+      }
+      if (action === 'highlight-composer-back') {
+        state.highlightComposer = { mode: 'source' };
+        updateHighlightComposerSlot();
+      }
+      if (action === 'highlight-create-story') {
+        state.highlightComposer = null;
+        updateHighlightComposerSlot();
+        beginBlankStoryEditor({ publishAsHighlight: true });
+      }
+      if (action === 'select-highlight-story') {
+        state.highlightComposer = { mode: 'target', source: 'existing', storyId: target.dataset.storyId };
+        updateHighlightComposerSlot();
+      }
+      if (action === 'choose-highlight-target') {
+        const composer = state.highlightComposer;
+        if (composer?.source === 'editor') await publishStory({ highlightId: target.dataset.highlightId });
+        else if (composer?.storyId) await addStoryToHighlightCollection(composer.storyId, target.dataset.highlightId);
+      }
+      if (action === 'create-highlight-target') {
+        await createHighlightTarget(document.getElementById('highlight-new-name')?.value);
+      }
+      if (action === 'rename-highlight') {
+        const highlight = highlightById(state.me, target.dataset.highlightId);
+        if (highlight) openHighlightComposer({
+          mode: 'rename',
+          highlightId: highlight.id,
+          title: highlight.title || 'Highlight'
+        });
+      }
+      if (action === 'save-highlight-name') {
+        await renameHighlight(target.dataset.highlightId, document.getElementById('highlight-rename-input')?.value);
       }
       if (action === 'change-profile-picture') {
         document.getElementById('avatar-input')?.click();
