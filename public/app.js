@@ -1212,7 +1212,7 @@
             </div>
             <div class="suggested-user-list">
               ${recommendations.length
-                ? recommendations.slice(0, 10).map((user) => renderAccountRow(user, { dismissible: true })).join('')
+                ? recommendations.map((user) => renderAccountRow(user, { dismissible: true })).join('')
                 : `<div class="search-empty">${icon('profile')}<strong>No suggestions yet</strong><small>Try searching for a username.</small></div>`}
             </div>
           </section>
@@ -1360,19 +1360,18 @@
     const recommendations = mixedProfileSuggestions(state.me);
     return `
       <section class="suggestion-section">
-        <button class="suggestion-toggle" data-action="toggle-recommendations">
-          <span>Suggested for you</span>
-          <span class="chevron ${state.recommendationsOpen ? 'open' : ''}">${icon('chevron')}</span>
-        </button>
+        <div class="suggestion-heading-row">
+          <button class="suggestion-toggle" data-action="toggle-recommendations" aria-expanded="${state.recommendationsOpen}">
+            <span><strong>Suggested for you</strong><small>Accounts you may know</small></span>
+            <span class="chevron ${state.recommendationsOpen ? 'open' : ''}">${icon('chevron')}</span>
+          </button>
+          <button class="suggestion-see-all" data-action="recommendation-see-all">See all</button>
+        </div>
         ${state.recommendationsOpen ? `
           <div class="recommendation-row" data-scroll-memory="profile-suggestions:${esc(state.me?.id || 'me')}">
-            ${recommendations.length ? recommendations.map((user) => `
-              <article class="recommend-card">
-                <button class="recommend-dismiss" title="Hide" aria-label="Hide recommendation" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>
-                ${renderRecommendationIdentity(user)}
-                ${renderAccountAction(user)}
-              </article>
-            `).join('') : '<p class="hint">Friends of friends will appear here after you add more people.</p>'}
+            ${recommendations.length
+              ? recommendations.map((user) => renderRecommendationCard(user, { dismissible: true })).join('')
+              : '<p class="hint">Friends of friends will appear here after you add more people.</p>'}
           </div>
         ` : ''}
       </section>
@@ -1381,7 +1380,7 @@
 
   function visibleRecommendations() {
     const hidden = new Set(state.hiddenRecommendations || []);
-    return state.recommendations.filter((user) => !hidden.has(user.id));
+    return state.recommendations.filter((user) => !hidden.has(user.id) && user.recommendable !== false);
   }
 
   function recentProfileSnapshot(user) {
@@ -1394,6 +1393,7 @@
       url: user.url || profilePath(user.username),
       socialPublic: user.socialPublic !== false,
       avatarViewable: user.avatarViewable !== false,
+      recommendable: user.recommendable !== false,
       isContact: Boolean(user.isContact),
       isFollowing: Boolean(user.isFollowing),
       followsViewer: Boolean(user.followsViewer),
@@ -1426,6 +1426,7 @@
       for (const source of sources) {
         const candidate = source[index];
         if (!candidate?.id || seen.has(candidate.id) || hidden.has(candidate.id)) continue;
+        if (candidate.recommendable === false) continue;
         if (candidate.hasBlocked || candidate.blockedBy) continue;
         seen.add(candidate.id);
         mixed.push(userById(candidate.id) || candidate);
@@ -1440,14 +1441,9 @@
     if (!suggestions.length) return '';
     return `
       <section class="profile-suggestion-section">
-        <div class="section-heading"><h2>Suggested for you</h2><small>Related and recently viewed</small></div>
+        <div class="section-heading"><h2>Suggested for you</h2><small>Related accounts</small></div>
         <div class="recommendation-row profile-recommendation-row" data-scroll-memory="profile-network:${esc(profile?.username || state.me?.username || 'profile')}">
-          ${suggestions.map((user) => `
-            <article class="recommend-card">
-              ${renderRecommendationIdentity(user)}
-              ${renderAccountAction(user)}
-            </article>
-          `).join('')}
+          ${suggestions.map((user) => renderRecommendationCard(user, { dismissible: true })).join('')}
         </div>
       </section>
     `;
@@ -3097,12 +3093,44 @@
   }
 
   function renderRecommendationIdentity(user) {
+    const mutualCount = Number(user.mutualCount || 0);
+    const reason = mutualCount === 1
+      ? 'Followed by someone you know'
+      : mutualCount > 1
+        ? `Followed by ${mutualCount} people you know`
+        : user.followsViewer
+          ? 'Follows you'
+          : 'Suggested for you';
     return `
       <a class="recommend-identity" href="${esc(accountProfileHref(user))}" data-action="view-user-profile" data-username="${esc(user.username)}">
         ${avatarHtml(user)}
-        <strong>${esc(user.displayName)}</strong>
-        <small>@${esc(user.username)}${user.mutualCount ? ` - ${esc(user.mutualCount)} mutual` : ''}</small>
+        <strong>${esc(user.username)}</strong>
+        ${user.displayName && user.displayName !== user.username ? `<span class="recommend-display-name">${esc(user.displayName)}</span>` : ''}
+        <small>${esc(reason)}</small>
       </a>
+    `;
+  }
+
+  function renderRecommendationAction(user) {
+    const knownUser = userById(user?.id) || user;
+    if (!knownUser || knownUser.id === state.me?.id) return '<button class="mini-btn account-action" disabled>You</button>';
+    if (knownUser.hasBlocked || knownUser.blockedBy) return '<button class="mini-btn account-action" disabled>Blocked</button>';
+    if (knownUser.isFollowing) return `<button class="mini-btn account-action" data-action="unfollow-user" data-user-id="${esc(knownUser.id)}" aria-label="Unfollow ${esc(knownUser.username)}">Following</button>`;
+    if (knownUser.socialPublic === false && !knownUser.isContact) {
+      if (knownUser.outgoingRequest) return '<button class="mini-btn account-action" disabled>Requested</button>';
+      if (knownUser.incomingRequest) return `<button class="mini-btn account-action primary-action" data-action="accept-request" data-request-id="${esc(knownUser.incomingRequest.id)}">Accept</button>`;
+      return `<button class="mini-btn account-action primary-action" data-action="add-contact" data-username="${esc(knownUser.username)}">Follow</button>`;
+    }
+    return `<button class="mini-btn account-action primary-action" data-action="follow-user" data-user-id="${esc(knownUser.id)}">Follow</button>`;
+  }
+
+  function renderRecommendationCard(user, options = {}) {
+    return `
+      <article class="recommend-card" data-recommendation-user-id="${esc(user.id)}">
+        ${options.dismissible ? `<button class="recommend-dismiss" title="Hide" aria-label="Hide ${esc(user.username)}" data-action="dismiss-recommendation" data-user-id="${esc(user.id)}">${icon('x')}</button>` : ''}
+        ${renderRecommendationIdentity(user)}
+        ${renderRecommendationAction(user)}
+      </article>
     `;
   }
 
@@ -4384,6 +4412,13 @@
               </span>
               <input type="checkbox" data-action="toggle-profile-searchable" ${state.me.searchable !== false ? 'checked' : ''}>
             </label>
+            <label class="switch-row">
+              <span>
+                <strong>Account suggestions</strong>
+                <small>Let your profile appear as a suggested account on other profiles.</small>
+              </span>
+              <input type="checkbox" data-action="toggle-profile-recommendable" ${state.me.recommendable !== false ? 'checked' : ''}>
+            </label>
           </section>
           <section class="settings-block">
             <h3>${icon('profile')} Interactions</h3>
@@ -4911,6 +4946,7 @@
       bio: state.me.bio || '',
       socialPublic: state.me.socialPublic,
       searchable: state.me.searchable !== false,
+      recommendable: state.me.recommendable !== false,
       avatarViewable: state.me.avatarViewable !== false,
       allowGroupAdds: state.me.allowGroupAdds !== false,
       mentionPermission: state.me.mentionPermission || 'everyone',
@@ -4935,6 +4971,7 @@
       username: state.me.username,
       socialPublic: state.me.socialPublic,
       searchable: state.me.searchable !== false,
+      recommendable: state.me.recommendable !== false,
       avatarViewable: state.me.avatarViewable !== false,
       mentionPermission: state.me.mentionPermission || 'everyone',
       storyReplies: state.me.storyReplies || 'everyone',
@@ -8272,11 +8309,19 @@
         state.recommendationsOpen = !state.recommendationsOpen;
         updateRecommendationsSection();
       }
+      if (action === 'recommendation-see-all') {
+        state.userQuery = '';
+        state.searchResults = [];
+        state.userSearching = false;
+        switchMainTab('search');
+      }
       if (action === 'dismiss-recommendation') {
         if (confirm('Never show this recommendation again?')) {
           state.hiddenRecommendations = Array.from(new Set([...(state.hiddenRecommendations || []), target.dataset.userId]));
           localStorage.setItem('hiddenRecommendations', JSON.stringify(state.hiddenRecommendations));
-          updateRecommendationsSection();
+          const recommendation = target.closest('.recommend-card, .account-row');
+          recommendation?.classList.add('recommendation-removing');
+          setTimeout(() => recommendation?.remove(), 180);
         }
       }
       if (action === 'toggle-account-private') {
@@ -8289,6 +8334,10 @@
       }
       if (action === 'toggle-profile-searchable') {
         await updateProfilePatch({ searchable: target.checked });
+        updateProfileModalSlots();
+      }
+      if (action === 'toggle-profile-recommendable') {
+        await updateProfilePatch({ recommendable: target.checked });
         updateProfileModalSlots();
       }
       if (action === 'toggle-group-invites') {

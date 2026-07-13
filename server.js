@@ -327,6 +327,7 @@ function basicPublicUser(user, viewerId = null) {
     createdAt: user.createdAt,
     socialPublic: user.profile?.socialPublic !== false,
     searchable: user.profile?.searchable !== false,
+    recommendable: user.profile?.recommendable !== false,
     avatarViewable: user.profile?.avatarViewable !== false,
     allowGroupAdds: viewerId === user.id ? user.profile?.allowGroupAdds !== false : undefined,
     mentionPermission: viewerId === user.id ? (user.profile?.mentionPermission || 'everyone') : undefined,
@@ -1469,6 +1470,7 @@ async function handleApi(req, res, pathname, query) {
         avatarFileId: null,
         socialPublic: true,
         searchable: true,
+        recommendable: true,
         avatarViewable: true,
         allowGroupAdds: true,
         mentionPermission: 'everyone',
@@ -1549,6 +1551,7 @@ async function handleApi(req, res, pathname, query) {
     user.profile.bio = cleanText(body.bio || '', 280);
     if (body.socialPublic !== undefined) user.profile.socialPublic = Boolean(body.socialPublic);
     if (body.searchable !== undefined) user.profile.searchable = Boolean(body.searchable);
+    if (body.recommendable !== undefined) user.profile.recommendable = Boolean(body.recommendable);
     if (body.avatarViewable !== undefined) user.profile.avatarViewable = Boolean(body.avatarViewable);
     if (body.allowGroupAdds !== undefined) user.profile.allowGroupAdds = Boolean(body.allowGroupAdds);
     if (['everyone', 'following', 'nobody'].includes(body.mentionPermission)) user.profile.mentionPermission = body.mentionPermission;
@@ -2070,24 +2073,26 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'GET' && pathname === '/api/users/recommendations') {
     const user = await requireAuth(req, res);
     if (!user) return;
-    const direct = new Set(db.contacts[user.id] || []);
+    const following = new Set(db.follows[user.id] || []);
+    const seeds = new Set([...(db.contacts[user.id] || []), ...following]);
     const candidates = new Map();
-    for (const friendId of direct) {
-      for (const candidateId of db.contacts[friendId] || []) {
-        if (candidateId === user.id || direct.has(candidateId) || hasBlocked(user.id, candidateId) || hasBlocked(candidateId, user.id)) continue;
-        if (db.users[candidateId]?.profile?.searchable === false) continue;
+    for (const seedId of seeds) {
+      const related = new Set([...(db.contacts[seedId] || []), ...(db.follows[seedId] || [])]);
+      for (const candidateId of related) {
+        if (candidateId === user.id || following.has(candidateId) || hasBlocked(user.id, candidateId) || hasBlocked(candidateId, user.id)) continue;
+        if (db.users[candidateId]?.profile?.searchable === false || db.users[candidateId]?.profile?.recommendable === false) continue;
         candidates.set(candidateId, (candidates.get(candidateId) || 0) + 1);
       }
     }
     for (const candidate of Object.values(db.users)) {
-      if (candidates.size >= 12) break;
-      if (candidate.id === user.id || direct.has(candidate.id) || isBlockedBetween(user.id, candidate.id)) continue;
-      if (candidate.profile?.searchable === false) continue;
+      if (candidates.size >= 30) break;
+      if (candidate.id === user.id || following.has(candidate.id) || isBlockedBetween(user.id, candidate.id)) continue;
+      if (candidate.profile?.searchable === false || candidate.profile?.recommendable === false) continue;
       candidates.set(candidate.id, candidates.get(candidate.id) || 0);
     }
     const users = Array.from(candidates.entries())
       .sort((a, b) => b[1] - a[1] || db.users[a[0]].usernameLower.localeCompare(db.users[b[0]].usernameLower))
-      .slice(0, 12)
+      .slice(0, 30)
       .map(([candidateId, mutualCount]) => {
         const candidate = publicUser(db.users[candidateId], user.id);
         return candidate ? { ...candidate, mutualCount } : null;

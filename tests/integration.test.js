@@ -96,6 +96,7 @@ async function register(client, username) {
   assert.equal(response.status, 201);
   assert.equal(response.data.user.username, username);
   assert.equal(response.data.user.avatarViewable, true);
+  assert.equal(response.data.user.recommendable, true);
   assert.equal(response.data.user.mentionPermission, 'everyone');
   assert.equal(response.data.user.storyReplies, 'everyone');
   assert.equal(response.data.user.friendRequests, 'everyone');
@@ -162,6 +163,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /class="chat-pane searched-profile-pane"/);
   assert.match(clientSource, /function restoreNavigationView/);
   assert.match(clientSource, /function renderProfileSuggestions/);
+  assert.match(clientSource, /function renderRecommendationCard/);
+  assert.match(clientSource, /data-action="toggle-profile-recommendable"/);
+  assert.match(styleSource, /\.recommend-card \{[\s\S]*?border: 1px solid/);
   assert.match(clientSource, /recentProfiles: JSON\.parse/);
   assert.match(clientSource, /data-action="view-profile-picture"/);
   assert.match(clientSource, /data-action="change-profile-picture"/);
@@ -455,6 +459,16 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   const recommendations = await alice.request('/api/users/recommendations');
   assert.equal(recommendations.status, 200);
   assert.ok(recommendations.data.users.some((user) => user.id === charlieUser.id));
+  assert.equal((await charlie.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { recommendable: false }
+  })).status, 200);
+  const recommendationsAfterOptOut = await alice.request('/api/users/recommendations');
+  assert.ok(!recommendationsAfterOptOut.data.users.some((user) => user.id === charlieUser.id));
+  assert.equal((await charlie.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { recommendable: true }
+  })).status, 200);
 
   const textMessage = await sendMessage(alice, bobUser.id, { kind: 'text', text: 'Unique phrase for search' });
   assert.equal(textMessage.status, 201);
