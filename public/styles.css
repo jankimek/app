@@ -10970,3 +10970,17 @@ html.keyboard-open .bottom-tabs {
     transition-duration: .01ms !important;
   }
 }
+
+/* Safari focus-zooms text controls below 16px, which turns the fixed app
+   viewport into a pannable visual viewport. Keep mobile text controls at the
+   no-zoom threshold without changing desktop sizing. */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 860px) {
+    html input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+    html textarea,
+    html select,
+    .composer-input {
+      font-size: 16px;
+    }
+  }
+}

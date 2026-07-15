@@ -117,10 +117,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   const styleSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   const htmlSource = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
   assert.match(htmlSource, /maximum-scale=1, user-scalable=no/);
+  assert.match(htmlSource, /styles\.css\?v=20260715-8/);
+  assert.match(htmlSource, /app\.js\?v=20260715-8/);
   assert.match(styleSource, /html \{[\s\S]*?overscroll-behavior: none;[\s\S]*?touch-action: manipulation;/);
   assert.match(styleSource, /#app \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
   assert.match(styleSource, /\.chat-pane \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
   assert.match(styleSource, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;[\s\S]*?overflow-anchor: none;[\s\S]*?touch-action: pan-y;/);
+  assert.match(styleSource, /@supports \(-webkit-touch-callout: none\)[\s\S]*?\.composer-input \{[\s\S]*?font-size: 16px;/);
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
   assert.match(clientSource, /class="story-size-control story-text-size-control"/);
@@ -138,6 +141,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /const appSwipeStartsAt = 16/);
   assert.match(clientSource, /const gestureControl = event\.target\.closest\('button, a, input, textarea, select/);
   assert.match(clientSource, /event\.clientX >= appSwipeStartsAt && event\.clientX < appSwipeStartsAt \+ 32/);
+  assert.match(clientSource, /!hasActiveConversation\(\) && isAppBackSwipe/);
   assert.match(clientSource, /if \(!swipe\.moved\) \{[\s\S]*?state\.edgeSwipe = null;[\s\S]*?return;/);
   assert.match(clientSource, /function renderMessageFocus/);
   assert.match(clientSource, /function capturePersistentScroll/);
@@ -154,7 +158,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /if \(scrollMode === 'bottom' && cached\?\.messages\?\.length\) stabilizeBottomScroll\(\);/);
   assert.match(clientSource, /resizeObserver = new ResizeObserver\(settle\)/);
   assert.match(clientSource, /const minimumSettleMs = currentAppShell\(\)\?\.classList\.contains\('route-page-entering'\) \? 360 : 0;/);
-  assert.match(clientSource, /Promise\.all\(\[[\s\S]*?Promise\.race\(\[[\s\S]*?minimumSettleMs/);
+  assert.match(clientSource, /safetyTimer = setTimeout\(finish, 15000\)/);
+  assert.match(clientSource, /Promise\.all\(\[[\s\S]*?waitForChatMedia\(messages, settle\)[\s\S]*?minimumSettleMs/);
+  assert.match(clientSource, /state\.chatLoading \|\| chatScrollSettleCleanup \|\| event\.target\.classList\.contains\('chat-settling'\)/);
   assert.match(clientSource, /function updateChatPane/);
   assert.match(clientSource, /function promoteNavigationPreview/);
   assert.match(clientSource, /function clearTabTransitionAnimation/);
@@ -162,6 +168,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /clearTabTransitionAnimation\(liveShell\)/);
   assert.match(clientSource, /function prepareNavigationUnderlay/);
   assert.match(clientSource, /function activateNavigationShellLayer/);
+  assert.match(clientSource, /const validHandoff = Boolean\([\s\S]*?preview\?\.isConnected[\s\S]*?preview\.navigationEntry === entry[\s\S]*?target\?\.isConnected[\s\S]*?target\.parentElement === app[\s\S]*?current === preview\.navigationSurface[\s\S]*?current !== target/);
+  assert.match(clientSource, /state\.navigationStack\[state\.navigationStack\.length - 1\] !== entry/);
+  assert.match(clientSource, /if \(!preview\) \{[\s\S]*?finishNavigationBack\(entry, \{ \.\.\.options, preview: null \}\)/);
   assert.match(clientSource, /:scope > \.app-shell:not\(\.route-page-underlay\)/);
   assert.match(clientSource, /const liveScroll = captureLiveScroll\(target\)/);
   assert.match(clientSource, /function restoreLiveScrollAfterMove/);
@@ -197,6 +206,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
   assert.match(clientSource, /class="story-effects-panel"/);
   assert.match(clientSource, /let stableViewportHeight = 0/);
+  assert.match(clientSource, /let stableViewportWidth = 0/);
+  assert.match(clientSource, /const stableSizeChanged = Boolean/);
+  assert.match(clientSource, /!mobileViewport && !keyboardOpen && layoutHeight !== stableViewportHeight/);
+  assert.doesNotMatch(clientSource, /if \(forceStable \|\| !stableViewportHeight \|\| !keyboardOpen\) stableViewportHeight = layoutHeight/);
   assert.match(clientSource, /function scheduleViewportHeight/);
   assert.match(clientSource, /root\.classList\.toggle\('keyboard-open', keyboardOpen\)/);
   assert.match(clientSource, /class="story-video-timeline"/);

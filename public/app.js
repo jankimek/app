@@ -4,6 +4,7 @@
   if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
   let stableViewportHeight = 0;
+  let stableViewportWidth = 0;
   let viewportUpdateFrame = 0;
   let pendingViewportForceStable = false;
   let appliedViewportState = '';
@@ -18,13 +19,33 @@
     const layoutHeight = Math.max(visualHeight, Math.round(window.innerHeight || visualHeight));
     const visualTop = Math.max(0, Math.round(viewport?.offsetTop || 0));
     const root = document.documentElement;
+    const layoutWidth = Math.max(1, Math.round(root.clientWidth || window.innerWidth));
     const keyboardSized = Boolean(stableViewportHeight && stableViewportHeight - visualHeight > 90);
     const keyboardOpen = Boolean(
       keyboardSized &&
       (focusedEditable() || root.classList.contains('keyboard-open'))
     );
+    const mobileViewport = window.matchMedia('(max-width: 860px)').matches;
+    const stableSizeChanged = Boolean(
+      forceStable ||
+      !stableViewportHeight ||
+      layoutWidth !== stableViewportWidth ||
+      (!mobileViewport && !keyboardOpen && layoutHeight !== stableViewportHeight)
+    );
+    const messages = document.getElementById('messages');
+    const keepMessagesAtBottom = Boolean(
+      stableSizeChanged &&
+      messages &&
+      messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80
+    );
 
-    if (forceStable || !stableViewportHeight || !keyboardOpen) stableViewportHeight = layoutHeight;
+    // Mobile Safari changes visualViewport/innerHeight while its URL and
+    // toolbar chrome settles. Keep the layout viewport stable until a real
+    // width/orientation change so the chat grid cannot jump after opening.
+    if (stableSizeChanged) {
+      stableViewportHeight = layoutHeight;
+      stableViewportWidth = layoutWidth;
+    }
 
     const nextViewportState = `${stableViewportHeight}|${visualHeight}|${visualTop}|${keyboardOpen ? 'open' : 'closed'}`;
     if (nextViewportState === appliedViewportState) return;
@@ -33,6 +54,7 @@
     root.style.setProperty('--visual-height', `${visualHeight}px`);
     root.style.setProperty('--visual-top', `${visualTop}px`);
     root.classList.toggle('keyboard-open', keyboardOpen);
+    if (keepMessagesAtBottom) requestAnimationFrame(scrollMessagesToBottom);
   }
 
   function scheduleViewportHeight(forceStable = false) {
@@ -690,7 +712,23 @@
   function promoteNavigationPreview(preview, entry) {
     const target = navigationPreviewTarget(preview);
     const current = currentAppShell();
-    if (!target || !current) return false;
+    // A render can replace every route layer while a back animation is still
+    // waiting for its final frame. Never let that stale callback remove the
+    // newly rendered shell and promote a detached snapshot: that leaves the
+    // app empty and exposes the black page background on mobile Safari.
+    const validHandoff = Boolean(
+      preview?.isConnected &&
+      preview.parentElement === app &&
+      preview.navigationEntry === entry &&
+      target?.isConnected &&
+      target.parentElement === app &&
+      target.classList.contains('route-page-underlay') &&
+      current?.isConnected &&
+      current.parentElement === app &&
+      current === preview.navigationSurface &&
+      current !== target
+    );
+    if (!validHandoff) return false;
     const usesLiveShell = Boolean(preview.usesLiveShell);
     // Moving a live page out of the fixed preview can reset native scroll
     // containers even though the DOM nodes themselves are retained. Keep the
@@ -811,6 +849,9 @@
 
   async function finishNavigationBack(entry, options = {}) {
     if (!entry || state.navigationBusy === 'finishing') return;
+    // Root-tab changes and other navigation resets invalidate the pending
+    // animation. Its delayed callback must not restore an obsolete route.
+    if (state.navigationStack[state.navigationStack.length - 1] !== entry) return;
     state.navigationBusy = 'finishing';
     try {
       if (state.navigationStack[state.navigationStack.length - 1] === entry) {
@@ -833,6 +874,14 @@
     state.navigationBusy = true;
     cancelForwardNavigationAnimation(current);
     const preview = installNavigationPreview(entry, 'back');
+    // Without a connected underlay, sliding the only visible shell away would
+    // expose the black app background. Finish through the fresh-render fallback.
+    if (!preview) {
+      deferNavigationHandoff(() => {
+        finishNavigationBack(entry, { ...options, preview: null }).catch((error) => alert(error.message));
+      });
+      return true;
+    }
     if (options.instant) {
       settleNavigationUnderlay(preview);
       deferNavigationHandoff(() => {
@@ -1417,25 +1466,39 @@
     if (!messages || state.chatLoading) return;
     const minimumSettleMs = currentAppShell()?.classList.contains('route-page-entering') ? 360 : 0;
     let cancelled = false;
+    let finishing = false;
+    let shown = false;
     let frame = 0;
     let revealTimer = 0;
+    let showTimer = 0;
+    let safetyTimer = 0;
     let resizeObserver = null;
-    const cleanup = () => {
+    const showMessages = (animate = options.reveal) => {
+      if (shown || !messages.isConnected) return;
+      shown = true;
+      messages.classList.remove('chat-settling');
+      if (animate) {
+        messages.classList.add('chat-settled');
+        revealTimer = setTimeout(() => messages.classList.remove('chat-settled'), 220);
+      }
+    };
+    const cleanup = (animate = options.reveal) => {
       cancelled = true;
       cancelAnimationFrame(frame);
-      clearTimeout(revealTimer);
+      clearTimeout(showTimer);
+      clearTimeout(safetyTimer);
       resizeObserver?.disconnect();
       messages.removeEventListener('pointerdown', cancel);
       messages.removeEventListener('touchstart', cancel);
       messages.removeEventListener('wheel', cancel);
-      messages.classList.remove('chat-settling');
-      if (options.reveal && messages.isConnected) {
-        messages.classList.add('chat-settled');
-        revealTimer = setTimeout(() => messages.classList.remove('chat-settled'), 220);
+      showMessages(animate);
+      if (!animate) {
+        clearTimeout(revealTimer);
+        messages.classList.remove('chat-settled');
       }
       if (chatScrollSettleCleanup === cleanup) chatScrollSettleCleanup = null;
     };
-    const cancel = () => cleanup();
+    const cancel = () => cleanup(false);
     chatScrollSettleCleanup = cleanup;
     messages.addEventListener('pointerdown', cancel, { once: true, passive: true });
     messages.addEventListener('touchstart', cancel, { once: true, passive: true });
@@ -1451,14 +1514,9 @@
       [...messages.children].forEach((message) => resizeObserver.observe(message));
     }
     settle();
-    Promise.all([
-      Promise.race([
-        waitForChatMedia(messages, settle),
-        new Promise((resolve) => setTimeout(resolve, 850))
-      ]),
-      new Promise((resolve) => setTimeout(resolve, minimumSettleMs))
-    ]).then(() => {
-      if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
+    const finish = () => {
+      if (cancelled || finishing || token !== state.chatOpenToken || !messages.isConnected) return;
+      finishing = true;
       frame = requestAnimationFrame(() => {
         settle();
         frame = requestAnimationFrame(() => {
@@ -1466,7 +1524,13 @@
           cleanup();
         });
       });
-    });
+    };
+    if (options.reveal) showTimer = setTimeout(showMessages, 850);
+    safetyTimer = setTimeout(finish, 15000);
+    Promise.all([
+      waitForChatMedia(messages, settle),
+      new Promise((resolve) => setTimeout(resolve, minimumSettleMs))
+    ]).then(finish);
   }
 
   function renderApp(options = {}) {
@@ -9913,6 +9977,7 @@
 
   document.addEventListener('scroll', (event) => {
     if (event.target?.id === 'messages') {
+      if (state.chatLoading || chatScrollSettleCleanup || event.target.classList.contains('chat-settling')) return;
       if (event.target.scrollTop < 80) loadOlderMessages().catch((error) => alert(error.message));
     }
   }, true);
@@ -10030,7 +10095,8 @@
     // inside it prevents the native history swipe from cancelling our preview.
     const appSwipeStartsAt = 16;
     const isAppBackSwipe = event.clientX >= appSwipeStartsAt && event.clientX < appSwipeStartsAt + 32;
-    if (state.me && isMobileLayout() && backEntry && !state.navigationBusy && !gestureBlocked && isAppBackSwipe && !gestureControl) {
+    if (state.me && isMobileLayout() && backEntry && !state.navigationBusy && !gestureBlocked &&
+      !hasActiveConversation() && isAppBackSwipe && !gestureControl) {
       const surface = currentAppShell();
       cancelForwardNavigationAnimation(surface);
       state.edgeSwipe = {
