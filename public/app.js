@@ -4,6 +4,9 @@
   if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
   let stableViewportHeight = 0;
+  let viewportUpdateFrame = 0;
+  let pendingViewportForceStable = false;
+  let appliedViewportState = '';
 
   function focusedEditable() {
     return document.activeElement?.matches?.('input, textarea, [contenteditable="true"]');
@@ -23,17 +26,31 @@
 
     if (forceStable || !stableViewportHeight || !keyboardOpen) stableViewportHeight = layoutHeight;
 
+    const nextViewportState = `${stableViewportHeight}|${visualHeight}|${visualTop}|${keyboardOpen ? 'open' : 'closed'}`;
+    if (nextViewportState === appliedViewportState) return;
+    appliedViewportState = nextViewportState;
     root.style.setProperty('--app-height', `${stableViewportHeight}px`);
     root.style.setProperty('--visual-height', `${visualHeight}px`);
     root.style.setProperty('--visual-top', `${visualTop}px`);
     root.classList.toggle('keyboard-open', keyboardOpen);
   }
 
+  function scheduleViewportHeight(forceStable = false) {
+    pendingViewportForceStable ||= forceStable;
+    if (viewportUpdateFrame) return;
+    viewportUpdateFrame = requestAnimationFrame(() => {
+      viewportUpdateFrame = 0;
+      const force = pendingViewportForceStable;
+      pendingViewportForceStable = false;
+      setViewportHeight(force);
+    });
+  }
+
   setViewportHeight(true);
-  window.addEventListener('resize', () => setViewportHeight());
-  window.addEventListener('orientationchange', () => setTimeout(() => setViewportHeight(true), 180));
-  window.visualViewport?.addEventListener('resize', () => setViewportHeight());
-  window.visualViewport?.addEventListener('scroll', () => setViewportHeight());
+  window.addEventListener('resize', () => scheduleViewportHeight());
+  window.addEventListener('orientationchange', () => setTimeout(() => scheduleViewportHeight(true), 180));
+  window.visualViewport?.addEventListener('resize', () => scheduleViewportHeight());
+  window.visualViewport?.addEventListener('scroll', () => scheduleViewportHeight());
 
   const state = {
     authMode: 'login',
@@ -144,6 +161,7 @@
     storyStickerGesture: null,
     storyDraw: null,
     storyVideoTrimDrag: null,
+    commentSheetDrag: null,
     edgeSwipe: null,
     tabSwipe: null,
     suppressClickUntil: 0,
@@ -170,6 +188,8 @@
   let cameraStream = null;
   let cameraCloseTimer = null;
   let chatScrollSettleCleanup = null;
+  let navigationMaintenanceFrame = 0;
+  let navigationMaintenanceIdle = 0;
 
   function freshCallState() {
     return {
@@ -246,6 +266,22 @@
     }).format(new Date(iso));
   }
 
+  function compactRelativeTime(iso) {
+    const then = new Date(iso || 0).getTime();
+    if (!Number.isFinite(then)) return '';
+    const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+    if (seconds < 60) return 'now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d`;
+    const weeks = Math.floor(days / 7);
+    if (weeks < 52) return `${weeks}w`;
+    return `${Math.floor(days / 365)}y`;
+  }
+
   function publicUsernameFromPath() {
     const match = /^\/u\/([^/]+)\/?$/.exec(location.pathname);
     return match ? decodeURIComponent(match[1]) : null;
@@ -271,12 +307,18 @@
   }
 
   function currentAppShell() {
-    return app.querySelector(':scope > .app-shell');
+    return app.querySelector(':scope > .app-shell:not(.route-page-underlay)');
   }
 
   function captureNavigationEntry(kind = 'page') {
     capturePersistentScroll();
     const liveShell = currentAppShell();
+    const messageScroll = captureMessagesScroll();
+    const liveScroll = captureLiveScroll(liveShell);
+    // A page that just finished a back transition stays fixed until it is
+    // needed again. Normalize it while it is still the current page, before
+    // renderApp detaches it for the next forward transition.
+    releaseNavigationShellLayer(liveShell);
     return {
       kind,
       view: captureNavigationView(),
@@ -288,11 +330,14 @@
       hasOlderMessages: state.hasOlderMessages,
       chatLoading: state.chatLoading,
       highlightMessageId: state.highlightMessageId,
-      messageScroll: captureMessagesScroll(),
+      messageScroll,
       scrollMemory: { ...state.scrollMemory },
       liveShell,
-      liveScroll: captureLiveScroll(liveShell),
-      previewHtml: currentAppShell()?.outerHTML || ''
+      liveScroll,
+      // The retained shell is the route snapshot. Serializing the entire app
+      // on every navigation produces large short-lived allocations that make
+      // mobile garbage collection show up as an end-of-transition hitch.
+      previewHtml: liveShell ? '' : currentAppShell()?.outerHTML || ''
     };
   }
 
@@ -337,16 +382,31 @@
     surface?.classList.remove('route-page-current', 'route-page-entering');
   }
 
+  function restoreScrollPosition(element, top = 0, left = 0) {
+    if (!element) return false;
+    const nextTop = Number.isFinite(top) ? top : 0;
+    const nextLeft = Number.isFinite(left) ? left : 0;
+    let changed = false;
+    if (element.scrollTop !== nextTop) {
+      element.scrollTop = nextTop;
+      changed = true;
+    }
+    if (element.scrollLeft !== nextLeft) {
+      element.scrollLeft = nextLeft;
+      changed = true;
+    }
+    return changed;
+  }
+
   function restorePreviewScroll(root, entry) {
     if (!root || !entry) return;
     root.querySelectorAll('[data-scroll-memory]').forEach((element) => {
       const position = entry.scrollMemory?.[element.dataset.scrollMemory];
       if (!position) return;
-      element.scrollTop = position.top || 0;
-      element.scrollLeft = position.left || 0;
+      restoreScrollPosition(element, position.top, position.left);
     });
     const messages = root.querySelector('.messages');
-    if (messages && entry.messageScroll) messages.scrollTop = entry.messageScroll.top || 0;
+    if (messages && entry.messageScroll) restoreScrollPosition(messages, entry.messageScroll.top, messages.scrollLeft);
   }
 
   function sanitizeNavigationPreview(root) {
@@ -354,7 +414,9 @@
       element.dataset.navigationId = element.id;
       element.removeAttribute('id');
     });
-    root?.querySelector(':scope > .app-shell')?.classList.remove(
+    const shell = root?.querySelector(':scope > .app-shell');
+    releaseNavigationShellLayer(shell);
+    shell?.classList.remove(
       'route-page-current',
       'route-page-entering',
       'route-page-exiting',
@@ -369,6 +431,128 @@
     });
   }
 
+  function navigationPreviewTarget(preview) {
+    return preview?.navigationTarget || preview?.querySelector(':scope > .app-shell') || null;
+  }
+
+  function navigationUnderlayOffset() {
+    return isMobileLayout() ? '-18%' : '-4%';
+  }
+
+  function navigationMotionDuration(duration) {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 1 : duration;
+  }
+
+  function releaseNavigationShellLayer(shell) {
+    if (!shell || (!shell.classList.contains('route-page-underlay') && !shell.classList.contains('route-page-active-fixed'))) return;
+    shell.classList.remove('route-page-underlay', 'route-page-active-fixed');
+    shell.style.position = '';
+    shell.style.inset = '';
+    shell.style.width = '';
+    shell.style.zIndex = '';
+    shell.style.pointerEvents = '';
+    shell.style.willChange = '';
+    shell.style.transform = '';
+    shell.style.opacity = '';
+    shell.style.transition = '';
+    shell.style.boxShadow = '';
+  }
+
+  function prepareNavigationUnderlay(preview, target, surface) {
+    if (!preview || !target || !surface) return false;
+    preview.navigationTarget = target;
+    preview.navigationSurface = surface;
+    preview.navigationSurfaceZIndex = surface.style.zIndex;
+    preview.style.background = 'transparent';
+    preview.style.transform = 'none';
+    preview.style.opacity = '1';
+    preview.style.zIndex = '2';
+    preview.style.setProperty('--route-backdrop-opacity', '.22');
+    target.classList.remove('route-page-active-fixed');
+    target.classList.add('route-page-underlay');
+    target.style.position = 'fixed';
+    target.style.inset = '0';
+    target.style.width = '100%';
+    target.style.zIndex = '1';
+    target.style.pointerEvents = 'none';
+    target.style.willChange = 'transform';
+    target.style.transform = `translateX(${navigationUnderlayOffset()})`;
+    surface.style.zIndex = '3';
+    return true;
+  }
+
+  function stopNavigationUnderlayAnimations(preview) {
+    preview?.navigationTargetAnimation?.cancel?.();
+    preview?.navigationBackdropAnimation?.cancel?.();
+    if (preview) {
+      preview.navigationTargetAnimation = null;
+      preview.navigationBackdropAnimation = null;
+    }
+  }
+
+  function animateNavigationUnderlay(preview, duration = 260) {
+    const target = navigationPreviewTarget(preview);
+    if (!preview || !target) return;
+    const offset = `translateX(${navigationUnderlayOffset()})`;
+    const timing = {
+      duration: navigationMotionDuration(duration),
+      easing: 'cubic-bezier(.28,.74,.22,1)',
+      fill: 'forwards'
+    };
+    stopNavigationUnderlayAnimations(preview);
+    target.style.transition = '';
+    target.style.transform = offset;
+    preview.style.opacity = '1';
+    if (typeof target.animate === 'function') {
+      preview.navigationTargetAnimation = target.animate([
+        { transform: offset },
+        { transform: 'translateX(0)' }
+      ], timing);
+    } else {
+      target.style.transition = `transform ${timing.duration}ms ${timing.easing}`;
+      requestAnimationFrame(() => {
+        if (target.isConnected) target.style.transform = 'translateX(0)';
+      });
+    }
+    if (typeof preview.animate === 'function') {
+      preview.navigationBackdropAnimation = preview.animate([
+        { opacity: 1 },
+        { opacity: 0 }
+      ], timing);
+    } else {
+      preview.style.transition = `opacity ${timing.duration}ms ${timing.easing}`;
+      requestAnimationFrame(() => {
+        if (preview.isConnected) preview.style.opacity = '0';
+      });
+    }
+  }
+
+  function settleNavigationUnderlay(preview) {
+    const target = navigationPreviewTarget(preview);
+    stopNavigationUnderlayAnimations(preview);
+    if (target) target.style.transform = 'translateX(0)';
+    if (preview) {
+      preview.style.opacity = '0';
+      preview.style.setProperty('--route-backdrop-opacity', '0');
+    }
+  }
+
+  function activateNavigationShellLayer(shell) {
+    if (!shell) return;
+    shell.classList.remove('route-page-underlay');
+    shell.classList.add('route-page-active-fixed');
+    shell.style.position = 'fixed';
+    shell.style.inset = '0';
+    shell.style.width = '100%';
+    shell.style.zIndex = '';
+    shell.style.pointerEvents = '';
+    shell.style.willChange = '';
+    shell.style.transform = '';
+    shell.style.opacity = '';
+    shell.style.transition = '';
+    shell.style.boxShadow = '';
+  }
+
   function captureLiveScroll(root) {
     if (!root) return [];
     return [...root.querySelectorAll('[data-scroll-memory], .messages, .chat-profile-content')]
@@ -376,11 +560,12 @@
   }
 
   function restoreLiveScroll(positions) {
+    let changed = false;
     for (const position of positions || []) {
       if (!position.element?.isConnected) continue;
-      position.element.scrollTop = position.top;
-      position.element.scrollLeft = position.left;
+      changed = restoreScrollPosition(position.element, position.top, position.left) || changed;
     }
+    return changed;
   }
 
   function restoreLiveScrollAfterMove(positions) {
@@ -388,16 +573,46 @@
     requestAnimationFrame(() => restoreLiveScroll(positions));
   }
 
+  function scheduleNavigationMaintenance() {
+    if (navigationMaintenanceFrame) cancelAnimationFrame(navigationMaintenanceFrame);
+    if (navigationMaintenanceIdle) {
+      if (window.cancelIdleCallback) window.cancelIdleCallback(navigationMaintenanceIdle);
+      else clearTimeout(navigationMaintenanceIdle);
+      navigationMaintenanceIdle = 0;
+    }
+    navigationMaintenanceFrame = requestAnimationFrame(() => {
+      navigationMaintenanceFrame = 0;
+      refreshNavigationEdgeZone();
+      const run = () => {
+        navigationMaintenanceIdle = 0;
+        resizeComposerInput();
+        attachCallStreams();
+        attachCameraStream();
+        attachStoryEditorVideo();
+        attachStoryViewerVideo();
+      };
+      if (window.requestIdleCallback) navigationMaintenanceIdle = window.requestIdleCallback(run, { timeout: 160 });
+      else navigationMaintenanceIdle = setTimeout(run, 100);
+    });
+  }
+
   function stashNavigationPreview(preview) {
     if (!preview) return;
     const entry = preview.navigationEntry;
-    const shell = preview.querySelector(':scope > .app-shell');
+    const shell = navigationPreviewTarget(preview);
+    stopNavigationUnderlayAnimations(preview);
     if (entry && shell) {
       entry.liveScroll = captureLiveScroll(shell);
       shell.remove();
+      releaseNavigationShellLayer(shell);
       entry.liveShell = shell;
+    } else {
+      shell?.remove();
     }
     preview.remove();
+    if (preview.navigationSurface?.isConnected) {
+      preview.navigationSurface.style.zIndex = preview.navigationSurfaceZIndex || '';
+    }
   }
 
   function stashNavigationPreviews() {
@@ -407,6 +622,8 @@
   function installNavigationPreview(entry, mode = 'back') {
     stashNavigationPreviews();
     if (!entry?.liveShell && !entry?.previewHtml) return null;
+    const current = currentAppShell();
+    if (!current) return null;
     const preview = document.createElement('div');
     preview.className = `route-page-preview route-preview-${mode}`;
     preview.setAttribute('aria-hidden', 'true');
@@ -423,10 +640,21 @@
     } else {
       preview.innerHTML = entry.previewHtml;
     }
-    app.insertBefore(preview, currentAppShell());
+    app.insertBefore(preview, current);
     sanitizeNavigationPreview(preview);
+    const target = preview.querySelector(':scope > .app-shell');
+    if (!target) {
+      preview.remove();
+      return null;
+    }
+    // Keep the retained page as a direct fixed underlay for the full gesture.
+    // This moves its layout work to the start and avoids reparenting the full
+    // chat DOM at the last animation frame.
+    current.after(preview);
+    preview.after(target);
+    prepareNavigationUnderlay(preview, target, current);
     if (preview.usesLiveShell) restoreLiveScrollAfterMove(liveScroll);
-    else restorePreviewScroll(preview, entry);
+    else restorePreviewScroll(target, entry);
     return preview;
   }
 
@@ -444,7 +672,7 @@
   }
 
   function promoteNavigationPreview(preview, entry) {
-    const target = preview?.querySelector(':scope > .app-shell');
+    const target = navigationPreviewTarget(preview);
     const current = currentAppShell();
     if (!target || !current) return false;
     const usesLiveShell = Boolean(preview.usesLiveShell);
@@ -452,35 +680,23 @@
     // containers even though the DOM nodes themselves are retained. Keep the
     // live positions and put them back after the page is in its final layout.
     const liveScroll = captureLiveScroll(target);
-    if (!usesLiveShell) restorePreviewScroll(preview, entry);
-    restoreNavigationPreviewIds(preview);
-    target.classList.remove('route-page-current', 'route-page-entering', 'route-page-exiting', 'route-swipe-current');
-    target.style.transform = '';
-    target.style.opacity = '';
-    target.style.transition = '';
-    target.style.boxShadow = '';
-    preview.before(target);
+    if (!usesLiveShell) restorePreviewScroll(target, entry);
+    restoreNavigationPreviewIds(target);
+    settleNavigationUnderlay(preview);
+    activateNavigationShellLayer(target);
     current.remove();
     preview.remove();
-    if (usesLiveShell) restoreLiveScrollAfterMove(liveScroll);
+    if (usesLiveShell) restoreLiveScroll(liveScroll);
     else {
       restorePreviewScroll(target, entry);
       requestAnimationFrame(() => restorePreviewScroll(target, entry));
     }
     entry.liveShell = null;
-    requestAnimationFrame(() => {
-      stashNavigationPreviews();
-      refreshNavigationEdgeZone();
-      resizeComposerInput();
-      attachCallStreams();
-      attachCameraStream();
-      attachStoryEditorVideo();
-      attachStoryViewerVideo();
-    });
+    scheduleNavigationMaintenance();
     return true;
   }
 
-  function afterVisualMotion(element, eventName, fallbackMs, callback) {
+  function afterVisualMotion(element, eventName, fallbackMs, callback, propertyName = '') {
     let finished = false;
     const finish = () => {
       if (finished) return;
@@ -490,7 +706,7 @@
       callback();
     };
     const onEnd = (event) => {
-      if (event.target === element) finish();
+      if (event.target === element && (!propertyName || event.propertyName === propertyName)) finish();
     };
     const timer = setTimeout(finish, fallbackMs);
     element?.addEventListener(eventName, onEnd);
@@ -602,13 +818,14 @@
     cancelForwardNavigationAnimation(current);
     const preview = installNavigationPreview(entry, 'back');
     if (options.instant) {
+      settleNavigationUnderlay(preview);
       deferNavigationHandoff(() => {
         finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
       });
       return true;
     }
     current.classList.add('route-page-exiting');
-    preview?.classList.add('route-page-revealing');
+    animateNavigationUnderlay(preview);
     afterVisualMotion(current, 'animationend', 280, () => {
       deferNavigationHandoff(() => {
         finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
@@ -801,6 +1018,22 @@
     return state.activeGroup?.name || state.activePeer?.displayName || 'Chat';
   }
 
+  function discardNavigationForMainTab() {
+    if (!state.navigationStack.length && !state.routeForward && !state.pendingHistoryBack) return;
+    state.navigationStack = [];
+    state.forwardNavigationEntries.clear();
+    state.routeForward = null;
+    state.pendingHistoryBack = null;
+    state.navigationBusy = false;
+    history.replaceState({
+      ...(history.state || {}),
+      appManaged: true,
+      route: 'app',
+      navDepth: 0,
+      view: captureNavigationView()
+    }, '', location.href);
+  }
+
   function switchMainTab(nextTab, options = {}) {
     if (!['chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
     const leavingPublicProfile = state.searchProfileOpen;
@@ -829,6 +1062,10 @@
       state.chatProfileSocialView = null;
     }
     if (state.tab !== 'profile') state.profileSocialView = null;
+    // Selecting a root tab leaves the detail route rather than stacking a
+    // second copy of that tab behind it. Otherwise a later Back transition
+    // animates to the stale retained shell and visibly hitches at the end.
+    discardNavigationForMainTab();
     const keepDesktopChat = !isMobileLayout() && hasActiveConversation() && !wasChatProfileOpen && !leavingPublicProfile;
     if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
     else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
@@ -4443,35 +4680,107 @@
     if (sheet.type === 'story-comments') {
       const story = storyById(sheet.storyId);
       const replyComment = story?.comments?.find((comment) => comment.id === sheet.replyToCommentId) || null;
+      const comments = story?.comments || [];
+      const commentById = new Map(comments.map((comment) => [comment.id, comment]));
+      const rootIdFor = (comment) => {
+        let current = comment;
+        const visited = new Set();
+        while (current?.replyTo && commentById.has(current.replyTo) && !visited.has(current.replyTo)) {
+          visited.add(current.id);
+          current = commentById.get(current.replyTo);
+        }
+        return current?.id || comment.id;
+      };
+      const roots = comments.filter((comment) => !comment.replyTo || !commentById.has(comment.replyTo));
+      const repliesByRoot = new Map(roots.map((comment) => [comment.id, []]));
+      comments.forEach((comment) => {
+        const rootId = rootIdFor(comment);
+        if (rootId !== comment.id) {
+          if (!repliesByRoot.has(rootId)) repliesByRoot.set(rootId, []);
+          repliesByRoot.get(rootId).push(comment);
+        }
+      });
+      const expandedCommentIds = new Set(sheet.expandedCommentIds || []);
+      if (replyComment) expandedCommentIds.add(rootIdFor(replyComment));
+      let commentOrder = 0;
+      const renderCommentRow = (comment, isReply = false) => {
+        const order = commentOrder++;
+        const username = comment.user?.username || 'user';
+        const likeLabel = comment.likeCount === 1 ? '1 like' : `${comment.likeCount || 0} likes`;
+        const age = compactRelativeTime(comment.createdAt);
+        return `
+          <article class="story-comment-row ${isReply ? 'reply' : ''} ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(order, 12)}">
+            <button class="story-comment-avatar" data-action="view-user-profile" data-username="${esc(username)}" aria-label="View ${esc(username)}'s profile">${avatarHtml(comment.user)}</button>
+            <div class="story-comment-content">
+              <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(username)}">${esc(username)}</button> <span>${renderMentionText(comment.text)}</span></p>
+              <div class="story-comment-meta">
+                <time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(age)}</time>
+                <span class="story-comment-like-count ${comment.likeCount ? '' : 'is-empty'}" data-comment-like-count="${esc(comment.id)}">${esc(likeLabel)}</span>
+                <button data-action="reply-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}">Reply</button>
+              </div>
+            </div>
+            <button class="story-comment-like ${comment.likedByMe ? 'active' : ''}" data-action="like-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}" aria-label="${comment.likedByMe ? 'Unlike' : 'Like'} comment" aria-pressed="${comment.likedByMe ? 'true' : 'false'}">${icon('heart')}</button>
+          </article>
+        `;
+      };
+      const commentThreads = roots.map((comment) => {
+        const replies = repliesByRoot.get(comment.id) || [];
+        const expanded = expandedCommentIds.has(comment.id);
+        return `
+          <section class="story-comment-thread" data-thread-id="${esc(comment.id)}">
+            ${renderCommentRow(comment)}
+            ${replies.length ? `
+              <button class="story-comment-replies-toggle" data-action="toggle-story-comment-replies" data-comment-id="${esc(comment.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
+                <i aria-hidden="true"></i><span>${expanded ? 'Hide replies' : `View ${replies.length === 1 ? '1 reply' : `all ${replies.length} replies`}`}</span>
+              </button>
+              <div class="story-comment-replies ${expanded ? 'expanded' : ''}">
+                ${expanded ? replies.map((reply) => renderCommentRow(reply, true)).join('') : ''}
+              </div>
+            ` : ''}
+          </section>
+        `;
+      }).join('');
+      const quickReactions = [
+        ['&#10084;&#65039;', 'heart'],
+        ['&#128588;', 'raising hands'],
+        ['&#128293;', 'fire'],
+        ['&#128079;', 'clapping hands'],
+        ['&#128546;', 'crying face'],
+        ['&#128525;', 'heart eyes'],
+        ['&#128562;', 'surprised face'],
+        ['&#128514;', 'tears of joy']
+      ];
+      const canComment = story && (story.canReply !== false || story.ownerId === state.me?.id);
       body = story ? `
         <header class="story-comments-head">
+          <span class="story-sheet-grabber" aria-hidden="true"></span>
           <strong>Comments</strong>
           <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close comments">${icon('x')}</button>
         </header>
-        <div class="story-comment-list">
-          ${(story.comments || []).length ? story.comments.map((comment) => `
-            <article class="story-comment-row ${comment.replyTo ? 'reply' : ''}">
-              ${avatarHtml(comment.user)}
-              <div class="story-comment-content">
-                ${comment.replyPreview ? `<small class="comment-reply-context">Replying to @${esc(comment.replyPreview.user?.username || 'user')}</small>` : ''}
-                <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(comment.user?.username || '')}">${esc(comment.user?.username || 'user')}</button> ${renderMentionText(comment.text)}</p>
-                <div class="story-comment-meta">
-                  <time>${esc(shortTime(comment.createdAt))}</time>
-                  <button data-action="reply-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}">Reply</button>
-                  ${comment.likeCount ? `<span>${comment.likeCount} ${comment.likeCount === 1 ? 'like' : 'likes'}</span>` : ''}
-                </div>
-              </div>
-              <button class="story-comment-like ${comment.likedByMe ? 'active' : ''}" data-action="like-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}" aria-label="${comment.likedByMe ? 'Unlike' : 'Like'} comment">${icon('heart')}</button>
-            </article>
-          `).join('') : '<p class="story-comments-empty">No comments yet.</p>'}
+        <div class="story-comment-list" role="feed" aria-label="Story comments">
+          ${comments.length ? commentThreads : `
+            <div class="story-comments-empty">
+              <span>${icon('comment')}</span>
+              <strong>No comments yet</strong>
+              <small>Start the conversation.</small>
+            </div>
+          `}
         </div>
-        ${story.canReply !== false || story.ownerId === state.me?.id ? `
-          ${replyComment ? `<div class="comment-replying"><span>Replying to <strong>@${esc(replyComment.user?.username || 'user')}</strong></span><button data-action="clear-comment-reply" aria-label="Cancel reply">${icon('x')}</button></div>` : ''}
-          <div class="story-comment-box">
-            <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." autocomplete="off" value="${esc(sheet.commentDraft || '')}">
-            <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
-          </div>
-        ` : '<span class="story-replies-off comments-disabled">Replies are off for this story</span>'}
+        ${canComment ? `
+          <footer class="story-comment-composer">
+            ${replyComment ? `<div class="comment-replying"><span>Replying to <strong>${esc(replyComment.user?.username || 'user')}</strong></span><button data-action="clear-comment-reply" aria-label="Cancel reply">${icon('x')}</button></div>` : ''}
+            <div class="story-comment-quick-reactions" aria-label="Quick reactions">
+              ${quickReactions.map(([emoji, label]) => `<button data-action="add-story-comment-emoji" data-emoji="${emoji}" aria-label="Add ${label}">${emoji}</button>`).join('')}
+            </div>
+            <div class="story-comment-box">
+              ${avatarHtml(state.me)}
+              <div class="story-comment-field">
+                <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}">
+                <button class="story-comment-post" data-action="submit-story-comment" data-story-id="${esc(story.id)}" ${String(sheet.commentDraft || '').trim() ? '' : 'disabled'}>Post</button>
+              </div>
+            </div>
+          </footer>
+        ` : '<div class="story-replies-off comments-disabled">Comments are turned off.</div>'}
       ` : '<p class="hint">Story not found.</p>';
     }
     if (sheet.type === 'story-owner') {
@@ -4490,7 +4799,7 @@
     const compact = ['story-comments', 'story-owner'].includes(sheet.type);
     return `
       <div class="overlay ${state.storyViewer ? 'over-story' : ''} ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
-        <section class="action-sheet ${compact ? `compact-sheet ${sheet.type}-sheet` : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
+        <section class="action-sheet ${compact ? `compact-sheet ${sheet.type}-sheet` : ''} ${sheet.refreshing ? 'sheet-refreshing' : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           ${body || '<p class="hint">No actions available.</p>'}
           ${compact ? '' : '<button data-action="close-overlays">Cancel</button>'}
         </section>
@@ -6559,14 +6868,49 @@
     const text = (input?.value || '').trim();
     if (!text) return;
     const commentsOpen = state.actionSheet?.type === 'story-comments' && state.actionSheet.storyId === storyId;
-    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments`, {
-      method: 'POST',
-      body: { text, replyTo: commentsOpen ? state.actionSheet.replyToCommentId || null : null }
-    });
+    const previousCommentIds = new Set(storyById(storyId)?.comments?.map((comment) => comment.id) || []);
+    const previousSheet = commentsOpen ? state.actionSheet : null;
+    const postButton = document.querySelector('.story-comment-post');
+    postButton?.classList.add('posting');
+    if (postButton) postButton.disabled = true;
+    let data;
+    try {
+      data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments`, {
+        method: 'POST',
+        body: { text, replyTo: commentsOpen ? state.actionSheet.replyToCommentId || null : null }
+      });
+    } catch (error) {
+      postButton?.classList.remove('posting');
+      syncStoryCommentPostButton();
+      throw error;
+    }
     replaceStory(data.story);
     if (commentsOpen) {
-      state.actionSheet = { type: 'story-comments', storyId, replyToCommentId: null, commentDraft: '' };
-      updateStoryCommentsSheet({ bottom: true });
+      const newComment = data.story.comments?.find((comment) => !previousCommentIds.has(comment.id));
+      const expandedCommentIds = new Set(previousSheet?.expandedCommentIds || []);
+      if (newComment?.replyTo) {
+        let rootId = newComment.replyTo;
+        const byId = new Map((data.story.comments || []).map((comment) => [comment.id, comment]));
+        const visited = new Set();
+        while (byId.get(rootId)?.replyTo && !visited.has(rootId)) {
+          visited.add(rootId);
+          rootId = byId.get(rootId).replyTo;
+        }
+        expandedCommentIds.add(rootId);
+      }
+      state.actionSheet = {
+        ...previousSheet,
+        type: 'story-comments',
+        storyId,
+        replyToCommentId: null,
+        commentDraft: '',
+        expandedCommentIds: [...expandedCommentIds],
+        newCommentId: newComment?.id || null
+      };
+      updateStoryCommentsSheet({ bottom: true, focus: true });
+      setTimeout(() => {
+        if (state.actionSheet?.type === 'story-comments') state.actionSheet.newCommentId = null;
+      }, 520);
     } else {
       updateStoryViewerView();
       scheduleStoryAdvance(data.story);
@@ -6576,10 +6920,15 @@
   function updateStoryCommentsSheet(options = {}) {
     const previous = document.querySelector('.story-comment-list');
     const scrollTop = previous?.scrollTop || 0;
+    if (state.actionSheet?.type === 'story-comments') state.actionSheet.refreshing = true;
     updateActionSheetSlot();
+    if (state.actionSheet?.type === 'story-comments') state.actionSheet.refreshing = false;
     requestAnimationFrame(() => {
       const list = document.querySelector('.story-comment-list');
-      if (list) list.scrollTop = options.bottom ? list.scrollHeight : scrollTop;
+      if (list) {
+        if (options.bottom) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+        else list.scrollTop = scrollTop;
+      }
       if (options.focus) {
         const input = document.getElementById('story-comment-input');
         input?.focus({ preventScroll: true });
@@ -6588,13 +6937,67 @@
     });
   }
 
-  async function toggleStoryCommentLike(storyId, commentId) {
-    const draft = document.getElementById('story-comment-input')?.value || state.actionSheet?.commentDraft || '';
-    const replyToCommentId = state.actionSheet?.replyToCommentId || null;
-    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments/${encodeURIComponent(commentId)}/like`, { method: 'POST' });
-    replaceStory(data.story);
-    state.actionSheet = { type: 'story-comments', storyId, replyToCommentId, commentDraft: draft };
+  function syncStoryCommentPostButton() {
+    const input = document.getElementById('story-comment-input');
+    const button = document.querySelector('.story-comment-post');
+    if (button) button.disabled = !input?.value.trim();
+  }
+
+  function addStoryCommentEmoji(emoji, sourceButton) {
+    if (state.actionSheet?.type !== 'story-comments') return;
+    const input = document.getElementById('story-comment-input');
+    if (!input) return;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const next = `${input.value.slice(0, start)}${emoji}${input.value.slice(end)}`.slice(0, 280);
+    input.value = next;
+    state.actionSheet.commentDraft = next;
+    syncStoryCommentPostButton();
+    sourceButton?.classList.remove('reaction-pop');
+    void sourceButton?.offsetWidth;
+    sourceButton?.classList.add('reaction-pop');
+    input.focus({ preventScroll: true });
+    const caret = Math.min(next.length, start + emoji.length);
+    input.setSelectionRange?.(caret, caret);
+  }
+
+  function toggleStoryCommentReplies(commentId) {
+    if (state.actionSheet?.type !== 'story-comments') return;
+    const draft = document.getElementById('story-comment-input')?.value || state.actionSheet.commentDraft || '';
+    const expanded = new Set(state.actionSheet.expandedCommentIds || []);
+    if (expanded.has(commentId)) expanded.delete(commentId);
+    else expanded.add(commentId);
+    state.actionSheet.commentDraft = draft;
+    state.actionSheet.expandedCommentIds = [...expanded];
     updateStoryCommentsSheet();
+  }
+
+  async function toggleStoryCommentLike(storyId, commentId) {
+    const escapedCommentId = window.CSS?.escape ? CSS.escape(commentId) : String(commentId).replace(/"/g, '\\"');
+    const button = document.querySelector(`.story-comment-like[data-comment-id="${escapedCommentId}"]`);
+    if (button?.classList.contains('is-pending')) return;
+    button?.classList.add('is-pending');
+    let data;
+    try {
+      data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments/${encodeURIComponent(commentId)}/like`, { method: 'POST' });
+    } catch (error) {
+      button?.classList.remove('is-pending');
+      throw error;
+    }
+    replaceStory(data.story);
+    const updated = data.story.comments?.find((comment) => comment.id === commentId);
+    if (!updated || !button) return;
+    button.classList.remove('is-pending', 'heart-pop');
+    button.classList.toggle('active', updated.likedByMe);
+    button.setAttribute('aria-pressed', updated.likedByMe ? 'true' : 'false');
+    button.setAttribute('aria-label', updated.likedByMe ? 'Unlike comment' : 'Like comment');
+    void button.offsetWidth;
+    button.classList.add('heart-pop');
+    const count = document.querySelector(`[data-comment-like-count="${escapedCommentId}"]`);
+    if (count) {
+      count.textContent = updated.likeCount === 1 ? '1 like' : `${updated.likeCount || 0} likes`;
+      count.classList.toggle('is-empty', !updated.likeCount);
+    }
   }
 
   async function respondToStorySticker(storyId, stickerId, value) {
@@ -7748,6 +8151,7 @@
 
   function closeOverlays() {
     if (!state.actionSheet) return;
+    state.commentSheetDrag = null;
     clearTimeout(overlayCloseTimer);
     state.overlayClosing = true;
     updateActionSheetSlot();
@@ -8637,10 +9041,22 @@
       }
       if (action === 'open-story-comments') {
         clearStoryAdvance();
-        openActionSheet({ type: 'story-comments', storyId: target.dataset.storyId, replyToCommentId: null, commentDraft: '' });
+        openActionSheet({
+          type: 'story-comments',
+          storyId: target.dataset.storyId,
+          replyToCommentId: null,
+          commentDraft: '',
+          expandedCommentIds: []
+        });
       }
       if (action === 'submit-story-comment') {
         await submitStoryComment(target.dataset.storyId);
+      }
+      if (action === 'add-story-comment-emoji') {
+        addStoryCommentEmoji(target.dataset.emoji || '', target);
+      }
+      if (action === 'toggle-story-comment-replies') {
+        toggleStoryCommentReplies(target.dataset.commentId);
       }
       if (action === 'reply-story-comment' && state.actionSheet?.type === 'story-comments') {
         const story = storyById(target.dataset.storyId);
@@ -8652,9 +9068,15 @@
         }
       }
       if (action === 'clear-comment-reply' && state.actionSheet?.type === 'story-comments') {
+        const story = storyById(state.actionSheet.storyId);
+        const replyingTo = story?.comments?.find((comment) => comment.id === state.actionSheet.replyToCommentId);
+        const currentDraft = document.getElementById('story-comment-input')?.value || state.actionSheet.commentDraft || '';
+        const replyPrefix = replyingTo ? `@${replyingTo.user?.username || ''} ` : '';
         state.actionSheet.replyToCommentId = null;
-        state.actionSheet.commentDraft = '';
-        updateStoryCommentsSheet();
+        state.actionSheet.commentDraft = replyPrefix && currentDraft.startsWith(replyPrefix)
+          ? currentDraft.slice(replyPrefix.length)
+          : currentDraft;
+        updateStoryCommentsSheet({ focus: true });
       }
       if (action === 'like-story-comment') {
         await toggleStoryCommentLike(target.dataset.storyId, target.dataset.commentId);
@@ -9145,6 +9567,7 @@
     }
     if (event.target.id === 'story-comment-input' && state.actionSheet?.type === 'story-comments') {
       state.actionSheet.commentDraft = event.target.value.slice(0, 280);
+      syncStoryCommentPostButton();
       return;
     }
     if (event.target.id === 'sticker-creator-text' && state.stickerCreator) {
@@ -9432,6 +9855,20 @@
       closeSettingsDrawer();
       return;
     }
+    if (event.key === 'Escape' && state.actionSheet) {
+      event.preventDefault();
+      closeOverlays();
+      return;
+    }
+    if (event.target.id === 'story-comment-input' && event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      try {
+        await submitStoryComment(state.actionSheet?.storyId);
+      } catch (error) {
+        alert(error.message);
+      }
+      return;
+    }
     if (event.target.id === 'composer-text' && event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       try {
@@ -9445,15 +9882,15 @@
   document.addEventListener('focusin', (event) => {
     if (event.target.closest('.story-viewer-actions')) clearStoryAdvance();
     if (event.target.matches('input, textarea, [contenteditable="true"]')) {
-      requestAnimationFrame(() => setViewportHeight());
-      setTimeout(() => setViewportHeight(), 260);
+      scheduleViewportHeight();
+      setTimeout(scheduleViewportHeight, 260);
     }
   });
 
   document.addEventListener('focusout', (event) => {
     if (event.target.matches('input, textarea, [contenteditable="true"]')) {
-      setTimeout(() => setViewportHeight(), 120);
-      setTimeout(() => setViewportHeight(), 420);
+      setTimeout(scheduleViewportHeight, 120);
+      setTimeout(scheduleViewportHeight, 420);
     }
     if (event.target.closest('.story-viewer-actions')) {
       setTimeout(() => {
@@ -9467,6 +9904,26 @@
     if (event.target.matches('[data-story-slider]')) {
       clearStoryAdvance();
       state.edgeSwipe = null;
+      return;
+    }
+    const commentSheetHeader = event.target.closest('.story-comments-head');
+    if (state.actionSheet?.type === 'story-comments' && commentSheetHeader && !event.target.closest('button')) {
+      const sheet = commentSheetHeader.closest('.story-comments-sheet');
+      const overlay = sheet?.closest('.overlay');
+      if (sheet && overlay) {
+        event.preventDefault();
+        state.commentSheetDrag = {
+          pointerId: event.pointerId,
+          startY: event.clientY,
+          lastY: event.clientY,
+          lastAt: performance.now(),
+          velocity: 0,
+          sheet,
+          overlay
+        };
+        sheet.style.animation = 'none';
+        commentSheetHeader.setPointerCapture?.(event.pointerId);
+      }
       return;
     }
     const videoTrimHandle = event.target.closest('[data-story-video-trim]');
@@ -9490,11 +9947,12 @@
     const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer;
     const backEntry = state.navigationStack[state.navigationStack.length - 1];
+    const gestureControl = event.target.closest('button, a, input, textarea, select, [contenteditable="true"], [data-action], [role="button"]');
     // The physical edge belongs to iOS/Safari. Starting the app gesture just
     // inside it prevents the native history swipe from cancelling our preview.
     const appSwipeStartsAt = 16;
     const isAppBackSwipe = event.clientX >= appSwipeStartsAt && event.clientX < appSwipeStartsAt + 32;
-    if (state.me && backEntry && !state.navigationBusy && !gestureBlocked && isAppBackSwipe && !event.target.closest('input,textarea,[contenteditable="true"]')) {
+    if (state.me && isMobileLayout() && backEntry && !state.navigationBusy && !gestureBlocked && isAppBackSwipe && !gestureControl) {
       const surface = currentAppShell();
       cancelForwardNavigationAnimation(surface);
       state.edgeSwipe = {
@@ -9767,6 +10225,22 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.commentSheetDrag?.pointerId === event.pointerId) {
+      event.preventDefault();
+      const drag = state.commentSheetDrag;
+      const dy = Math.max(0, event.clientY - drag.startY);
+      const now = performance.now();
+      const instantaneous = (event.clientY - drag.lastY) / Math.max(1, now - drag.lastAt);
+      drag.velocity = drag.velocity * .55 + instantaneous * .45;
+      drag.lastY = event.clientY;
+      drag.lastAt = now;
+      const progress = clamp(dy / Math.max(1, drag.sheet.offsetHeight), 0, 1);
+      drag.sheet.style.transition = 'none';
+      drag.sheet.style.transform = `translate3d(0, ${dy}px, 0)`;
+      drag.overlay.style.animation = 'none';
+      drag.overlay.style.background = `rgba(0, 0, 0, ${(0.52 * (1 - progress)).toFixed(3)})`;
+      return;
+    }
     if (state.storyVideoTrimDrag?.pointerId === event.pointerId) {
       event.preventDefault();
       updateStoryVideoFromPointer(state.storyVideoTrimDrag, event.clientX);
@@ -9934,8 +10408,11 @@
         }
         if (state.edgeSwipe.preview) {
           const progress = clamp(amount / state.edgeSwipe.width, 0, 1);
-          state.edgeSwipe.preview.style.transition = 'none';
-          state.edgeSwipe.preview.style.transform = `translateX(${(-18 + progress * 18).toFixed(2)}%)`;
+          const target = navigationPreviewTarget(state.edgeSwipe.preview);
+          if (target) {
+            target.style.transition = 'none';
+            target.style.transform = `translateX(${(-18 + progress * 18).toFixed(2)}%)`;
+          }
           state.edgeSwipe.preview.style.setProperty('--route-backdrop-opacity', `${(0.22 * (1 - progress)).toFixed(3)}`);
         }
       }
@@ -9979,6 +10456,40 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.commentSheetDrag?.pointerId === event.pointerId) {
+      const drag = state.commentSheetDrag;
+      const dy = Math.max(0, event.clientY - drag.startY);
+      const dismiss = dy > Math.min(130, drag.sheet.offsetHeight * .22) || (dy > 28 && drag.velocity > .55);
+      state.commentSheetDrag = null;
+      state.suppressClickUntil = Date.now() + 260;
+      if (dismiss) {
+        drag.sheet.style.transition = 'transform 220ms cubic-bezier(.4, 0, 1, 1)';
+        drag.sheet.style.transform = `translate3d(0, ${Math.max(dy, drag.sheet.offsetHeight)}px, 0)`;
+        drag.overlay.style.transition = 'background 220ms ease';
+        drag.overlay.style.background = 'rgba(0, 0, 0, 0)';
+        clearTimeout(overlayCloseTimer);
+        overlayCloseTimer = setTimeout(() => {
+          state.actionSheet = null;
+          state.overlayClosing = false;
+          updateActionSheetSlot();
+          if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
+        }, 220);
+      } else {
+        drag.sheet.style.transition = 'transform 300ms cubic-bezier(.2, .9, .25, 1)';
+        drag.sheet.style.transform = 'translate3d(0, 0, 0)';
+        drag.overlay.style.transition = 'background 220ms ease';
+        drag.overlay.style.background = 'rgba(0, 0, 0, .52)';
+        afterVisualMotion(drag.sheet, 'transitionend', 320, () => {
+          drag.sheet.style.removeProperty('animation');
+          drag.sheet.style.removeProperty('transition');
+          drag.sheet.style.removeProperty('transform');
+          drag.overlay.style.removeProperty('animation');
+          drag.overlay.style.removeProperty('transition');
+          drag.overlay.style.removeProperty('background');
+        });
+      }
+      return;
+    }
     if (state.storyVideoTrimDrag?.pointerId === event.pointerId) {
       updateStoryVideoFromPointer(state.storyVideoTrimDrag, event.clientX);
       state.storyVideoTrimDrag = null;
@@ -10045,6 +10556,12 @@
     if (recordButton) stopRecording(recordButton);
     if (state.edgeSwipe) {
       const swipe = state.edgeSwipe;
+      // A tap in the gesture rail must not leave a zero-distance transform
+      // transition running underneath the click it was meant to pass through.
+      if (!swipe.moved) {
+        state.edgeSwipe = null;
+        return;
+      }
       const dx = event.clientX - state.edgeSwipe.startX;
       const dy = event.clientY - state.edgeSwipe.startY;
       const surface = swipe.surface;
@@ -10053,9 +10570,10 @@
       const commitDistance = Math.min(56, swipe.width * 0.16);
       const commit = Math.abs(dx) > Math.abs(dy) && (dx > commitDistance || (dx > 24 && velocity > 0.42));
       if (surface) surface.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), box-shadow 240ms ease';
+      const underlay = navigationPreviewTarget(swipe.preview);
+      if (underlay) underlay.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1)';
       if (swipe.preview) {
         swipe.preview.classList.add('route-swipe-settling');
-        swipe.preview.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1)';
       }
       if (commit) {
         const pending = beginSwipeNavigationBack(swipe.entry, swipe.preview);
@@ -10064,13 +10582,13 @@
           surface.style.boxShadow = '-18px 0 38px rgba(0,0,0,.2)';
         }
         if (swipe.preview) {
-          swipe.preview.style.transform = 'translateX(0)';
+          underlay?.style.setProperty('transform', 'translateX(0)');
           swipe.preview.style.setProperty('--route-backdrop-opacity', '0');
         }
         afterVisualMotion(surface, 'transitionend', 260, () => {
           pending.visualFinished = true;
           settleSwipeNavigationBack(pending);
-        });
+        }, 'transform');
       } else {
         restoreLiveScroll(swipe.liveScroll);
         if (surface) {
@@ -10078,7 +10596,7 @@
           surface.style.boxShadow = '';
         }
         if (swipe.preview) {
-          swipe.preview.style.transform = 'translateX(-18%)';
+          underlay?.style.setProperty('transform', `translateX(${navigationUnderlayOffset()})`);
           swipe.preview.style.setProperty('--route-backdrop-opacity', '.22');
         }
         setTimeout(() => {
@@ -10155,6 +10673,14 @@
   });
 
   document.addEventListener('pointercancel', () => {
+    if (state.commentSheetDrag) {
+      const { sheet, overlay } = state.commentSheetDrag;
+      sheet.style.transition = 'transform 220ms cubic-bezier(.2, .9, .25, 1)';
+      sheet.style.transform = 'translate3d(0, 0, 0)';
+      overlay.style.transition = 'background 180ms ease';
+      overlay.style.background = 'rgba(0, 0, 0, .52)';
+      state.commentSheetDrag = null;
+    }
     const recordButton = document.querySelector('.recording');
     if (recordButton) stopRecording(recordButton);
     if (state.drag) {
