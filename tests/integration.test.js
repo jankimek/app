@@ -146,6 +146,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /conversationScroll: new Map\(\)/);
   assert.match(clientSource, /function updateChatPane/);
   assert.match(clientSource, /function promoteNavigationPreview/);
+  assert.match(clientSource, /function clearTabTransitionAnimation/);
+  assert.match(clientSource, /function settleTabTransitionAnimation/);
+  assert.match(clientSource, /clearTabTransitionAnimation\(liveShell\)/);
   assert.match(clientSource, /function prepareNavigationUnderlay/);
   assert.match(clientSource, /function activateNavigationShellLayer/);
   assert.match(clientSource, /:scope > \.app-shell:not\(\.route-page-underlay\)/);

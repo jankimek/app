@@ -313,6 +313,7 @@
   function captureNavigationEntry(kind = 'page') {
     capturePersistentScroll();
     const liveShell = currentAppShell();
+    clearTabTransitionAnimation(liveShell);
     const messageScroll = captureMessagesScroll();
     const liveScroll = captureLiveScroll(liveShell);
     // A page that just finished a back transition stays fixed until it is
@@ -416,6 +417,7 @@
     });
     const shell = root?.querySelector(':scope > .app-shell');
     releaseNavigationShellLayer(shell);
+    clearTabTransitionAnimation(shell);
     shell?.classList.remove(
       'route-page-current',
       'route-page-entering',
@@ -429,6 +431,17 @@
       element.id = element.dataset.navigationId;
       delete element.dataset.navigationId;
     });
+  }
+
+  function clearTabTransitionAnimation(root) {
+    const content = root?.matches?.('.tab-content') ? root : root?.querySelector?.('.tab-content');
+    content?.classList.remove('animate-tab', 'from-left', 'from-right');
+  }
+
+  function settleTabTransitionAnimation(root = currentAppShell()) {
+    const content = root?.querySelector?.('.tab-content.animate-tab');
+    if (!content) return;
+    afterVisualMotion(content, 'animationend', 250, () => clearTabTransitionAnimation(content));
   }
 
   function navigationPreviewTarget(preview) {
@@ -1479,6 +1492,7 @@
       app.insertBefore(preview, currentAppShell());
     }
     state.tabTransition = false;
+    settleTabTransitionAnimation(currentAppShell());
     const forwardPreview = app.querySelector(':scope > .route-preview-forward');
     if (forwardPreview) forwardPreview.navigationEntry = forwardEntry;
     if (forwardPreview && forwardLiveShell) forwardPreview.usesLiveShell = true;
