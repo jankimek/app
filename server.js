@@ -3122,7 +3122,12 @@ function serveStatic(req, res, pathname) {
   }
   fs.stat(safePath, (err, stat) => {
     if (err || !stat.isFile()) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, max-age=0',
+        Pragma: 'no-cache',
+        Expires: '0'
+      });
       return fs.createReadStream(path.join(PUBLIC_DIR, 'index.html'))
         .on('error', () => {
           res.writeHead(404);
@@ -3142,10 +3147,16 @@ function serveStatic(req, res, pathname) {
       '.webp': 'image/webp',
       '.svg': 'image/svg+xml'
     }[ext] || 'application/octet-stream';
-    res.writeHead(200, {
+    const headers = {
       'Content-Type': type,
       'Content-Length': stat.size
-    });
+    };
+    if (['.html', '.css', '.js'].includes(ext)) {
+      headers['Cache-Control'] = 'no-store, max-age=0';
+      headers.Pragma = 'no-cache';
+      headers.Expires = '0';
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(safePath).pipe(res);
   });
 }

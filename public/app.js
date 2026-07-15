@@ -5135,7 +5135,9 @@
         <button class="story-tap-zone story-tap-next" data-action="story-viewer-next" aria-label="Next story"></button>
         <div class="story-viewer-actions ${ownStory ? 'own-story-actions' : ''}">
           ${ownStory ? `
-            <span class="story-owner-metric">${icon('heart')} ${story.likeCount || 0}</span>
+            <button class="story-owner-metric ${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="${story.likedByMe ? 'Unlike' : 'Like'} story" aria-pressed="${story.likedByMe ? 'true' : 'false'}">
+              ${icon('heart')}<span class="story-like-count">${story.likeCount || 0}</span>
+            </button>
             <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}<small>${story.commentCount || 0}</small></button>
           ` : `
             ${story.canReply !== false ? `
