@@ -61,6 +61,7 @@
     chatLoading: false,
     chatOpenToken: 0,
     conversationCache: new Map(),
+    conversationScroll: new Map(),
     messages: [],
     hasOlderMessages: false,
     loadingOlderMessages: false,
@@ -108,6 +109,7 @@
     avatarCrop: null,
     storyEditor: null,
     storyViewer: null,
+    cameraCapture: null,
     highlightComposer: null,
     mediaViewer: null,
     stickerPanel: false,
@@ -162,6 +164,9 @@
   let storyLocationRequestId = 0;
   let storyGifRequestId = 0;
   let storyCountdownTimer = null;
+  let cameraStream = null;
+  let cameraCloseTimer = null;
+  let chatScrollSettleCleanup = null;
 
   function freshCallState() {
     return {
@@ -268,6 +273,7 @@
 
   function captureNavigationEntry(kind = 'page') {
     capturePersistentScroll();
+    const liveShell = currentAppShell();
     return {
       kind,
       view: captureNavigationView(),
@@ -277,9 +283,11 @@
       messages: state.messages,
       chatAppearance: state.chatAppearance,
       hasOlderMessages: state.hasOlderMessages,
+      chatLoading: state.chatLoading,
       highlightMessageId: state.highlightMessageId,
       messageScroll: captureMessagesScroll(),
       scrollMemory: { ...state.scrollMemory },
+      liveShell,
       previewHtml: currentAppShell()?.outerHTML || ''
     };
   }
@@ -308,7 +316,23 @@
   }
 
   function sanitizeNavigationPreview(root) {
-    root?.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+    root?.querySelectorAll('[id]').forEach((element) => {
+      element.dataset.navigationId = element.id;
+      element.removeAttribute('id');
+    });
+    root?.querySelector(':scope > .app-shell')?.classList.remove(
+      'route-page-current',
+      'route-page-entering',
+      'route-page-exiting',
+      'route-swipe-current'
+    );
+  }
+
+  function restoreNavigationPreviewIds(root) {
+    root?.querySelectorAll('[data-navigation-id]').forEach((element) => {
+      element.id = element.dataset.navigationId;
+      delete element.dataset.navigationId;
+    });
   }
 
   function captureLiveScroll(root) {
@@ -325,21 +349,98 @@
     }
   }
 
+  function stashNavigationPreview(preview) {
+    if (!preview) return;
+    const entry = preview.navigationEntry;
+    const shell = preview.querySelector(':scope > .app-shell');
+    if (entry && shell) {
+      shell.remove();
+      entry.liveShell = shell;
+    }
+    preview.remove();
+  }
+
+  function stashNavigationPreviews() {
+    app.querySelectorAll(':scope > .route-page-preview').forEach(stashNavigationPreview);
+  }
+
   function installNavigationPreview(entry, mode = 'back') {
-    document.querySelector('.route-page-preview')?.remove();
-    if (!entry?.previewHtml) return null;
+    stashNavigationPreviews();
+    if (!entry?.liveShell && !entry?.previewHtml) return null;
     const preview = document.createElement('div');
     preview.className = `route-page-preview route-preview-${mode}`;
     preview.setAttribute('aria-hidden', 'true');
-    preview.innerHTML = entry.previewHtml;
+    preview.navigationEntry = entry;
+    const liveShell = entry.liveShell;
+    if (liveShell) {
+      liveShell.remove();
+      preview.append(liveShell);
+    } else {
+      preview.innerHTML = entry.previewHtml;
+    }
     app.insertBefore(preview, currentAppShell());
     sanitizeNavigationPreview(preview);
     restorePreviewScroll(preview, entry);
     return preview;
   }
 
-  async function restoreNavigationEntry(entry) {
+  function refreshNavigationEdgeZone() {
+    const edge = app.querySelector(':scope > .navigation-edge-zone');
+    if (!state.navigationStack.length) {
+      edge?.remove();
+      return;
+    }
+    if (edge) return;
+    const zone = document.createElement('div');
+    zone.className = 'navigation-edge-zone';
+    zone.setAttribute('aria-hidden', 'true');
+    currentAppShell()?.after(zone);
+  }
+
+  function promoteNavigationPreview(preview, entry) {
+    const target = preview?.querySelector(':scope > .app-shell');
+    const current = currentAppShell();
+    if (!target || !current) return false;
+    restorePreviewScroll(preview, entry);
+    restoreNavigationPreviewIds(preview);
+    target.classList.remove('route-page-current', 'route-page-entering', 'route-page-exiting', 'route-swipe-current');
+    target.style.transform = '';
+    target.style.opacity = '';
+    target.style.transition = '';
+    target.style.boxShadow = '';
+    preview.before(target);
+    current.remove();
+    preview.remove();
+    entry.liveShell = null;
+    stashNavigationPreviews();
+    refreshNavigationEdgeZone();
+    resizeComposerInput();
+    attachCallStreams();
+    attachCameraStream();
+    attachStoryEditorVideo();
+    attachStoryViewerVideo();
+    return true;
+  }
+
+  function afterVisualMotion(element, eventName, fallbackMs, callback) {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      element?.removeEventListener(eventName, onEnd);
+      callback();
+    };
+    const onEnd = (event) => {
+      if (event.target === element) finish();
+    };
+    const timer = setTimeout(finish, fallbackMs);
+    element?.addEventListener(eventName, onEnd);
+  }
+
+  async function restoreNavigationEntry(entry, options = {}) {
     if (!entry) return false;
+    rememberActiveConversation();
     const view = entry.view || {};
     state.tab = view.tab || 'chats';
     state.lastTab = view.lastTab || state.tab;
@@ -354,12 +455,15 @@
     state.messages = entry.messages || [];
     state.chatAppearance = entry.chatAppearance || defaultChatAppearance();
     state.hasOlderMessages = Boolean(entry.hasOlderMessages);
+    state.chatLoading = Boolean(entry.chatLoading);
     state.highlightMessageId = entry.highlightMessageId || null;
     state.scrollMemory = { ...state.scrollMemory, ...(entry.scrollMemory || {}) };
     state.routeForward = null;
     state.chatOpening = false;
     state.chatReturnAnimation = false;
-    renderApp({ scrollSnapshot: entry.messageScroll, scroll: 'preserve' });
+    if (!promoteNavigationPreview(options.preview, entry)) {
+      renderApp({ scrollSnapshot: entry.messageScroll, scroll: 'restore' });
+    }
     return true;
   }
 
@@ -367,7 +471,7 @@
     if (!entry || state.navigationBusy === 'finishing') return;
     state.navigationBusy = 'finishing';
     if (state.navigationStack[state.navigationStack.length - 1] === entry) state.navigationStack.pop();
-    await restoreNavigationEntry(entry);
+    await restoreNavigationEntry(entry, { preview: options.preview });
     if (!options.skipHistory && history.length > 1) {
       state.suppressNextPopstate = true;
       history.back();
@@ -380,11 +484,14 @@
     const entry = state.navigationStack[state.navigationStack.length - 1];
     const current = currentAppShell();
     if (!entry || !current) return false;
+    rememberActiveConversation();
     state.navigationBusy = true;
     const preview = installNavigationPreview(entry, 'back');
     current.classList.add('route-page-exiting');
     preview?.classList.add('route-page-revealing');
-    setTimeout(() => finishNavigationBack(entry, options).catch((error) => alert(error.message)), 270);
+    afterVisualMotion(current, 'animationend', 320, () => {
+      finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
+    });
     return true;
   }
 
@@ -543,10 +650,13 @@
       ? conversationCacheKey('group', state.activeGroup.id)
       : conversationCacheKey('peer', state.activePeer?.id);
     if (!key) return;
+    const scroll = captureMessagesScroll() || state.conversationScroll.get(key) || null;
+    if (scroll) state.conversationScroll.set(key, scroll);
     rememberConversation(key, {
       messages: state.messages,
       appearance: state.chatAppearance,
-      hasMore: state.hasOlderMessages
+      hasMore: state.hasOlderMessages,
+      scroll
     });
   }
 
@@ -585,6 +695,7 @@
       history.replaceState({ appManaged: true, route: 'app' }, '', '/');
     }
     if (isMobileLayout()) {
+      rememberActiveConversation();
       state.activePeer = null;
       state.activeGroup = null;
       state.chatLoading = false;
@@ -888,21 +999,54 @@
   function applyRenderScroll(scrollMode, scrollSnapshot) {
     if (state.highlightMessageId) scrollHighlightedMessage();
     else if (scrollMode === 'bottom') scrollMessagesToBottom();
+    else if (scrollMode === 'restore') restoreMessagesScroll(scrollSnapshot);
     else restoreMessagesScroll(scrollSnapshot, { anchor: 'bottom' });
   }
 
-  function stabilizeBottomScroll() {
+  function waitForChatMedia(messages) {
+    const media = [...messages.querySelectorAll('img, video')];
+    if (!media.length) return Promise.resolve();
+    return Promise.all(media.map((element) => new Promise((resolve) => {
+      if ((element.tagName === 'IMG' && element.complete) || (element.tagName === 'VIDEO' && element.readyState >= 1)) {
+        resolve();
+        return;
+      }
+      const done = () => {
+        element.removeEventListener('load', done);
+        element.removeEventListener('error', done);
+        element.removeEventListener('loadedmetadata', done);
+        resolve();
+      };
+      element.addEventListener('load', done, { once: true });
+      element.addEventListener('error', done, { once: true });
+      element.addEventListener('loadedmetadata', done, { once: true });
+    })));
+  }
+
+  function stabilizeBottomScroll(options = {}) {
+    chatScrollSettleCleanup?.();
     const token = state.chatOpenToken;
     const messages = document.getElementById('messages');
-    if (!messages) return;
+    if (!messages || state.chatLoading) return;
     let cancelled = false;
     let frame = 0;
-    let observer = null;
-    const cancel = () => {
+    let revealTimer = 0;
+    const cleanup = () => {
       cancelled = true;
       cancelAnimationFrame(frame);
-      observer?.disconnect();
+      clearTimeout(revealTimer);
+      messages.removeEventListener('pointerdown', cancel);
+      messages.removeEventListener('touchstart', cancel);
+      messages.removeEventListener('wheel', cancel);
+      messages.classList.remove('chat-settling');
+      if (options.reveal && messages.isConnected) {
+        messages.classList.add('chat-settled');
+        revealTimer = setTimeout(() => messages.classList.remove('chat-settled'), 220);
+      }
+      if (chatScrollSettleCleanup === cleanup) chatScrollSettleCleanup = null;
     };
+    const cancel = () => cleanup();
+    chatScrollSettleCleanup = cleanup;
     messages.addEventListener('pointerdown', cancel, { once: true, passive: true });
     messages.addEventListener('touchstart', cancel, { once: true, passive: true });
     messages.addEventListener('wheel', cancel, { once: true, passive: true });
@@ -910,18 +1054,20 @@
       if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
       messages.scrollTop = messages.scrollHeight;
     };
-    const schedule = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(settle);
-    };
-    schedule();
-    setTimeout(schedule, 120);
-    setTimeout(schedule, 420);
-    if (window.ResizeObserver) {
-      observer = new ResizeObserver(schedule);
-      observer.observe(messages);
-      setTimeout(() => observer?.disconnect(), 900);
-    }
+    settle();
+    Promise.race([
+      waitForChatMedia(messages),
+      new Promise((resolve) => setTimeout(resolve, 850))
+    ]).then(() => {
+      if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
+      frame = requestAnimationFrame(() => {
+        settle();
+        frame = requestAnimationFrame(() => {
+          settle();
+          cleanup();
+        });
+      });
+    });
   }
 
   function renderApp(options = {}) {
@@ -932,8 +1078,10 @@
       : captureMessagesScroll();
     const scrollMode = options.scroll || 'preserve';
     const forwardEntry = state.routeForward;
+    const forwardLiveShell = forwardEntry?.liveShell || null;
+    forwardLiveShell?.remove();
     app.innerHTML = `
-      ${forwardEntry?.previewHtml ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
+      ${forwardEntry?.previewHtml && !forwardLiveShell ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
       <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
@@ -946,6 +1094,7 @@
       <div id="profile-edit-slot">${renderProfileEditModal()}</div>
       <div id="settings-slot">${renderSettingsModal()}</div>
       <div id="avatar-crop-slot">${renderAvatarCropper()}</div>
+      <div id="camera-capture-slot">${renderCameraCapture()}</div>
       <div id="story-editor-slot">${renderStoryEditor()}</div>
       <div id="story-viewer-slot">${renderStoryViewer()}</div>
       <div id="highlight-composer-slot">${renderHighlightComposer()}</div>
@@ -958,12 +1107,22 @@
       <input id="story-input" type="file" accept="image/*,video/*" hidden>
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
+    if (forwardEntry && forwardLiveShell) {
+      const preview = document.createElement('div');
+      preview.className = 'route-page-preview route-preview-forward';
+      preview.setAttribute('aria-hidden', 'true');
+      preview.navigationEntry = forwardEntry;
+      preview.append(forwardLiveShell);
+      app.insertBefore(preview, currentAppShell());
+    }
     state.tabTransition = false;
-    sanitizeNavigationPreview(document.querySelector('.route-preview-forward'));
+    const forwardPreview = app.querySelector(':scope > .route-preview-forward');
+    if (forwardPreview) forwardPreview.navigationEntry = forwardEntry;
+    sanitizeNavigationPreview(forwardPreview);
     resizeComposerInput();
     applyRenderScroll(scrollMode, scrollSnapshot);
     restorePersistentScroll();
-    if (forwardEntry) restorePreviewScroll(document.querySelector('.route-preview-forward'), forwardEntry);
+    if (forwardEntry) restorePreviewScroll(forwardPreview, forwardEntry);
     setTimeout(() => {
       resizeComposerInput();
       if (state.storyEditor?.textEditing) {
@@ -973,8 +1132,8 @@
         resizeStoryTextInput(storyText);
         centerStoryActiveChoice();
       }
-      if (scrollMode === 'bottom') stabilizeBottomScroll();
       attachCallStreams();
+      attachCameraStream();
       attachStoryEditorVideo();
       attachStoryViewerVideo();
       state.chatReturnAnimation = false;
@@ -984,7 +1143,7 @@
       setTimeout(() => {
         if (state.routeForward !== forwardEntry) return;
         state.routeForward = null;
-        document.querySelector('.route-preview-forward')?.remove();
+        stashNavigationPreview(app.querySelector(':scope > .route-preview-forward'));
         currentAppShell()?.querySelector('.chat-pane.chat-opening')?.classList.remove('chat-opening');
         currentAppShell()?.classList.remove('route-page-current', 'route-page-entering');
       }, 310);
@@ -1010,6 +1169,12 @@
     updateSlot('profile-edit-slot', renderProfileEditModal());
     updateSlot('settings-slot', renderSettingsModal());
     updateSlot('avatar-crop-slot', renderAvatarCropper());
+  }
+
+  function updateCameraCaptureSlot() {
+    if (!updateSlot('camera-capture-slot', renderCameraCapture())) return false;
+    requestAnimationFrame(attachCameraStream);
+    return true;
   }
 
   function updateStoryEditorView() {
@@ -3335,7 +3500,7 @@
               </div>
             ` : ''}
             <div class="composer-row instagram-composer">
-              <button class="composer-camera" title="Add photo, video, or document" aria-label="Add photo, video, or document" data-action="attach-open">${icon('camera')}</button>
+              <button class="composer-camera" title="Open camera" aria-label="Open camera" data-action="attach-open">${icon('camera')}</button>
               <textarea id="composer-text" class="composer-input" rows="1" maxlength="8000" placeholder="Message ${esc(activeConversationTitle())}">${esc(state.composerDrafts[key] || '')}</textarea>
               <button class="composer-tool" title="Hold to record voice" aria-label="Hold to record voice" data-action="record-voice">${icon('mic')}</button>
               <button class="composer-tool ${state.stickerPanel ? 'active' : ''}" title="Stickers and GIFs" aria-label="Stickers and GIFs" data-action="sticker-toggle">${icon('sticker')}</button>
@@ -3352,6 +3517,7 @@
   function renderChatProfilePane() {
     if (state.activeGroup) return renderGroupProfilePane();
     const peer = state.activePeer;
+    const profileScrollKey = `chat-profile:${activeConversationKey()}:main`;
     if (state.chatProfileSocialView) return renderChatProfileSocialPage(peer);
     return `
       <main class="chat-pane profile-pane">
@@ -3362,7 +3528,7 @@
             <small>@${esc(peer.username)}</small>
           </div>
         </header>
-        <section class="chat-profile-content">
+        <section class="chat-profile-content" data-scroll-memory="${esc(profileScrollKey)}">
           <div class="peer-profile-hero">
             ${renderProfileAvatarStack(peer)}
             <strong>${esc(peer.displayName)}</strong>
@@ -3412,6 +3578,7 @@
   function renderGroupProfilePane() {
     const group = state.activeGroup;
     if (!group) return '';
+    const profileScrollKey = `chat-profile:${activeConversationKey()}:main`;
     return `
       <main class="chat-pane profile-pane group-profile-pane">
         <header class="chat-header">
@@ -3419,7 +3586,7 @@
           <div class="chat-title"><strong>Group details</strong><small>${group.memberCount} members</small></div>
           ${group.isAdmin ? `<button class="icon-btn" data-action="edit-group" aria-label="Edit group">${icon('edit')}</button>` : ''}
         </header>
-        <section class="chat-profile-content group-profile-content">
+        <section class="chat-profile-content group-profile-content" data-scroll-memory="${esc(profileScrollKey)}">
           <div class="peer-profile-hero group-profile-hero">
             <button class="group-photo-button ${group.isAdmin ? 'editable' : ''}" ${group.isAdmin ? 'data-action="edit-group"' : ''} aria-label="${group.isAdmin ? 'Edit group' : 'Group picture'}">
               ${groupAvatarHtml(group, 'large')}
@@ -3638,6 +3805,7 @@
     const view = state.chatProfileSocialView === 'following' ? 'following' : 'followers';
     const users = view === 'followers' ? (peer.followers || []) : (peer.following || []);
     const empty = view === 'followers' ? 'No followers yet.' : 'Not following anyone yet.';
+    const profileScrollKey = `chat-profile:${activeConversationKey()}:${view}`;
     return `
       <main class="chat-pane profile-pane">
         <header class="chat-header">
@@ -3647,7 +3815,7 @@
             <small>@${esc(peer.username)}</small>
           </div>
         </header>
-        <section class="chat-profile-content">
+        <section class="chat-profile-content" data-scroll-memory="${esc(profileScrollKey)}">
           <div class="segmented social-switch is-${view} ${state.socialTransition ? `social-switch-${state.socialTransition}` : ''}">
             <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-peer-social" data-social="followers"><strong>${peer.followerCount ?? 0}</strong> Followers</button>
             <button type="button" class="${view === 'following' ? 'active' : ''}" data-action="open-peer-social" data-social="following"><strong>${peer.followingCount ?? 0}</strong> Following</button>
@@ -4215,6 +4383,187 @@
     `;
   }
 
+  function renderCameraCapture() {
+    const capture = state.cameraCapture;
+    if (!capture) return '';
+    const ready = capture.status === 'ready';
+    const unavailable = capture.status === 'error';
+    const style = [
+      `--camera-origin-x:${Number(capture.originX || 50).toFixed(2)}%`,
+      `--camera-origin-y:${Number(capture.originY || 50).toFixed(2)}%`,
+      `--camera-origin-size:${Math.max(16, Number(capture.originSize || 26)).toFixed(0)}px`
+    ].join(';');
+    const title = capture.mode === 'story' ? 'Story camera' : 'Camera';
+    return `
+      <section class="camera-capture-page ${capture.opening ? 'camera-opening' : ''} ${capture.closing ? 'camera-closing' : ''} ${ready ? 'camera-ready' : ''} ${capture.facingMode === 'user' ? 'camera-facing-user' : ''}" style="${esc(style)}" aria-label="${title}" role="dialog" aria-modal="true">
+        <div class="camera-capture-surface">
+          <video id="camera-preview" class="camera-preview" autoplay muted playsinline></video>
+          <div class="camera-scrim camera-scrim-top"></div>
+          <div class="camera-scrim camera-scrim-bottom"></div>
+          <header class="camera-capture-header">
+            <button class="camera-control-button" data-action="close-camera-capture" aria-label="Close camera">${icon('x')}</button>
+            <strong>${capture.mode === 'story' ? 'STORY' : 'CAMERA'}</strong>
+            <button class="camera-control-button" data-action="camera-flip" aria-label="Switch camera" ${ready ? '' : 'disabled'}>${icon('rotate')}</button>
+          </header>
+          ${!ready ? `
+            <div class="camera-status ${unavailable ? 'camera-status-error' : ''}">
+              ${unavailable ? `<strong>Camera unavailable</strong><small>${esc(capture.error || 'You can still choose a photo or video from your library.')}</small>` : '<span class="spinner"></span><small>Opening camera…</small>'}
+            </div>
+          ` : ''}
+          <footer class="camera-capture-controls">
+            <button class="camera-library-button" data-action="open-camera-gallery">Library</button>
+            <button class="camera-shutter" data-action="camera-shutter" aria-label="Take photo" ${ready ? '' : 'disabled'}><i></i></button>
+            ${capture.mode === 'story'
+              ? '<button class="camera-library-button" data-action="camera-use-text">Aa</button>'
+              : '<span class="camera-control-spacer" aria-hidden="true"></span>'}
+          </footer>
+        </div>
+      </section>
+    `;
+  }
+
+  function stopCameraStream() {
+    cameraStream?.getTracks?.().forEach((track) => track.stop());
+    cameraStream = null;
+  }
+
+  function attachCameraStream() {
+    const video = document.getElementById('camera-preview');
+    if (!video || !cameraStream) return;
+    if (video.srcObject !== cameraStream) video.srcObject = cameraStream;
+    video.play?.().catch(() => {});
+  }
+
+  function cameraOriginFrom(source) {
+    const rect = source?.getBoundingClientRect?.();
+    if (!rect) return { originX: 50, originY: 50, originSize: 26 };
+    return {
+      originX: ((rect.left + rect.width / 2) / Math.max(1, window.innerWidth)) * 100,
+      originY: ((rect.top + rect.height / 2) / Math.max(1, window.innerHeight)) * 100,
+      originSize: Math.max(rect.width, rect.height, 22) / 2
+    };
+  }
+
+  async function startCameraCapture(capture) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      if (state.cameraCapture === capture) {
+        capture.status = 'error';
+        capture.opening = false;
+        capture.error = 'This browser does not provide camera access.';
+        updateCameraCaptureSlot();
+      }
+      return;
+    }
+    stopCameraStream();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: capture.facingMode || 'environment' } },
+        audio: false
+      });
+      if (state.cameraCapture !== capture || capture.closing) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      cameraStream = stream;
+      capture.status = 'ready';
+      capture.opening = false;
+      updateCameraCaptureSlot();
+    } catch (error) {
+      if (state.cameraCapture !== capture || capture.closing) return;
+      capture.status = 'error';
+      capture.opening = false;
+      capture.error = error?.name === 'NotAllowedError'
+        ? 'Allow camera access to take a photo, or choose one from your library.'
+        : 'Camera could not be opened. Choose a photo or video from your library instead.';
+      updateCameraCaptureSlot();
+    }
+  }
+
+  function openCameraCapture(mode, options = {}, source = null) {
+    if (!['story', 'chat'].includes(mode)) return;
+    clearTimeout(cameraCloseTimer);
+    stopCameraStream();
+    const capture = {
+      mode,
+      publishAsHighlight: Boolean(options.publishAsHighlight),
+      facingMode: 'environment',
+      status: 'opening',
+      opening: true,
+      closing: false,
+      ...cameraOriginFrom(source)
+    };
+    state.cameraCapture = capture;
+    updateCameraCaptureSlot();
+    startCameraCapture(capture);
+  }
+
+  function closeCameraCapture(options = {}) {
+    const capture = state.cameraCapture;
+    if (!capture) return;
+    clearTimeout(cameraCloseTimer);
+    stopCameraStream();
+    if (options.immediate) {
+      state.cameraCapture = null;
+      updateCameraCaptureSlot();
+      return;
+    }
+    capture.opening = false;
+    capture.closing = true;
+    updateCameraCaptureSlot();
+    cameraCloseTimer = setTimeout(() => {
+      if (state.cameraCapture !== capture) return;
+      state.cameraCapture = null;
+      updateCameraCaptureSlot();
+    }, 260);
+  }
+
+  async function flipCameraCapture() {
+    const capture = state.cameraCapture;
+    if (!capture || capture.closing) return;
+    capture.facingMode = capture.facingMode === 'user' ? 'environment' : 'user';
+    capture.status = 'opening';
+    capture.opening = false;
+    capture.error = '';
+    updateCameraCaptureSlot();
+    await startCameraCapture(capture);
+  }
+
+  function chooseCameraLibrary() {
+    const capture = state.cameraCapture;
+    if (!capture) return;
+    const input = document.getElementById(capture.mode === 'story' ? 'story-input' : 'file-input');
+    if (!input) return;
+    input.accept = 'image/*,video/*';
+    input.click();
+  }
+
+  async function captureCameraPhoto() {
+    const capture = state.cameraCapture;
+    const video = document.getElementById('camera-preview');
+    if (!capture || capture.status !== 'ready' || !video?.videoWidth || !video?.videoHeight) return;
+    const canvas = document.createElement('canvas');
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = video.videoHeight;
+    const scale = Math.min(1, 1920 / Math.max(sourceWidth, sourceHeight));
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Camera photo could not be created.');
+    if (capture.facingMode === 'user') {
+      context.translate(canvas.width, 0);
+      context.scale(-1, 1);
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    if (!blob) throw new Error('Camera photo could not be created.');
+    const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg', lastModified: Date.now() });
+    const mode = capture.mode;
+    const publishAsHighlight = capture.publishAsHighlight;
+    closeCameraCapture({ immediate: true });
+    if (mode === 'story') await beginStoryEditor(file, { publishAsHighlight });
+    else await sendFile(file, 'image');
+  }
+
   function renderStoryEditor() {
     const editor = state.storyEditor;
     if (!editor) return '';
@@ -4636,9 +4985,12 @@
     const peer = userById(userId);
     if (!peer) return;
     if (state.activePeer?.id === userId && !state.chatProfileOpen && !highlightMessageId && !state.chatLoading) return;
+    chatScrollSettleCleanup?.();
     const navigationEntry = isMobileLayout() && options.pushNavigation !== false ? captureNavigationEntry('chat') : null;
+    rememberActiveConversation();
     const cacheKey = conversationCacheKey('peer', userId);
     const cached = state.conversationCache.get(cacheKey);
+    const savedScroll = state.conversationScroll.get(cacheKey) || cached?.scroll || null;
     state.activePeer = peer;
     state.activeGroup = null;
     if (state.searchProfileOpen) {
@@ -4653,7 +5005,7 @@
     }
     state.chatOpening = !highlightMessageId;
     const openToken = ++state.chatOpenToken;
-    state.chatLoading = true;
+    state.chatLoading = !cached?.messages?.length;
     state.chatProfileOpen = false;
     state.chatProfileSocialView = null;
     state.replyTo = null;
@@ -4666,8 +5018,10 @@
     state.loadingOlderMessages = false;
     delete state.unreadByPeer[userId];
     if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
-    const scrollMode = highlightMessageId ? 'preserve' : 'bottom';
-    if (navigationEntry || !updateChatPane({ scroll: scrollMode })) renderApp({ scroll: scrollMode });
+    const scrollMode = highlightMessageId ? 'preserve' : savedScroll ? 'restore' : 'bottom';
+    if (navigationEntry || !updateChatPane({ scroll: scrollMode, scrollSnapshot: savedScroll })) {
+      renderApp({ scroll: scrollMode, scrollSnapshot: savedScroll });
+    }
     else updateSidebar();
     try {
       const [data, appearance] = await Promise.all([
@@ -4677,7 +5031,8 @@
       const cacheValue = {
         messages: data.messages || [],
         appearance: appearance.settings || defaultChatAppearance(),
-        hasMore: Boolean(data.hasMore)
+        hasMore: Boolean(data.hasMore),
+        scroll: savedScroll
       };
       rememberConversation(cacheKey, cacheValue);
       if (openToken !== state.chatOpenToken || state.activePeer?.id !== userId) return;
@@ -4686,8 +5041,11 @@
       state.hasOlderMessages = cacheValue.hasMore;
       state.chatLoading = false;
       applyChatAppearanceUi();
-      updateMessagesList({ scroll: scrollMode });
-      if (scrollMode === 'bottom') stabilizeBottomScroll();
+      updateMessagesList({
+        scroll: scrollMode,
+        scrollSnapshot: savedScroll,
+        settle: scrollMode === 'bottom' && !cached
+      });
     } catch (error) {
       if (openToken === state.chatOpenToken && state.activePeer?.id === userId) {
         state.chatLoading = false;
@@ -4701,9 +5059,12 @@
     const group = state.groups.find((item) => item.id === groupId);
     if (!group) return;
     if (state.activeGroup?.id === groupId && !state.chatProfileOpen && !highlightMessageId && !state.chatLoading) return;
+    chatScrollSettleCleanup?.();
     const navigationEntry = isMobileLayout() && options.pushNavigation !== false ? captureNavigationEntry('group-chat') : null;
+    rememberActiveConversation();
     const cacheKey = conversationCacheKey('group', groupId);
     const cached = state.conversationCache.get(cacheKey);
+    const savedScroll = state.conversationScroll.get(cacheKey) || cached?.scroll || null;
     state.activeGroup = group;
     state.activePeer = null;
     state.chatProfileOpen = false;
@@ -4719,15 +5080,17 @@
     state.loadingOlderMessages = false;
     state.chatOpening = !highlightMessageId;
     const openToken = ++state.chatOpenToken;
-    state.chatLoading = true;
+    state.chatLoading = !cached?.messages?.length;
     delete state.unreadByPeer[groupId];
     if (isMobileLayout()) {
       state.tab = 'chats';
       state.lastTab = 'chats';
     }
     if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
-    const scrollMode = highlightMessageId ? 'preserve' : 'bottom';
-    if (navigationEntry || !updateChatPane({ scroll: scrollMode })) renderApp({ scroll: scrollMode });
+    const scrollMode = highlightMessageId ? 'preserve' : savedScroll ? 'restore' : 'bottom';
+    if (navigationEntry || !updateChatPane({ scroll: scrollMode, scrollSnapshot: savedScroll })) {
+      renderApp({ scroll: scrollMode, scrollSnapshot: savedScroll });
+    }
     else updateSidebar();
     try {
       const [data, appearance] = await Promise.all([
@@ -4737,7 +5100,8 @@
       const cacheValue = {
         messages: data.messages || [],
         appearance: appearance.settings || defaultChatAppearance(),
-        hasMore: Boolean(data.hasMore)
+        hasMore: Boolean(data.hasMore),
+        scroll: savedScroll
       };
       rememberConversation(cacheKey, cacheValue);
       if (openToken !== state.chatOpenToken || state.activeGroup?.id !== groupId) return;
@@ -4747,8 +5111,11 @@
       state.hasOlderMessages = cacheValue.hasMore;
       state.chatLoading = false;
       applyChatAppearanceUi();
-      updateMessagesList({ scroll: scrollMode });
-      if (scrollMode === 'bottom') stabilizeBottomScroll();
+      updateMessagesList({
+        scroll: scrollMode,
+        scrollSnapshot: savedScroll,
+        settle: scrollMode === 'bottom' && !cached
+      });
     } catch (error) {
       if (openToken === state.chatOpenToken && state.activeGroup?.id === groupId) {
         state.chatLoading = false;
@@ -5271,9 +5638,11 @@
     updateStoryMediaUi();
   }
 
-  async function beginStoryEditor(file) {
+  async function beginStoryEditor(file, options = {}) {
     if (!file) return;
-    const publishAsHighlight = Boolean(state.storyEditor?.publishAsHighlight);
+    const publishAsHighlight = Object.prototype.hasOwnProperty.call(options, 'publishAsHighlight')
+      ? Boolean(options.publishAsHighlight)
+      : Boolean(state.storyEditor?.publishAsHighlight);
     state.storyEditor = createStoryEditorState({
       dataUrl: await fileToDataUrl(file),
       name: file.name || 'story',
@@ -7285,11 +7654,14 @@
       state.messageFocusNeedsRefresh = true;
       return true;
     }
-    const snapshot = captureMessagesScroll();
+    const snapshot = options.scrollSnapshot || captureMessagesScroll();
     const wasNearBottom = snapshot && snapshot.bottom < 80;
+    if (options.settle) messages.classList.add('chat-settling');
     messages.innerHTML = renderMessagesList();
     if (options.scroll === 'bottom' || (options.scroll === 'auto' && wasNearBottom)) scrollMessagesToBottom();
+    else if (options.scroll === 'restore') restoreMessagesScroll(snapshot);
     else restoreMessagesScroll(snapshot, options.anchor === 'bottom' ? { anchor: 'bottom' } : {});
+    if (options.settle) stabilizeBottomScroll({ reveal: true });
     return true;
   }
 
@@ -7304,7 +7676,6 @@
     currentAppShell()?.classList.toggle('chat-open', hasActiveConversation());
     resizeComposerInput();
     applyRenderScroll(options.scroll || 'preserve', options.scrollSnapshot || null);
-    if (options.scroll === 'bottom') stabilizeBottomScroll();
     setTimeout(() => {
       next.classList.remove('chat-opening');
       state.chatOpening = false;
@@ -7475,6 +7846,7 @@
       }
       if (action === 'logout') {
         await api('/api/auth/logout', { method: 'POST' });
+        closeCameraCapture({ immediate: true });
         if (state.ws) state.ws.close();
         toastTimers.forEach((timer) => clearTimeout(timer));
         toastTimers.clear();
@@ -7485,6 +7857,7 @@
         state.chatLoading = false;
         state.chatOpenToken += 1;
         state.conversationCache.clear();
+        state.conversationScroll.clear();
         state.navigationStack = [];
         state.routeForward = null;
         state.navigationBusy = false;
@@ -7548,6 +7921,7 @@
       }
       if (action === 'back') {
         navigationBackOr(() => {
+          rememberActiveConversation();
           state.activePeer = null;
           state.activeGroup = null;
           state.chatLoading = false;
@@ -7602,7 +7976,24 @@
         await sendCurrentText();
       }
       if (action === 'attach-open') {
-        document.getElementById('file-input')?.click();
+        openCameraCapture('chat', {}, target);
+      }
+      if (action === 'close-camera-capture') {
+        closeCameraCapture();
+      }
+      if (action === 'camera-flip') {
+        await flipCameraCapture();
+      }
+      if (action === 'open-camera-gallery') {
+        chooseCameraLibrary();
+      }
+      if (action === 'camera-shutter') {
+        await captureCameraPhoto();
+      }
+      if (action === 'camera-use-text') {
+        const publishAsHighlight = Boolean(state.cameraCapture?.publishAsHighlight);
+        closeCameraCapture({ immediate: true });
+        beginBlankStoryEditor({ publishAsHighlight });
       }
       if (action === 'sticker-toggle') {
         const opening = !state.stickerPanel;
@@ -8395,7 +8786,7 @@
         state.actionSheet = null;
         state.overlayClosing = false;
         updateActionSheetSlot();
-        beginBlankStoryEditor({ publishAsHighlight: target.dataset.highlight === 'true' });
+        openCameraCapture('story', { publishAsHighlight: target.dataset.highlight === 'true' }, target);
       }
       if (action === 'open-highlight-composer') {
         openHighlightComposer();
@@ -8411,7 +8802,7 @@
       if (action === 'highlight-create-story') {
         state.highlightComposer = null;
         updateHighlightComposerSlot();
-        beginBlankStoryEditor({ publishAsHighlight: true });
+        openCameraCapture('story', { publishAsHighlight: true }, target);
       }
       if (action === 'select-highlight-story') {
         state.highlightComposer = { mode: 'target', source: 'existing', storyId: target.dataset.storyId };
@@ -8510,6 +8901,7 @@
       if (event.target.id === 'file-input') {
         const file = event.target.files[0];
         event.target.value = '';
+        if (file && state.cameraCapture?.mode === 'chat') closeCameraCapture({ immediate: true });
         await sendFile(file);
       }
       if (event.target.id === 'sticker-file-input') {
@@ -8554,7 +8946,11 @@
       if (event.target.id === 'story-input') {
         const file = event.target.files[0];
         event.target.value = '';
-        if (file) await beginStoryEditor(file);
+        const publishAsHighlight = state.cameraCapture?.mode === 'story'
+          ? state.cameraCapture.publishAsHighlight
+          : undefined;
+        if (file && state.cameraCapture?.mode === 'story') closeCameraCapture({ immediate: true });
+        if (file) await beginStoryEditor(file, publishAsHighlight === undefined ? {} : { publishAsHighlight });
       }
       if (event.target.id === 'story-audio-input') {
         const file = event.target.files[0];
@@ -8869,6 +9265,11 @@
   }, true);
 
   document.addEventListener('keydown', async (event) => {
+    if (event.key === 'Escape' && state.cameraCapture) {
+      event.preventDefault();
+      closeCameraCapture();
+      return;
+    }
     if (event.key === 'Escape' && state.messageFocus) {
       event.preventDefault();
       closeMessageFocus();
@@ -8934,7 +9335,7 @@
       state.edgeSwipe = null;
       return;
     }
-    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet ||
+    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer;
     const backEntry = state.navigationStack[state.navigationStack.length - 1];
     if (state.me && backEntry && !state.navigationBusy && !gestureBlocked && event.clientX < 38 && !event.target.closest('input,textarea,[contenteditable="true"]')) {
@@ -9500,10 +9901,9 @@
           swipe.preview.style.transform = 'translateX(0)';
           swipe.preview.style.filter = 'brightness(1)';
         }
-        setTimeout(() => {
-          state.navigationBusy = false;
-          finishNavigationBack(swipe.entry).catch((error) => alert(error.message));
-        }, 245);
+        afterVisualMotion(surface, 'transitionend', 300, () => {
+          finishNavigationBack(swipe.entry, { preview: swipe.preview }).catch((error) => alert(error.message));
+        });
       } else {
         restoreLiveScroll(swipe.liveScroll);
         if (surface) {
@@ -9517,7 +9917,7 @@
         setTimeout(() => {
           restoreLiveScroll(swipe.liveScroll);
           surface?.classList.remove('route-swipe-current');
-          swipe.preview?.remove();
+          stashNavigationPreview(swipe.preview);
         }, 245);
       }
       state.edgeSwipe = null;
@@ -9576,7 +9976,7 @@
       state.edgeSwipe.surface.style.transition = '';
       state.edgeSwipe.surface.classList.remove('route-swipe-current');
     }
-    state.edgeSwipe?.preview?.remove();
+    stashNavigationPreview(state.edgeSwipe?.preview);
     if (state.tabSwipe?.surface) {
       state.tabSwipe.surface.style.transform = '';
       state.tabSwipe.surface.style.opacity = '';
@@ -9602,7 +10002,7 @@
       state.edgeSwipe.surface.style.transition = '';
       state.edgeSwipe.surface.classList.remove('route-swipe-current');
     }
-    state.edgeSwipe?.preview?.remove();
+    stashNavigationPreview(state.edgeSwipe?.preview);
     if (state.tabSwipe?.surface) {
       state.tabSwipe.surface.style.transform = '';
       state.tabSwipe.surface.style.opacity = '';
@@ -9683,6 +10083,10 @@
       if (state.me) alert(error.message);
       else renderAuth(error.message);
     });
+  });
+
+  window.addEventListener('pagehide', () => {
+    stopCameraStream();
   });
 
   init().catch((error) => {

@@ -140,7 +140,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="rename-highlight"/);
   assert.match(clientSource, /data-action="publish-story-only"/);
   assert.match(clientSource, /conversationCache: new Map\(\)/);
+  assert.match(clientSource, /conversationScroll: new Map\(\)/);
   assert.match(clientSource, /function updateChatPane/);
+  assert.match(clientSource, /function promoteNavigationPreview/);
+  assert.match(clientSource, /function renderCameraCapture/);
+  assert.match(clientSource, /navigator\.mediaDevices\?\.getUserMedia/);
+  assert.match(clientSource, /openCameraCapture\('story'/);
+  assert.match(clientSource, /openCameraCapture\('chat'/);
   assert.match(styleSource, /class="message-focus-overlay"|\.message-focus-overlay/);
   assert.match(clientSource, /class="message-focus-host"/);
   assert.match(clientSource, /function renderStickerManager/);
@@ -211,8 +217,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(styleSource, /\.group-composer-overlay/);
   assert.match(clientSource, /function captureNavigationEntry/);
   assert.match(clientSource, /function animateNavigationBack/);
+  assert.match(clientSource, /liveShell,/);
+  assert.match(clientSource, /function stashNavigationPreview/);
   assert.match(clientSource, /installNavigationPreview\(backEntry, 'swipe'\)/);
   assert.match(styleSource, /\.route-page-preview/);
+  assert.match(styleSource, /\.camera-capture-page/);
+  assert.match(styleSource, /cameraCaptureIn/);
+  assert.match(styleSource, /\.messages\.chat-settling/);
   assert.match(styleSource, /socialUnderlineToRight/);
   assert.match(clientSource, /function submitChatGif/);
   assert.doesNotMatch(clientSource, /sendFile\(file, 'gif'\)/);

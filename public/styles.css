@@ -9900,3 +9900,277 @@ html.keyboard-open .bottom-tabs {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* One-shot chat settling prevents late media layout from pulling a new chat. */
+.messages {
+  position: relative;
+}
+
+.messages.chat-settling {
+  overflow-anchor: none;
+}
+
+.messages.chat-settling > * {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+.messages.chat-settling::after {
+  content: '';
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 22px;
+  height: 22px;
+  margin: -11px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: cameraLoaderSpin .7s linear infinite;
+}
+
+.messages.chat-settled > * {
+  animation: chatMessagesReveal .16s ease-out both;
+}
+
+@keyframes chatMessagesReveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes cameraLoaderSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Instagram-style camera surface shared by stories and the chat camera button. */
+.camera-capture-page {
+  position: fixed;
+  inset: 0;
+  z-index: 112;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  isolation: isolate;
+  clip-path: circle(150% at var(--camera-origin-x, 50%) var(--camera-origin-y, 50%));
+}
+
+.camera-capture-page.camera-opening {
+  animation: cameraCaptureIn .28s cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.camera-capture-page.camera-closing {
+  pointer-events: none;
+  animation: cameraCaptureOut .24s cubic-bezier(.4, 0, .2, 1) both;
+}
+
+.camera-capture-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.camera-preview {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity .18s ease;
+}
+
+.camera-ready .camera-preview {
+  opacity: 1;
+}
+
+.camera-facing-user .camera-preview {
+  transform: scaleX(-1);
+}
+
+.camera-scrim {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.camera-scrim-top {
+  top: 0;
+  height: 26%;
+  background: linear-gradient(180deg, rgba(0, 0, 0, .54), transparent);
+}
+
+.camera-scrim-bottom {
+  bottom: 0;
+  height: 32%;
+  background: linear-gradient(0deg, rgba(0, 0, 0, .76), transparent);
+}
+
+.camera-capture-header,
+.camera-capture-controls {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  left: 0;
+  display: grid;
+  align-items: center;
+}
+
+.camera-capture-header {
+  top: 0;
+  grid-template-columns: 48px 1fr 48px;
+  min-height: 58px;
+  padding: calc(8px + env(safe-area-inset-top)) 10px 8px;
+}
+
+.camera-capture-header strong {
+  justify-self: center;
+  letter-spacing: .18em;
+  font-size: 11px;
+}
+
+.camera-control-button,
+.camera-library-button {
+  border: 0;
+  color: #fff;
+  background: transparent;
+  font-weight: 750;
+}
+
+.camera-control-button {
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .24);
+  backdrop-filter: blur(12px);
+}
+
+.camera-control-button:disabled {
+  opacity: .4;
+}
+
+.camera-control-button .ui-icon {
+  width: 21px;
+  height: 21px;
+}
+
+.camera-status {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  width: min(300px, calc(100vw - 56px));
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  transform: translate(-50%, -50%);
+  color: rgba(255, 255, 255, .78);
+  text-align: center;
+}
+
+.camera-status .spinner {
+  width: 28px;
+  height: 28px;
+}
+
+.camera-status-error {
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 16px;
+  background: rgba(24, 27, 35, .78);
+  backdrop-filter: blur(16px);
+}
+
+.camera-status-error strong {
+  color: #fff;
+}
+
+.camera-status small {
+  max-width: 250px;
+  line-height: 1.45;
+}
+
+.camera-capture-controls {
+  bottom: 0;
+  grid-template-columns: 1fr 86px 1fr;
+  min-height: 110px;
+  padding: 12px 26px calc(18px + env(safe-area-inset-bottom));
+}
+
+.camera-library-button {
+  justify-self: start;
+  min-height: 42px;
+  padding: 0 8px;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, .56);
+  font-size: 12px;
+}
+
+.camera-capture-controls > :last-child {
+  justify-self: end;
+}
+
+.camera-shutter {
+  width: 70px;
+  height: 70px;
+  min-height: 70px;
+  padding: 4px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: transparent;
+  transition: transform .14s ease, opacity .14s ease;
+}
+
+.camera-shutter:active:not(:disabled) {
+  transform: scale(.9);
+}
+
+.camera-shutter:disabled {
+  opacity: .42;
+}
+
+.camera-shutter i {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: #fff;
+}
+
+@keyframes cameraCaptureIn {
+  from {
+    opacity: .72;
+    transform: scale(.94);
+    clip-path: circle(var(--camera-origin-size, 24px) at var(--camera-origin-x, 50%) var(--camera-origin-y, 50%));
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    clip-path: circle(150% at var(--camera-origin-x, 50%) var(--camera-origin-y, 50%));
+  }
+}
+
+@keyframes cameraCaptureOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+    clip-path: circle(150% at var(--camera-origin-x, 50%) var(--camera-origin-y, 50%));
+  }
+  to {
+    opacity: 0;
+    transform: scale(.94);
+    clip-path: circle(var(--camera-origin-size, 24px) at var(--camera-origin-x, 50%) var(--camera-origin-y, 50%));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .camera-capture-page,
+  .camera-capture-page.camera-opening,
+  .camera-capture-page.camera-closing,
+  .messages.chat-settled > * {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
