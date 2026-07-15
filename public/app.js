@@ -1358,6 +1358,7 @@
   function restoreMessagesScroll(snapshot, options = {}) {
     const messages = document.getElementById('messages');
     if (!messages || !snapshot) return;
+    messages.scrollLeft = 0;
     if (options.anchor === 'bottom') {
       messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight - snapshot.bottom);
       return;
@@ -1414,6 +1415,7 @@
     const token = state.chatOpenToken;
     const messages = document.getElementById('messages');
     if (!messages || state.chatLoading) return;
+    const minimumSettleMs = currentAppShell()?.classList.contains('route-page-entering') ? 360 : 0;
     let cancelled = false;
     let frame = 0;
     let revealTimer = 0;
@@ -1440,6 +1442,7 @@
     messages.addEventListener('wheel', cancel, { once: true, passive: true });
     const settle = () => {
       if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
+      messages.scrollLeft = 0;
       messages.scrollTop = messages.scrollHeight;
     };
     if ('ResizeObserver' in window) {
@@ -1448,9 +1451,12 @@
       [...messages.children].forEach((message) => resizeObserver.observe(message));
     }
     settle();
-    Promise.race([
-      waitForChatMedia(messages, settle),
-      new Promise((resolve) => setTimeout(resolve, 850))
+    Promise.all([
+      Promise.race([
+        waitForChatMedia(messages, settle),
+        new Promise((resolve) => setTimeout(resolve, 850))
+      ]),
+      new Promise((resolve) => setTimeout(resolve, minimumSettleMs))
     ]).then(() => {
       if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
       frame = requestAnimationFrame(() => {
@@ -8259,7 +8265,10 @@
 
   function scrollMessagesToBottom() {
     const messages = document.getElementById('messages');
-    if (messages) messages.scrollTop = messages.scrollHeight;
+    if (messages) {
+      messages.scrollLeft = 0;
+      messages.scrollTop = messages.scrollHeight;
+    }
   }
 
   function resizeComposerInput() {

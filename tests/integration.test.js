@@ -119,6 +119,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(htmlSource, /maximum-scale=1, user-scalable=no/);
   assert.match(styleSource, /html \{[\s\S]*?overscroll-behavior: none;[\s\S]*?touch-action: manipulation;/);
   assert.match(styleSource, /#app \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
+  assert.match(styleSource, /\.chat-pane \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
+  assert.match(styleSource, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;[\s\S]*?overflow-anchor: none;[\s\S]*?touch-action: pan-y;/);
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
   assert.match(clientSource, /class="story-size-control story-text-size-control"/);
@@ -151,6 +153,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.equal((clientSource.match(/const scrollMode = highlightMessageId \? 'preserve' : 'bottom';/g) || []).length, 2);
   assert.match(clientSource, /if \(scrollMode === 'bottom' && cached\?\.messages\?\.length\) stabilizeBottomScroll\(\);/);
   assert.match(clientSource, /resizeObserver = new ResizeObserver\(settle\)/);
+  assert.match(clientSource, /const minimumSettleMs = currentAppShell\(\)\?\.classList\.contains\('route-page-entering'\) \? 360 : 0;/);
+  assert.match(clientSource, /Promise\.all\(\[[\s\S]*?Promise\.race\(\[[\s\S]*?minimumSettleMs/);
   assert.match(clientSource, /function updateChatPane/);
   assert.match(clientSource, /function promoteNavigationPreview/);
   assert.match(clientSource, /function clearTabTransitionAnimation/);

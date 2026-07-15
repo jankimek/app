@@ -773,10 +773,13 @@ html.keyboard-open .bottom-tabs {
 }
 
 .chat-pane {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: var(--app-height);
+  overflow: hidden;
   background: #06080d;
 }
 
@@ -803,8 +806,14 @@ html.keyboard-open .bottom-tabs {
 }
 
 .messages {
+  width: 100%;
+  max-width: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  touch-action: pan-y;
   padding: 18px clamp(12px, 3vw, 34px);
   display: flex;
   flex-direction: column;
