@@ -65,6 +65,7 @@
     tabDirection: 'right',
     navigationStack: [],
     forwardNavigationEntries: new Map(),
+    navigationGeneration: Number.isInteger(history.state?.navGeneration) ? history.state.navGeneration : 0,
     routeForward: null,
     navigationBusy: false,
     pendingHistoryBack: null,
@@ -353,6 +354,7 @@
     history.pushState({
       appManaged: true,
       navDepth: state.navigationStack.length,
+      navGeneration: state.navigationGeneration,
       view: captureNavigationView()
     }, '', url);
   }
@@ -362,6 +364,7 @@
     if (!state.routeForward || !current?.appManaged || current.navDepth !== state.navigationStack.length) return;
     history.replaceState({
       ...current,
+      navGeneration: state.navigationGeneration,
       view: captureNavigationView()
     }, '', location.href);
   }
@@ -1033,6 +1036,7 @@
 
   function discardNavigationForMainTab() {
     if (!state.navigationStack.length && !state.routeForward && !state.pendingHistoryBack) return;
+    state.navigationGeneration += 1;
     state.navigationStack = [];
     state.forwardNavigationEntries.clear();
     state.routeForward = null;
@@ -1043,6 +1047,7 @@
       appManaged: true,
       route: 'app',
       navDepth: 0,
+      navGeneration: state.navigationGeneration,
       view: captureNavigationView()
     }, '', location.href);
   }
@@ -1060,7 +1065,13 @@
       state.searchProfileOpen = false;
       state.searchProfileSocialView = null;
       state.publicProfile = null;
-      history.replaceState({ appManaged: true, route: 'app' }, '', '/');
+      history.replaceState({
+        appManaged: true,
+        route: 'app',
+        navDepth: state.navigationStack.length,
+        navGeneration: state.navigationGeneration,
+        view: captureNavigationView()
+      }, '', '/');
     }
     if (isMobileLayout()) {
       rememberActiveConversation();
@@ -1163,6 +1174,8 @@
       route: publicName ? 'profile' : 'app',
       username: publicName || null,
       internalProfile: false,
+      navDepth: 0,
+      navGeneration: state.navigationGeneration,
       view: captureNavigationView()
     }, '', location.href);
     connectWs();
@@ -7390,7 +7403,13 @@
       state.publicProfile = null;
       state.tab = 'search';
       state.tabTransition = false;
-      history.replaceState({ appManaged: true, route: 'app', view: captureNavigationView() }, '', '/');
+      history.replaceState({
+        appManaged: true,
+        route: 'app',
+        navDepth: state.navigationStack.length,
+        navGeneration: state.navigationGeneration,
+        view: captureNavigationView()
+      }, '', '/');
       const returnScroll = state.profileReturnScroll;
       state.profileReturnScroll = null;
       renderApp({ scrollSnapshot: returnScroll });
@@ -10784,6 +10803,24 @@
     (async () => {
       if (!state.me) {
         await init();
+        return;
+      }
+      const targetGeneration = Number.isInteger(event.state?.navGeneration) ? event.state.navGeneration : 0;
+      if (targetGeneration !== state.navigationGeneration) {
+        state.navigationStack = [];
+        state.forwardNavigationEntries.clear();
+        state.routeForward = null;
+        state.pendingHistoryBack = null;
+        state.navigationBusy = false;
+        history.replaceState({
+          ...(event.state || {}),
+          appManaged: true,
+          route: 'app',
+          navDepth: 0,
+          navGeneration: state.navigationGeneration,
+          view: captureNavigationView()
+        }, '', location.href);
+        refreshNavigationEdgeZone();
         return;
       }
       const currentDepth = state.navigationStack.length;

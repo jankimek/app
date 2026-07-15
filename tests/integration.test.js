@@ -162,6 +162,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function requestNavigationBack/);
   assert.match(clientSource, /function discardNavigationForMainTab/);
   assert.match(clientSource, /state\.navigationStack = \[\];[\s\S]*?state\.forwardNavigationEntries\.clear\(\)/);
+  assert.match(clientSource, /navigationGeneration: Number\.isInteger\(history\.state\?\.navGeneration\)/);
+  assert.match(clientSource, /targetGeneration !== state\.navigationGeneration/);
   assert.match(clientSource, /discardNavigationForMainTab\(\);[\s\S]*?const keepDesktopChat/);
   assert.match(clientSource, /function beginSwipeNavigationBack/);
   assert.match(clientSource, /function restoreForwardNavigationEntry/);
