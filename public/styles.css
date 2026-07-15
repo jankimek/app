@@ -8069,6 +8069,51 @@ html.keyboard-open .bottom-tabs {
   }
 }
 
+[data-action="like-story"] {
+  position: relative;
+  overflow: visible;
+}
+
+[data-action="like-story"].is-pending {
+  opacity: .55;
+  pointer-events: none;
+}
+
+.story-engagement [data-action="like-story"].active,
+.story-viewer-actions [data-action="like-story"].active {
+  color: #ff3040;
+}
+
+.story-engagement [data-action="like-story"].active svg,
+.story-viewer-actions [data-action="like-story"].active svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+[data-action="like-story"].story-heart-pop .ui-icon {
+  animation: instagramHeartPop 440ms cubic-bezier(.18, .89, .32, 1.28) both;
+}
+
+[data-action="like-story"].story-heart-pop.active::before,
+[data-action="like-story"].story-heart-pop.active::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px;
+  border-radius: 50%;
+  box-shadow: 0 -17px #ff3040, 14px -9px #ff3040, 15px 9px #ff3040, 0 17px #ff3040, -14px 9px #ff3040, -14px -9px #ff3040;
+  animation: instagramHeartBurst 480ms ease-out both;
+  pointer-events: none;
+}
+
+[data-action="like-story"].story-heart-pop.active::after {
+  transform: rotate(30deg) scale(.72);
+  animation-delay: 40ms;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .route-page-preview,
   .route-page-entering,
@@ -10552,6 +10597,11 @@ html.keyboard-open .bottom-tabs {
   gap: 10px;
 }
 
+.story-comments-sheet .story-comment-replies .story-comment-row.reply {
+  width: 100%;
+  margin-left: 0;
+}
+
 .story-comments-sheet .story-comment-replies .story-comment-avatar,
 .story-comments-sheet .story-comment-replies .story-comment-avatar .avatar {
   width: 30px;
@@ -10865,7 +10915,10 @@ html.keyboard-open .bottom-tabs {
   .story-comments-sheet .story-comment-like.heart-pop .ui-icon,
   .story-comments-sheet .story-comment-like.heart-pop.active::before,
   .story-comments-sheet .story-comment-like.heart-pop.active::after,
-  .story-comments-sheet .story-comment-quick-reactions button.reaction-pop {
+  .story-comments-sheet .story-comment-quick-reactions button.reaction-pop,
+  [data-action="like-story"].story-heart-pop .ui-icon,
+  [data-action="like-story"].story-heart-pop.active::before,
+  [data-action="like-story"].story-heart-pop.active::after {
     animation-duration: .01ms !important;
     animation-delay: 0ms !important;
     transition-duration: .01ms !important;

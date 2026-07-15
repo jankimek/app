@@ -3417,8 +3417,8 @@
   function renderStoryEngagement(story, compact = false) {
     return `
       <div class="story-engagement ${compact ? 'compact' : ''}">
-        <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="Like story">
-          ${icon('heart')}<span>${story.likeCount || 0}</span>
+        <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="${story.likedByMe ? 'Unlike' : 'Like'} story" aria-pressed="${story.likedByMe ? 'true' : 'false'}">
+          ${icon('heart')}<span class="story-like-count">${story.likeCount || 0}</span>
         </button>
         <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="Comments">
           ${icon('comment')}<span>${story.commentCount || 0}</span>
@@ -5144,7 +5144,7 @@
                 <button data-action="submit-story-comment" data-story-id="${esc(story.id)}" aria-label="Post comment">${icon('send')}</button>
               </div>
             ` : '<span class="story-replies-off">Replies are off</span>'}
-            <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="Like story">${icon('heart')}</button>
+            <button class="${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="${story.likedByMe ? 'Unlike' : 'Like'} story" aria-pressed="${story.likedByMe ? 'true' : 'false'}">${icon('heart')}</button>
             <button data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="View comments">${icon('comment')}</button>
           `}
         </div>
@@ -6866,14 +6866,35 @@
     await viewStory(next.id, highlightId);
   }
 
-  async function toggleStoryLike(storyId) {
-    const data = await api(`/api/stories/${encodeURIComponent(storyId)}/like`, { method: 'POST' });
+  async function toggleStoryLike(storyId, sourceButton = null) {
+    if (!storyId) return;
+    const escapedStoryId = window.CSS?.escape ? CSS.escape(storyId) : String(storyId).replace(/"/g, '\\"');
+    const buttons = Array.from(document.querySelectorAll(`[data-action="like-story"][data-story-id="${escapedStoryId}"]`));
+    if (buttons.some((button) => button.classList.contains('is-pending'))) return;
+    if (state.storyViewer?.storyId === storyId) clearStoryAdvance();
+    buttons.forEach((button) => button.classList.add('is-pending'));
+    let data;
+    try {
+      data = await api(`/api/stories/${encodeURIComponent(storyId)}/like`, { method: 'POST' });
+    } catch (error) {
+      buttons.forEach((button) => button.classList.remove('is-pending'));
+      if (state.storyViewer?.storyId === storyId) scheduleStoryAdvance(storyById(storyId));
+      throw error;
+    }
     replaceStory(data.story);
-    document.querySelectorAll(`[data-action="like-story"][data-story-id="${window.CSS?.escape ? CSS.escape(storyId) : storyId}"]`).forEach((button) => {
+    buttons.forEach((button) => {
+      button.classList.remove('is-pending', 'story-heart-pop');
       button.classList.toggle('active', data.story.likedByMe);
-      const count = button.querySelector('span');
+      button.setAttribute('aria-pressed', data.story.likedByMe ? 'true' : 'false');
+      button.setAttribute('aria-label', data.story.likedByMe ? 'Unlike story' : 'Like story');
+      const count = button.querySelector('.story-like-count');
       if (count) count.textContent = String(data.story.likeCount || 0);
     });
+    const animatedButton = sourceButton?.matches?.('[data-action="like-story"]') ? sourceButton : buttons[0];
+    if (animatedButton) {
+      void animatedButton.offsetWidth;
+      animatedButton.classList.add('story-heart-pop');
+    }
     if (state.storyViewer?.storyId === storyId) scheduleStoryAdvance(data.story);
   }
 
@@ -9051,7 +9072,7 @@
         await navigateStory(1);
       }
       if (action === 'like-story') {
-        await toggleStoryLike(target.dataset.storyId);
+        await toggleStoryLike(target.dataset.storyId, target);
       }
       if (action === 'open-story-comments') {
         clearStoryAdvance();
