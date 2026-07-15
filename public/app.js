@@ -152,6 +152,7 @@
     avatarCrop: null,
     storyEditor: null,
     storyViewer: null,
+    storyCommentPosting: new Set(),
     cameraCapture: null,
     highlightComposer: null,
     mediaViewer: null,
@@ -205,8 +206,10 @@
   let pendingStoryStroke = null;
   let storyLocationTimer = null;
   let storyGifTimer = null;
+  let storyCommentGifTimer = null;
   let storyLocationRequestId = 0;
   let storyGifRequestId = 0;
+  let storyCommentGifRequestId = 0;
   let storyCountdownTimer = null;
   let cameraStream = null;
   let cameraCloseTimer = null;
@@ -3518,6 +3521,31 @@
     `;
   }
 
+  function renderHighlightCommentPreview(story) {
+    if (!state.storyViewer?.highlightId) return '';
+    const comments = (story?.comments || [])
+      .filter((comment) => comment.user && (String(comment.text || '').trim() || comment.gif?.file?.url))
+      .slice(-3);
+    if (!comments.length) return '';
+    const latest = comments[comments.length - 1];
+    const latestLabel = latest.kind === 'gif' ? 'GIF' : String(latest.text || '').trim();
+    return `
+      <button class="highlight-comment-preview" data-action="open-story-comments" data-story-id="${esc(story.id)}" aria-label="Open comments. Latest from ${esc(latest.user.username || 'user')}: ${esc(latestLabel)}">
+        ${comments.map((comment, index) => `
+          <span class="highlight-comment-preview-card" style="--comment-preview-order:${index}">
+            ${avatarHtml(comment.user)}
+            <span class="highlight-comment-preview-copy">
+              <strong>${esc(comment.user.username || 'user')}</strong>
+              ${comment.kind === 'gif' && comment.gif?.file?.url
+                ? `<span class="highlight-comment-preview-gif"><img src="${esc(comment.gif.file.url)}" alt=""><span>GIF</span></span>`
+                : `<span>${esc(comment.text || '')}</span>`}
+            </span>
+          </span>
+        `).join('')}
+      </button>
+    `;
+  }
+
   function renderHighlights(user, own) {
     const highlights = (user.highlights || []).filter((highlight) => highlight.cover?.file && highlight.stories?.length);
     if (!own && !highlights.length) return '';
@@ -4719,6 +4747,29 @@
     `;
   }
 
+  function storyCommentPosting(sheet) {
+    return Boolean(sheet?.commentPosting || (sheet?.storyId && state.storyCommentPosting.has(sheet.storyId)));
+  }
+
+  function renderStoryCommentGifChoices(storyId, sheet) {
+    const query = String(sheet?.gifQuery || '').trim().toLowerCase();
+    const posting = storyCommentPosting(sheet);
+    const matching = state.gifPool.filter((gif) => (
+      !query || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(query)
+    ));
+    return `${state.gifPool.map((gif) => {
+      const search = `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase();
+      const sending = posting && sheet?.postingGifId === gif.id;
+      return `<button class="${sending ? 'is-sending' : ''}" data-action="send-story-comment-gif" data-story-id="${esc(storyId)}" data-gif-id="${esc(gif.id)}" data-search="${esc(search)}" aria-label="Comment with ${esc(gif.title || 'GIF')}" ${query && !search.includes(query) ? 'hidden' : ''} ${posting ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title || 'GIF')}" loading="lazy"></button>`;
+    }).join('')}<p class="story-comment-gif-empty" ${matching.length ? 'hidden' : ''}>No approved GIFs found.</p>`;
+  }
+
+  function updateStoryCommentGifChoices(sheet) {
+    if (state.actionSheet !== sheet || sheet?.type !== 'story-comments' || !sheet.gifPickerOpen) return;
+    const grid = document.querySelector('.story-comment-gif-grid');
+    if (grid) grid.innerHTML = renderStoryCommentGifChoices(sheet.storyId, sheet);
+  }
+
   function renderActionSheet() {
     const sheet = state.actionSheet;
     if (!sheet) return '';
@@ -4784,6 +4835,7 @@
     }
     if (sheet.type === 'story-comments') {
       const story = storyById(sheet.storyId);
+      const commentPosting = storyCommentPosting(sheet);
       const replyComment = story?.comments?.find((comment) => comment.id === sheet.replyToCommentId) || null;
       const comments = story?.comments || [];
       const commentById = new Map(comments.map((comment) => [comment.id, comment]));
@@ -4817,11 +4869,16 @@
           <article class="story-comment-row ${isReply ? 'reply' : ''} ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(order, 12)}">
             <button class="story-comment-avatar" data-action="view-user-profile" data-username="${esc(username)}" aria-label="View ${esc(username)}'s profile">${avatarHtml(comment.user)}</button>
             <div class="story-comment-content">
-              <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(username)}">${esc(username)}</button> <span>${renderMentionText(comment.text)}</span></p>
+              <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(username)}">${esc(username)}</button>${comment.text ? ` <span>${renderMentionText(comment.text)}</span>` : ' <span class="story-comment-kind">GIF</span>'}</p>
+              ${comment.kind === 'gif'
+                ? (comment.gif?.file?.url
+                  ? `<img class="story-comment-gif" src="${esc(comment.gif.file.url)}" alt="${esc(comment.gif.title || 'GIF comment')}" loading="lazy">`
+                  : '<span class="story-comment-gif-unavailable">GIF unavailable</span>')
+                : ''}
               <div class="story-comment-meta">
                 <time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(age)}</time>
                 <span class="story-comment-like-count ${comment.likeCount ? '' : 'is-empty'}" data-comment-like-count="${esc(comment.id)}">${esc(likeLabel)}</span>
-                <button data-action="reply-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}">Reply</button>
+                <button data-action="reply-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}" ${commentPosting ? 'disabled' : ''}>Reply</button>
               </div>
             </div>
             <button class="story-comment-like ${comment.likedByMe ? 'active' : ''}" data-action="like-story-comment" data-story-id="${esc(story.id)}" data-comment-id="${esc(comment.id)}" aria-label="${comment.likedByMe ? 'Unlike' : 'Like'} comment" aria-pressed="${comment.likedByMe ? 'true' : 'false'}">${icon('heart')}</button>
@@ -4872,16 +4929,30 @@
           `}
         </div>
         ${canComment ? `
-          <footer class="story-comment-composer">
-            ${replyComment ? `<div class="comment-replying"><span>Replying to <strong>${esc(replyComment.user?.username || 'user')}</strong></span><button data-action="clear-comment-reply" aria-label="Cancel reply">${icon('x')}</button></div>` : ''}
-            <div class="story-comment-quick-reactions" aria-label="Quick reactions">
-              ${quickReactions.map(([emoji, label]) => `<button data-action="add-story-comment-emoji" data-emoji="${emoji}" aria-label="Add ${label}">${emoji}</button>`).join('')}
-            </div>
+          <footer class="story-comment-composer" aria-busy="${commentPosting ? 'true' : 'false'}">
+            ${replyComment ? `<div class="comment-replying"><span>Replying to <strong>${esc(replyComment.user?.username || 'user')}</strong></span><button data-action="clear-comment-reply" aria-label="Cancel reply" ${commentPosting ? 'disabled' : ''}>${icon('x')}</button></div>` : ''}
+            ${sheet.gifPickerOpen ? `
+              <section class="story-comment-gif-picker" aria-label="Choose a GIF">
+                <label class="story-comment-gif-search" for="story-comment-gif-search">
+                  ${icon('search')}
+                  <input id="story-comment-gif-search" value="${esc(sheet.gifQuery || '')}" placeholder="Search GIFs" autocomplete="off" enterkeyhint="search" ${commentPosting ? 'disabled' : ''}>
+                </label>
+                <div class="story-comment-gif-grid">
+                  ${renderStoryCommentGifChoices(story.id, sheet)}
+                </div>
+                ${state.gifLoading ? '<span class="story-comment-gif-loading"><i class="spinner"></i></span>' : ''}
+              </section>
+            ` : `
+              <div class="story-comment-quick-reactions" aria-label="Quick reactions">
+                ${quickReactions.map(([emoji, label]) => `<button data-action="add-story-comment-emoji" data-emoji="${emoji}" aria-label="Add ${label}" ${commentPosting ? 'disabled' : ''}>${emoji}</button>`).join('')}
+              </div>
+            `}
             <div class="story-comment-box">
-              ${avatarHtml(state.me)}
+              <button class="story-comment-composer-avatar" data-action="view-own-profile" aria-label="View your profile" ${commentPosting ? 'disabled' : ''}>${avatarHtml(state.me)}</button>
               <div class="story-comment-field">
-                <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}">
-                <button class="story-comment-post" data-action="submit-story-comment" data-story-id="${esc(story.id)}" ${String(sheet.commentDraft || '').trim() ? '' : 'disabled'}>Post</button>
+                <input id="story-comment-input" maxlength="280" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}" ${commentPosting ? 'disabled' : ''}>
+                <button class="story-comment-gif-toggle ${sheet.gifPickerOpen ? 'active' : ''}" data-action="toggle-story-comment-gifs" aria-label="${sheet.gifPickerOpen ? 'Close GIF picker' : 'Add a GIF'}" aria-expanded="${sheet.gifPickerOpen ? 'true' : 'false'}" ${commentPosting ? 'disabled' : ''}>${icon('gif')}</button>
+                <button class="story-comment-post" data-action="submit-story-comment" data-story-id="${esc(story.id)}" ${commentPosting || !String(sheet.commentDraft || '').trim() ? 'disabled' : ''}>Post</button>
               </div>
             </div>
           </footer>
@@ -5224,6 +5295,7 @@
         </div>
         <button class="story-tap-zone story-tap-prev" data-action="story-viewer-prev" aria-label="Previous story"></button>
         <button class="story-tap-zone story-tap-next" data-action="story-viewer-next" aria-label="Next story"></button>
+        ${renderHighlightCommentPreview(story)}
         <div class="story-viewer-actions ${ownStory ? 'own-story-actions' : ''}">
           ${ownStory ? `
             <button class="story-owner-metric ${story.likedByMe ? 'active' : ''}" data-action="like-story" data-story-id="${esc(story.id)}" aria-label="${story.likedByMe ? 'Unlike' : 'Like'} story" aria-pressed="${story.likedByMe ? 'true' : 'false'}">
@@ -6995,31 +7067,96 @@
     if (state.storyViewer?.storyId === storyId) scheduleStoryAdvance(data.story);
   }
 
-  async function submitStoryComment(storyId) {
-    const input = document.getElementById('story-viewer-comment') || document.getElementById('story-comment-input');
-    const text = (input?.value || '').trim();
-    if (!text) return;
+  async function submitStoryComment(storyId, options = {}) {
     const commentsOpen = state.actionSheet?.type === 'story-comments' && state.actionSheet.storyId === storyId;
-    const previousCommentIds = new Set(storyById(storyId)?.comments?.map((comment) => comment.id) || []);
+    if (state.storyCommentPosting.has(storyId)) return;
+    const input = commentsOpen
+      ? document.getElementById('story-comment-input')
+      : document.getElementById('story-viewer-comment');
+    const kind = options.gifId ? 'gif' : 'text';
+    const text = kind === 'text' ? (input?.value || '').trim() : '';
+    const gifId = kind === 'gif' ? String(options.gifId || '') : '';
+    if ((kind === 'text' && !text) || (kind === 'gif' && !gifId)) return;
+    const storyBeforePost = storyById(storyId);
+    const previousCommentIds = new Set(storyBeforePost?.comments?.map((comment) => comment.id) || []);
     const previousSheet = commentsOpen ? state.actionSheet : null;
+    const replyToCommentId = commentsOpen ? previousSheet.replyToCommentId || null : null;
+    const repliedToBeforePost = replyToCommentId
+      ? storyBeforePost?.comments?.find((comment) => comment.id === replyToCommentId)
+      : null;
+    const replyPrefixBeforePost = repliedToBeforePost ? `@${repliedToBeforePost.user?.username || ''} ` : '';
     const postButton = document.querySelector('.story-comment-post');
-    postButton?.classList.add('posting');
-    if (postButton) postButton.disabled = true;
+    const gifButton = options.sourceButton?.matches?.('[data-action="send-story-comment-gif"]') ? options.sourceButton : null;
+    const gifPicker = gifButton?.closest('.story-comment-gif-picker');
+    const commentComposer = commentsOpen ? document.querySelector('.story-comment-composer') : null;
+    const commentControls = commentsOpen
+      ? [...document.querySelectorAll('.story-comment-composer button, .story-comment-composer input, .story-comment-meta [data-action="reply-story-comment"]')]
+      : [input, document.querySelector('.story-viewer-actions [data-action="submit-story-comment"]')].filter(Boolean);
+    state.storyCommentPosting.add(storyId);
+    commentComposer?.setAttribute('aria-busy', 'true');
+    if (previousSheet) {
+      previousSheet.commentPosting = true;
+      previousSheet.postingGifId = gifId || null;
+    }
+    if (kind === 'text') {
+      postButton?.classList.add('posting');
+    }
+    commentControls.forEach((control) => { control.disabled = true; });
+    gifPicker?.classList.add('is-posting');
+    gifButton?.classList.add('is-sending');
     let data;
     try {
       data = await api(`/api/stories/${encodeURIComponent(storyId)}/comments`, {
         method: 'POST',
-        body: { text, replyTo: commentsOpen ? state.actionSheet.replyToCommentId || null : null }
+        body: {
+          kind,
+          text,
+          gifId: gifId || null,
+          replyTo: replyToCommentId
+        }
       });
     } catch (error) {
+      state.storyCommentPosting.delete(storyId);
+      commentComposer?.setAttribute('aria-busy', 'false');
+      if (previousSheet) {
+        previousSheet.commentPosting = false;
+        previousSheet.postingGifId = null;
+      }
       postButton?.classList.remove('posting');
+      gifPicker?.classList.remove('is-posting');
+      gifButton?.classList.remove('is-sending');
+      commentControls.forEach((control) => { control.disabled = false; });
       syncStoryCommentPostButton();
+      if (previousSheet?.pendingGifPool) {
+        state.gifPool = previousSheet.pendingGifPool;
+        previousSheet.pendingGifPool = null;
+        updateStoryCommentGifChoices(previousSheet);
+      }
+      if (
+        state.actionSheet?.type === 'story-comments' &&
+        state.actionSheet.storyId === storyId &&
+        state.actionSheet !== previousSheet
+      ) {
+        state.actionSheet.commentPosting = false;
+        state.actionSheet.postingGifId = null;
+        updateStoryCommentsSheet();
+      }
       throw error;
     }
+    state.storyCommentPosting.delete(storyId);
+    commentComposer?.setAttribute('aria-busy', 'false');
+    if (previousSheet) {
+      previousSheet.commentPosting = false;
+      previousSheet.postingGifId = null;
+    }
     replaceStory(data.story);
-    if (commentsOpen) {
+    if (commentsOpen && state.actionSheet === previousSheet) {
       const newComment = data.story.comments?.find((comment) => !previousCommentIds.has(comment.id));
       const expandedCommentIds = new Set(previousSheet?.expandedCommentIds || []);
+      let remainingDraft = previousSheet?.commentDraft || '';
+      if (kind === 'gif' && replyPrefixBeforePost && remainingDraft.startsWith(replyPrefixBeforePost)) {
+        remainingDraft = remainingDraft.slice(replyPrefixBeforePost.length);
+      }
       if (newComment?.replyTo) {
         let rootId = newComment.replyTo;
         const byId = new Map((data.story.comments || []).map((comment) => [comment.id, comment]));
@@ -7035,17 +7172,26 @@
         type: 'story-comments',
         storyId,
         replyToCommentId: null,
-        commentDraft: '',
+        commentDraft: kind === 'gif' ? remainingDraft : '',
+        gifPickerOpen: false,
+        gifQuery: '',
+        commentPosting: false,
+        postingGifId: null,
+        pendingGifPool: null,
         expandedCommentIds: [...expandedCommentIds],
         newCommentId: newComment?.id || null
       };
-      updateStoryCommentsSheet({ bottom: true, focus: true });
+      updateStoryCommentsSheet({ bottom: true, focus: kind === 'text' });
       setTimeout(() => {
         if (state.actionSheet?.type === 'story-comments') state.actionSheet.newCommentId = null;
       }, 520);
-    } else {
+    } else if (state.actionSheet?.type === 'story-comments' && state.actionSheet.storyId === storyId) {
+      state.actionSheet.commentPosting = false;
+      state.actionSheet.postingGifId = null;
+      updateStoryCommentsSheet({ bottom: true });
+    } else if (state.storyViewer?.storyId === storyId) {
       updateStoryViewerView();
-      scheduleStoryAdvance(data.story);
+      if (!state.actionSheet) scheduleStoryAdvance(data.story);
     }
   }
 
@@ -7076,7 +7222,7 @@
   }
 
   function addStoryCommentEmoji(emoji, sourceButton) {
-    if (state.actionSheet?.type !== 'story-comments') return;
+    if (state.actionSheet?.type !== 'story-comments' || storyCommentPosting(state.actionSheet)) return;
     const input = document.getElementById('story-comment-input');
     if (!input) return;
     const start = input.selectionStart ?? input.value.length;
@@ -7457,6 +7603,45 @@
   function navigationBackOr(fallback) {
     if (state.navigationBusy) return;
     if (!requestNavigationBack()) fallback?.();
+  }
+
+  async function searchStoryCommentGifs(query, requestId) {
+    const sheet = state.actionSheet;
+    if (sheet?.type !== 'story-comments' || !sheet.gifPickerOpen) return;
+    const term = String(query || '').trim();
+    const data = await api(`/api/gifs${term ? `?q=${encodeURIComponent(term)}` : ''}`);
+    if (
+      requestId !== storyCommentGifRequestId ||
+      state.actionSheet !== sheet ||
+      !sheet.gifPickerOpen ||
+      String(sheet.gifQuery || '').trim() !== term
+    ) return;
+    if (storyCommentPosting(sheet)) {
+      sheet.pendingGifPool = data.gifs || [];
+      return;
+    }
+    state.gifPool = data.gifs || [];
+    updateStoryCommentGifChoices(sheet);
+  }
+
+  function openOwnProfileFromStoryComments() {
+    clearStoryAdvance();
+    clearTimeout(overlayCloseTimer);
+    state.actionSheet = null;
+    state.overlayClosing = false;
+    state.storyViewer = null;
+    state.profileSocialView = null;
+    state.searchProfileSocialView = null;
+    state.tabTransition = false;
+    if (state.tab !== 'profile') {
+      switchMainTab('profile', { animate: false });
+      return;
+    }
+    state.searchProfileOpen = false;
+    state.publicProfile = null;
+    discardNavigationForMainTab();
+    if (location.pathname !== '/') history.replaceState(history.state, '', '/');
+    renderApp();
   }
 
   async function openSearchProfile(username, options = {}) {
@@ -8335,6 +8520,35 @@
     }
   }
 
+  async function toggleStoryCommentGifPicker() {
+    if (state.actionSheet?.type !== 'story-comments' || storyCommentPosting(state.actionSheet)) return;
+    const sheet = state.actionSheet;
+    sheet.commentDraft = document.getElementById('story-comment-input')?.value || sheet.commentDraft || '';
+    const opening = !sheet.gifPickerOpen;
+    sheet.gifPickerOpen = opening;
+    sheet.gifQuery = '';
+    if (opening) document.activeElement?.blur?.();
+    const loading = opening ? loadGifPool() : null;
+    updateStoryCommentsSheet({ focus: !opening });
+    if (!loading) return;
+    let loaded = false;
+    try {
+      await loading;
+      loaded = true;
+    } finally {
+      if (state.actionSheet === sheet && sheet.gifPickerOpen) {
+        document.querySelector('.story-comment-gif-loading')?.remove();
+        if (storyCommentPosting(sheet)) sheet.pendingGifPool = [...state.gifPool];
+        else updateStoryCommentGifChoices(sheet);
+        if (loaded && String(sheet.gifQuery || '').trim()) {
+          clearTimeout(storyCommentGifTimer);
+          const requestId = ++storyCommentGifRequestId;
+          await searchStoryCommentGifs(sheet.gifQuery, requestId);
+        }
+      }
+    }
+  }
+
   function resizeComposerInput() {
     const input = document.getElementById('composer-text');
     if (!input) return;
@@ -9188,11 +9402,22 @@
           storyId: target.dataset.storyId,
           replyToCommentId: null,
           commentDraft: '',
+          gifPickerOpen: false,
+          gifQuery: '',
+          commentPosting: false,
+          postingGifId: null,
+          pendingGifPool: null,
           expandedCommentIds: []
         });
       }
       if (action === 'submit-story-comment') {
         await submitStoryComment(target.dataset.storyId);
+      }
+      if (action === 'toggle-story-comment-gifs') {
+        await toggleStoryCommentGifPicker();
+      }
+      if (action === 'send-story-comment-gif') {
+        await submitStoryComment(target.dataset.storyId, { gifId: target.dataset.gifId, sourceButton: target });
       }
       if (action === 'add-story-comment-emoji') {
         addStoryCommentEmoji(target.dataset.emoji || '', target);
@@ -9200,7 +9425,7 @@
       if (action === 'toggle-story-comment-replies') {
         toggleStoryCommentReplies(target.dataset.commentId);
       }
-      if (action === 'reply-story-comment' && state.actionSheet?.type === 'story-comments') {
+      if (action === 'reply-story-comment' && state.actionSheet?.type === 'story-comments' && !storyCommentPosting(state.actionSheet)) {
         const story = storyById(target.dataset.storyId);
         const comment = story?.comments?.find((item) => item.id === target.dataset.commentId);
         if (comment) {
@@ -9209,7 +9434,7 @@
           updateStoryCommentsSheet({ focus: true });
         }
       }
-      if (action === 'clear-comment-reply' && state.actionSheet?.type === 'story-comments') {
+      if (action === 'clear-comment-reply' && state.actionSheet?.type === 'story-comments' && !storyCommentPosting(state.actionSheet)) {
         const story = storyById(state.actionSheet.storyId);
         const replyingTo = story?.comments?.find((comment) => comment.id === state.actionSheet.replyToCommentId);
         const currentDraft = document.getElementById('story-comment-input')?.value || state.actionSheet.commentDraft || '';
@@ -9333,6 +9558,9 @@
       }
       if (action === 'add-contact') {
         await addContact(target.dataset.username);
+      }
+      if (action === 'view-own-profile') {
+        openOwnProfileFromStoryComments();
       }
       if (action === 'view-user-profile') {
         if (target.closest('.story-comment-row')) {
@@ -9710,6 +9938,23 @@
     if (event.target.id === 'story-comment-input' && state.actionSheet?.type === 'story-comments') {
       state.actionSheet.commentDraft = event.target.value.slice(0, 280);
       syncStoryCommentPostButton();
+      return;
+    }
+    if (event.target.id === 'story-comment-gif-search' && state.actionSheet?.type === 'story-comments') {
+      state.actionSheet.gifQuery = event.target.value.slice(0, 80);
+      const term = state.actionSheet.gifQuery.trim().toLowerCase();
+      let visible = 0;
+      document.querySelectorAll('.story-comment-gif-grid [data-search]').forEach((button) => {
+        button.hidden = Boolean(term && !String(button.dataset.search || '').includes(term));
+        if (!button.hidden) visible += 1;
+      });
+      const empty = document.querySelector('.story-comment-gif-empty');
+      if (empty) empty.hidden = visible > 0;
+      clearTimeout(storyCommentGifTimer);
+      const requestId = ++storyCommentGifRequestId;
+      storyCommentGifTimer = setTimeout(() => {
+        searchStoryCommentGifs(state.actionSheet?.gifQuery || '', requestId).catch((error) => alert(error.message));
+      }, 260);
       return;
     }
     if (event.target.id === 'sticker-creator-text' && state.stickerCreator) {
@@ -10897,6 +11142,7 @@
       if (targetGeneration !== state.navigationGeneration) {
         state.navigationStack = [];
         state.forwardNavigationEntries.clear();
+        state.storyCommentPosting.clear();
         state.routeForward = null;
         state.pendingHistoryBack = null;
         state.navigationBusy = false;

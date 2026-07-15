@@ -116,9 +116,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   const clientSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
   const styleSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   const htmlSource = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   assert.match(htmlSource, /maximum-scale=1, user-scalable=no/);
-  assert.match(htmlSource, /styles\.css\?v=20260715-8/);
-  assert.match(htmlSource, /app\.js\?v=20260715-8/);
+  assert.match(htmlSource, /styles\.css\?v=20260715-9/);
+  assert.match(htmlSource, /app\.js\?v=20260715-9/);
   assert.match(styleSource, /html \{[\s\S]*?overscroll-behavior: none;[\s\S]*?touch-action: manipulation;/);
   assert.match(styleSource, /#app \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
   assert.match(styleSource, /\.chat-pane \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
@@ -201,6 +202,21 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /class="message-focus-host"/);
   assert.match(clientSource, /function renderStickerManager/);
   assert.match(clientSource, /data-action="like-story-comment"/);
+  assert.match(clientSource, /function renderHighlightCommentPreview/);
+  assert.match(clientSource, /class="highlight-comment-preview" data-action="open-story-comments"/);
+  assert.match(clientSource, /data-action="send-story-comment-gif"/);
+  assert.match(clientSource, /data-action="toggle-story-comment-gifs"/);
+  assert.match(clientSource, /function searchStoryCommentGifs/);
+  assert.match(clientSource, /data-action="view-own-profile"/);
+  assert.match(clientSource, /function openOwnProfileFromStoryComments/);
+  assert.match(styleSource, /\.story-comments-sheet \.comment-username,[\s\S]*?display: inline;/);
+  assert.match(styleSource, /\.story-comment-gif-grid/);
+  assert.match(styleSource, /@keyframes highlightCommentPreviewIn/);
+  assert.match(styleSource, /\.story-comment-gif-toggle \{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/);
+  assert.match(serverSource, /function publicStoryCommentGif/);
+  assert.match(serverSource, /const jsonSaveStates = new Map\(\)/);
+  assert.match(serverSource, /const kind = body\.kind === 'gif' \? 'gif' : 'text'/);
+  assert.match(serverSource, /gif\.status !== 'approved'/);
   assert.doesNotMatch(clientSource, /profile-network:\$\{esc\(user\?/);
   assert.match(clientSource, /initialTool = null/);
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
@@ -338,6 +354,9 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
 
   const aliceUser = await register(alice, 'alice_test');
   const bobUser = await register(bob, 'bob_test');
+  await Promise.all(Array.from({ length: 12 }, () => bob.request('/api/me')));
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(serverError, '');
   const charlieUser = await register(charlie, 'charlie_test');
   const doraUser = await register(dora, 'dora_test');
 
@@ -860,6 +879,43 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(commentReply.data.story.comments[1].replyPreview.user.id, bobUser.id);
   assert.equal((await alice.request('/api/notifications')).data.notifications
     .filter((notification) => notification.type === 'mention').length, aliceMentionCount);
+
+  assert.equal((await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { text: '' }
+  })).status, 400);
+  assert.equal((await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { kind: 'gif', gifId: 'missing_gif' }
+  })).status, 404);
+  const pendingCommentGif = await bob.request('/api/gifs', {
+    method: 'POST',
+    body: {
+      title: 'Pending comment GIF',
+      tags: 'comment pending',
+      file: { name: 'pending-comment.gif', type: 'image/gif', dataUrl: GIF_DATA }
+    }
+  });
+  assert.equal(pendingCommentGif.status, 201);
+  assert.equal(pendingCommentGif.data.gif.status, 'pending');
+  assert.equal((await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { kind: 'gif', gifId: pendingCommentGif.data.gif.id }
+  })).status, 404);
+  const gifComment = await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { kind: 'gif', gifId: gifSubmission.data.gif.id }
+  });
+  assert.equal(gifComment.status, 201);
+  assert.equal(gifComment.data.story.commentCount, 3);
+  const serializedGifComment = gifComment.data.story.comments.find((item) => item.kind === 'gif');
+  assert.equal(serializedGifComment.gif.id, gifSubmission.data.gif.id);
+  assert.equal(serializedGifComment.text, '');
+  assert.equal((await bob.request(serializedGifComment.gif.file.url)).status, 200);
+  const highlightCommentView = await bob.request('/api/users/alice_test');
+  const highlightedStoryWithGif = highlightCommentView.data.user.highlights
+    .find((item) => item.id === highlightId).stories.find((item) => item.id === story.id);
+  assert.equal(highlightedStoryWithGif.comments.find((item) => item.id === serializedGifComment.id).gif.id, gifSubmission.data.gif.id);
 
   assert.equal((await alice.request('/api/me/profile', {
     method: 'PATCH',

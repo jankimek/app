@@ -81,11 +81,62 @@ function readJson(fileName, fallback) {
   }
 }
 
-async function saveJson(fileName, data) {
+const jsonSaveStates = new Map();
+
+async function flushJsonSaves(fileName, state) {
+  if (state.writing) return;
+  state.writing = true;
   const finalPath = path.join(DATA_DIR, fileName);
-  const tempPath = `${finalPath}.${process.pid}.tmp`;
-  await fsp.writeFile(tempPath, JSON.stringify(data, null, 2));
-  await fsp.rename(tempPath, finalPath);
+  while (state.pendingSnapshot !== null) {
+    const snapshot = state.pendingSnapshot;
+    const resolveBatch = state.resolvePending;
+    const rejectBatch = state.rejectPending;
+    state.pendingSnapshot = null;
+    state.pendingPromise = null;
+    state.resolvePending = null;
+    state.rejectPending = null;
+    const tempPath = `${finalPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await fsp.writeFile(tempPath, snapshot);
+      await fsp.rename(tempPath, finalPath);
+      resolveBatch();
+    } catch (error) {
+      rejectBatch(error);
+    } finally {
+      await fsp.unlink(tempPath).catch(() => {});
+    }
+  }
+  state.writing = false;
+  if (state.pendingSnapshot !== null) {
+    void flushJsonSaves(fileName, state);
+  } else if (jsonSaveStates.get(fileName) === state) {
+    jsonSaveStates.delete(fileName);
+  }
+}
+
+function saveJson(fileName, data) {
+  const snapshot = JSON.stringify(data, null, 2);
+  let state = jsonSaveStates.get(fileName);
+  if (!state) {
+    state = {
+      writing: false,
+      pendingSnapshot: null,
+      pendingPromise: null,
+      resolvePending: null,
+      rejectPending: null
+    };
+    jsonSaveStates.set(fileName, state);
+  }
+  state.pendingSnapshot = snapshot;
+  if (!state.pendingPromise) {
+    state.pendingPromise = new Promise((resolve, reject) => {
+      state.resolvePending = resolve;
+      state.rejectPending = reject;
+    });
+  }
+  const pending = state.pendingPromise;
+  void flushJsonSaves(fileName, state);
+  return pending;
 }
 
 function saveUsers() {
@@ -650,6 +701,13 @@ function storyActor(user) {
   };
 }
 
+function publicStoryCommentGif(comment, viewerId = null) {
+  const gif = comment?.gifId ? db.gifs[comment.gifId] : null;
+  const file = gif?.fileId ? db.files[gif.fileId] : null;
+  if (!gif || gif.status !== 'approved' || !file || !['image/gif', 'image/webp'].includes(file.mime)) return null;
+  return publicGif(gif, viewerId);
+}
+
 function publicStory(story, viewerId = null) {
   if (!story) return null;
   const views = Array.isArray(story.views) ? story.views : [];
@@ -696,15 +754,21 @@ function publicStory(story, viewerId = null) {
     comments: comments.slice(-80).map((comment) => {
       const commentLikes = Array.isArray(comment.likes) ? comment.likes : [];
       const parent = comment.replyTo ? commentById.get(comment.replyTo) : null;
+      const gif = publicStoryCommentGif(comment, viewerId);
+      const parentGif = publicStoryCommentGif(parent, viewerId);
       return {
         id: comment.id,
-        text: comment.text,
+        kind: comment.kind === 'gif' ? 'gif' : 'text',
+        text: comment.text || '',
+        gif,
         createdAt: comment.createdAt,
         user: storyActor(db.users[comment.userId]),
         replyTo: parent?.id || null,
         replyPreview: parent ? {
           id: parent.id,
-          text: parent.text,
+          kind: parent.kind === 'gif' ? 'gif' : 'text',
+          text: parent.text || '',
+          gif: parentGif,
           user: storyActor(db.users[parent.userId])
         } : null,
         likeCount: commentLikes.length,
@@ -1897,8 +1961,20 @@ async function handleApi(req, res, pathname, query) {
     if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
     if (!canReplyToStory(story, user.id)) return sendError(res, 403, 'This user has turned off story replies.');
     const body = await readJsonBody(req);
-    const text = cleanText(body.text || '', 280);
-    if (!text) return sendError(res, 400, 'Write a comment first.');
+    const kind = body.kind === 'gif' ? 'gif' : 'text';
+    const text = kind === 'text' ? cleanText(body.text || '', 280) : '';
+    const gifId = kind === 'gif' ? cleanText(body.gifId || '', 80) : '';
+    let gif = null;
+    if (kind === 'gif') {
+      if (!gifId) return sendError(res, 400, 'Choose a GIF first.');
+      gif = db.gifs[gifId];
+      const gifFile = gif?.fileId ? db.files[gif.fileId] : null;
+      if (!gif || gif.status !== 'approved' || !gifFile || !['image/gif', 'image/webp'].includes(gifFile.mime)) {
+        return sendError(res, 404, 'Approved GIF not found.');
+      }
+    } else if (!text) {
+      return sendError(res, 400, 'Write a comment first.');
+    }
     if (!Array.isArray(story.comments)) story.comments = [];
     const parent = body.replyTo
       ? story.comments.find((comment) => comment.id === cleanText(body.replyTo, 120))
@@ -1906,14 +1982,16 @@ async function handleApi(req, res, pathname, query) {
     const comment = {
       id: id('comment'),
       userId: user.id,
+      kind,
       text,
+      gifId: gif?.id || null,
       replyTo: parent?.id || null,
       likes: [],
       createdAt: nowIso()
     };
     story.comments.push(comment);
     story.comments = story.comments.slice(-200);
-    const mentionNotes = notifyMentions(user, text, 'in a story comment');
+    const mentionNotes = text ? notifyMentions(user, text, 'in a story comment') : [];
     if (parent && parent.userId !== user.id && !mentionNotes.some(({ target }) => target.id === parent.userId)) {
       const note = addNotification(parent.userId, 'comment_reply', user.id, null, `${user.username} replied to your comment.`);
       if (note) pushToUser(parent.userId, {

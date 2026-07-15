@@ -4771,6 +4771,89 @@ html.keyboard-open .bottom-tabs {
   right: 0;
 }
 
+.highlight-comment-preview {
+  position: fixed;
+  left: 14px;
+  bottom: calc(68px + env(safe-area-inset-bottom));
+  z-index: 93;
+  width: min(280px, calc(100vw - 96px));
+  display: grid;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  color: #fff;
+  background: transparent;
+  text-align: left;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.highlight-comment-preview-card {
+  min-width: 0;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 5px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .58);
+  box-shadow: 0 5px 18px rgba(0, 0, 0, .26);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: highlightCommentPreviewIn 420ms cubic-bezier(.18, .9, .25, 1) both;
+  animation-delay: calc(var(--comment-preview-order, 0) * 140ms);
+}
+
+.highlight-comment-preview-card .avatar {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  font-size: 9px;
+}
+
+.highlight-comment-preview-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.highlight-comment-preview-copy strong {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.highlight-comment-preview-copy > span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, .9);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.highlight-comment-preview-gif {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.highlight-comment-preview-gif img {
+  width: 28px;
+  height: 20px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+@keyframes highlightCommentPreviewIn {
+  from { opacity: 0; transform: translate3d(-14px, 8px, 0) scale(.94); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
 .story-viewer-actions {
   position: fixed;
   left: 50%;
@@ -4843,6 +4926,11 @@ html.keyboard-open .bottom-tabs {
   .story-viewer-top,
   .story-viewer-actions {
     width: min(100vw, calc(var(--app-height) * 0.5625));
+  }
+
+  .highlight-comment-preview {
+    left: calc(50% - min(50vw, calc(var(--app-height) * 0.28125)) + 14px);
+    width: min(280px, calc(min(100vw, calc(var(--app-height) * 0.5625)) - 96px));
   }
 
   .story-editor-preview,
@@ -10475,11 +10563,17 @@ html.keyboard-open .bottom-tabs {
 
 .story-comments-sheet .comment-username,
 .story-comments-sheet .inline-mention {
+  display: inline;
+  width: auto;
+  height: auto;
   min-height: 0;
   padding: 0;
   border: 0;
+  border-radius: 0;
   background: transparent;
   font: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
 }
 
 .story-comments-sheet .comment-username {
@@ -10490,6 +10584,27 @@ html.keyboard-open .bottom-tabs {
 .story-comments-sheet .inline-mention {
   color: #e0f1ff;
   font-weight: 600;
+}
+
+.story-comments-sheet .story-comment-kind,
+.story-comments-sheet .story-comment-gif-unavailable {
+  color: #a8a8a8;
+  font-size: 11px;
+}
+
+.story-comments-sheet .story-comment-gif {
+  width: min(210px, 100%);
+  max-height: 220px;
+  display: block;
+  margin-top: 7px;
+  object-fit: cover;
+  border-radius: 9px;
+  background: #161616;
+}
+
+.story-comments-sheet .story-comment-gif-unavailable {
+  display: block;
+  margin-top: 6px;
 }
 
 .story-comments-sheet .story-comment-meta {
@@ -10765,30 +10880,172 @@ html.keyboard-open .bottom-tabs {
   animation: instagramReactionPop 300ms cubic-bezier(.18, .89, .32, 1.28);
 }
 
+.story-comments-sheet .story-comment-gif-picker {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 10px 0 8px;
+  animation: instagramCommentGifPickerIn 220ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.story-comments-sheet .story-comment-gif-picker.is-posting button:not(.is-sending) {
+  opacity: .46;
+}
+
+.story-comments-sheet .story-comment-gif-search {
+  height: 36px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: 10px;
+  color: #a8a8a8;
+  background: #1c1c1c;
+}
+
+.story-comments-sheet .story-comment-gif-search .ui-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.story-comments-sheet .story-comment-gif-search input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: #f5f5f5;
+  background: transparent;
+  font-size: 14px;
+}
+
+.story-comments-sheet .story-comment-gif-grid {
+  max-height: min(190px, 27vh);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 9px;
+  scrollbar-width: none;
+}
+
+.story-comments-sheet .story-comment-gif-grid::-webkit-scrollbar {
+  display: none;
+}
+
+.action-sheet.story-comments-sheet .story-comment-gif-grid button {
+  position: relative;
+  min-width: 0;
+  min-height: 74px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 5px;
+  background: #151515;
+}
+
+.action-sheet.story-comments-sheet .story-comment-gif-grid button[hidden] {
+  display: none;
+}
+
+.action-sheet.story-comments-sheet .story-comment-gif-grid button.is-sending {
+  opacity: .5;
+  pointer-events: none;
+}
+
+.action-sheet.story-comments-sheet .story-comment-gif-grid button.is-sending::after {
+  content: '';
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 16px;
+  height: 16px;
+  margin: -10px;
+  border: 2px solid rgba(255, 255, 255, .35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: instagramCommentSpin .65s linear infinite;
+}
+
+.story-comments-sheet .story-comment-gif-grid img {
+  width: 100%;
+  height: 100%;
+  min-height: 74px;
+  display: block;
+  object-fit: cover;
+}
+
+.story-comments-sheet .story-comment-gif-empty {
+  grid-column: 1 / -1;
+  margin: 22px 0;
+  color: #a8a8a8;
+  font-size: 12px;
+  text-align: center;
+}
+
+.story-comments-sheet .story-comment-gif-empty[hidden] {
+  display: none;
+}
+
+.story-comments-sheet .story-comment-gif-loading {
+  position: absolute;
+  inset: 54px 0 8px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .48);
+  pointer-events: none;
+}
+
+.story-comments-sheet .story-comment-gif-loading .spinner {
+  width: 22px;
+  height: 22px;
+}
+
 .story-comments-sheet .story-comment-box {
   min-height: 50px;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 44px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   padding: 0;
   border: 0;
 }
 
-.story-comments-sheet .story-comment-box > .avatar {
+.action-sheet.story-comments-sheet .story-comment-composer-avatar {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  color: #fff;
+  background: #262626;
+  transition: transform 130ms ease;
+}
+
+.action-sheet.story-comments-sheet .story-comment-composer-avatar:active {
+  transform: scale(.92);
+}
+
+.story-comments-sheet .story-comment-composer-avatar .avatar {
   width: 34px;
   height: 34px;
   border: 0;
-  color: #fff;
-  background: #262626;
   font-size: 10px;
 }
 
 .story-comments-sheet .story-comment-field {
   min-width: 0;
-  height: 38px;
+  height: 44px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 44px auto;
   align-items: center;
   padding: 0 4px 0 13px;
   border: 1px solid #363636;
@@ -10804,7 +11061,7 @@ html.keyboard-open .bottom-tabs {
 .story-comments-sheet .story-comment-box input {
   width: 100%;
   min-width: 0;
-  height: 36px;
+  height: 42px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -10819,11 +11076,39 @@ html.keyboard-open .bottom-tabs {
   opacity: 1;
 }
 
+.action-sheet.story-comments-sheet .story-comment-gif-toggle {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 7px;
+  border: 0;
+  border-radius: 50%;
+  color: #a8a8a8;
+  background: transparent;
+  transition: color 130ms ease, background-color 130ms ease, transform 120ms ease;
+}
+
+.action-sheet.story-comments-sheet .story-comment-gif-toggle.active {
+  color: #fff;
+  background: #262626;
+}
+
+.action-sheet.story-comments-sheet .story-comment-gif-toggle:active {
+  transform: scale(.9);
+}
+
+.story-comments-sheet .story-comment-gif-toggle .ui-icon {
+  width: 18px;
+  height: 18px;
+}
+
 .action-sheet.story-comments-sheet .story-comment-post {
   width: auto;
   min-width: 48px;
-  height: 34px;
-  min-height: 34px;
+  height: 44px;
+  min-height: 44px;
   display: grid;
   place-items: center;
   padding: 0 9px;
@@ -10869,6 +11154,11 @@ html.keyboard-open .bottom-tabs {
   color: #a8a8a8;
   background: #000;
   font-size: 12px;
+}
+
+@keyframes instagramCommentGifPickerIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes instagramCommentsSheetIn {
@@ -10962,6 +11252,8 @@ html.keyboard-open .bottom-tabs {
   .story-comments-sheet .story-comment-like.heart-pop.active::before,
   .story-comments-sheet .story-comment-like.heart-pop.active::after,
   .story-comments-sheet .story-comment-quick-reactions button.reaction-pop,
+  .story-comments-sheet .story-comment-gif-picker,
+  .highlight-comment-preview-card,
   [data-action="like-story"].story-heart-pop .ui-icon,
   [data-action="like-story"].story-heart-pop.active::before,
   [data-action="like-story"].story-heart-pop.active::after {
