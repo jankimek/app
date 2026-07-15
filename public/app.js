@@ -1018,6 +1018,22 @@
     return state.activeGroup?.name || state.activePeer?.displayName || 'Chat';
   }
 
+  function discardNavigationForMainTab() {
+    if (!state.navigationStack.length && !state.routeForward && !state.pendingHistoryBack) return;
+    state.navigationStack = [];
+    state.forwardNavigationEntries.clear();
+    state.routeForward = null;
+    state.pendingHistoryBack = null;
+    state.navigationBusy = false;
+    history.replaceState({
+      ...(history.state || {}),
+      appManaged: true,
+      route: 'app',
+      navDepth: 0,
+      view: captureNavigationView()
+    }, '', location.href);
+  }
+
   function switchMainTab(nextTab, options = {}) {
     if (!['chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
     const leavingPublicProfile = state.searchProfileOpen;
@@ -1046,6 +1062,10 @@
       state.chatProfileSocialView = null;
     }
     if (state.tab !== 'profile') state.profileSocialView = null;
+    // Selecting a root tab leaves the detail route rather than stacking a
+    // second copy of that tab behind it. Otherwise a later Back transition
+    // animates to the stale retained shell and visibly hitches at the end.
+    discardNavigationForMainTab();
     const keepDesktopChat = !isMobileLayout() && hasActiveConversation() && !wasChatProfileOpen && !leavingPublicProfile;
     if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
     else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });

@@ -157,6 +157,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /preview\.usesLiveShell = Boolean\(liveShell\)/);
   assert.match(clientSource, /if \(state\.navigationBusy\) return;/);
   assert.match(clientSource, /function requestNavigationBack/);
+  assert.match(clientSource, /function discardNavigationForMainTab/);
+  assert.match(clientSource, /state\.navigationStack = \[\];[\s\S]*?state\.forwardNavigationEntries\.clear\(\)/);
+  assert.match(clientSource, /discardNavigationForMainTab\(\);[\s\S]*?const keepDesktopChat/);
   assert.match(clientSource, /function beginSwipeNavigationBack/);
   assert.match(clientSource, /function restoreForwardNavigationEntry/);
   assert.match(clientSource, /cancelForwardNavigationAnimation\(current\)/);
