@@ -81,8 +81,8 @@
     twoFactorEnabled: false,
     isModerator: false,
     twoFactorSetup: null,
-    tab: 'chats',
-    lastTab: 'chats',
+    tab: 'home',
+    lastTab: 'home',
     tabTransition: false,
     tabDirection: 'right',
     navigationStack: [],
@@ -127,6 +127,25 @@
     pendingRequestCount: 0,
     notifications: [],
     requests: [],
+    homeFeed: [],
+    feedMode: localStorage.getItem('feedMode') || 'for_you',
+    feedMenuOpen: false,
+    feedLoading: false,
+    explorePosts: [],
+    exploreLoading: false,
+    notes: [],
+    postComposer: null,
+    postPublishing: false,
+    profileMediaTab: 'posts',
+    searchProfileMediaTab: 'posts',
+    profilePosts: new Map(),
+    expandedPosts: new Set(),
+    openPostComments: new Set(),
+    noteComposer: null,
+    noteRecording: null,
+    settingsSection: 'main',
+    blockedUsers: [],
+    accountActivity: { comments: [], reposts: [] },
     hiddenRecommendations: JSON.parse(localStorage.getItem('hiddenRecommendations') || '[]'),
     unreadByPeer: {},
     messageNotifications: localStorage.getItem('messageNotifications') !== '0' &&
@@ -825,7 +844,7 @@
     if (!entry) return false;
     rememberActiveConversation();
     const view = entry.view || {};
-    state.tab = view.tab || 'chats';
+    state.tab = view.tab || 'home';
     state.lastTab = view.lastTab || state.tab;
     state.profileSocialView = view.profileSocialView || null;
     state.chatProfileOpen = Boolean(view.chatProfileOpen);
@@ -942,6 +961,7 @@
   function icon(name) {
     const icons = {
       messages: '<svg viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2h9A3.5 3.5 0 0 1 20 5.5v7A3.5 3.5 0 0 1 16.5 16H9l-5 4v-4.5A3.5 3.5 0 0 1 4 12.5v-7Z"/><path d="M8 8h8M8 12h5"/></svg>',
+      home: '<svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V10Z"/></svg>',
       search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>',
       profile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
       logout: '<svg viewBox="0 0 24 24"><path d="M10 17v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v1"/><path d="M15 7l5 5-5 5M20 12H8"/></svg>',
@@ -996,13 +1016,18 @@
       forward: '<svg viewBox="0 0 24 24"><path d="m14 5 7 7-7 7v-4c-5 0-8.5 1.5-11 4 1-6 4.5-10 11-10V5Z"/></svg>',
       pin: '<svg viewBox="0 0 24 24"><path d="m8 3 8 8M14 3l7 7-4 1-5 5-1 5-7-7 5-1 5-5V3Z"/><path d="m9 15-6 6"/></svg>',
       camera: '<svg viewBox="0 0 24 24"><path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/></svg>',
+      grid: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+      bookmark: '<svg viewBox="0 0 24 24"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/></svg>',
+      repost: '<svg viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg>',
+      tagged: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="12" cy="9" r="3"/><path d="M6.5 20a5.5 5.5 0 0 1 11 0"/></svg>',
+      archive: '<svg viewBox="0 0 24 24"><path d="M3 5h18v4H3zM5 9v11h14V9M9 13h6"/></svg>',
       group: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 20a5 5 0 0 1 7-4.6"/></svg>'
     };
     return `<span class="ui-icon" aria-hidden="true">${icons[name] || ''}</span>`;
   }
 
   function navButton(tab, label, iconName) {
-    const active = state.tab === tab || (state.tab === 'notifications' && tab === 'chats');
+    const active = state.tab === tab || (state.tab === 'notifications' && tab === 'home');
     const unreadDot = tab === 'chats' && hasUnreadMessages();
     const symbol = tab === 'profile'
       ? `<span class="nav-profile-avatar">${state.me?.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}</span>`
@@ -1028,7 +1053,7 @@
   }
 
   function tabIndex(tab) {
-    return { chats: 0, search: 1, notifications: 0, profile: 2 }[tab] ?? 0;
+    return { home: 0, notifications: 0, search: 1, chats: 2, profile: 3 }[tab] ?? 0;
   }
 
   function hasActiveConversation() {
@@ -1105,7 +1130,7 @@
   }
 
   function switchMainTab(nextTab, options = {}) {
-    if (!['chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
+    if (!['home', 'chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
     const leavingPublicProfile = state.searchProfileOpen;
     const profileReturnScroll = state.profileReturnScroll;
     const wasChatProfileOpen = state.chatProfileOpen;
@@ -1150,7 +1175,7 @@
   }
 
   function tabSwipeTarget(dx) {
-    const tabs = ['chats', 'search', 'profile'];
+    const tabs = ['home', 'search', 'chats', 'profile'];
     const index = tabIndex(state.tab);
     const targetIndex = index + (dx < 0 ? 1 : -1);
     return tabs[targetIndex] || null;
@@ -1214,11 +1239,13 @@
     }
 
     await loadContactsAndChats();
+    await loadSocialSurfaces();
     await loadGifPool();
     if (publicName) {
       state.tab = 'search';
       await loadPublicProfile(publicName);
       state.searchProfileOpen = Boolean(state.publicProfile);
+      if (state.publicProfile) await loadProfilePosts(state.publicProfile, state.searchProfileMediaTab, { render: false }).catch(() => []);
     }
     renderApp();
     history.replaceState({
@@ -1260,6 +1287,12 @@
               ${state.authMode === 'register' ? `
                 <label class="field">Username
                   <input name="username" autocomplete="username" placeholder="emran_01" required>
+                </label>
+                <label class="field">Email <small>Optional</small>
+                  <input name="email" type="email" autocomplete="email" placeholder="you@example.com">
+                </label>
+                <label class="field">Phone <small>Optional</small>
+                  <input name="phone" type="tel" autocomplete="tel" placeholder="+49 123 456789">
                 </label>
               ` : `
                 <label class="field">Email, phone, or username
@@ -1550,7 +1583,7 @@
     forwardLiveShell?.remove();
     app.innerHTML = `
       ${forwardEntry?.previewHtml && !forwardLiveShell ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
-      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''}">
+      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.tab === 'home' && !hasActiveConversation() ? 'home-root' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -1566,6 +1599,8 @@
       <div id="story-editor-slot">${renderStoryEditor()}</div>
       <div id="story-viewer-slot">${renderStoryViewer()}</div>
       <div id="highlight-composer-slot">${renderHighlightComposer()}</div>
+      <div id="post-composer-slot">${renderPostComposer()}</div>
+      <div id="note-composer-slot">${renderNoteComposer()}</div>
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
       <div id="chat-customization-slot">${renderChatCustomization()}</div>
       <div id="sticker-creator-slot">${renderStickerCreator()}</div>
@@ -1573,6 +1608,8 @@
       <div id="group-composer-slot">${renderGroupComposer()}</div>
       <input id="avatar-input" type="file" accept="image/*" hidden>
       <input id="story-input" type="file" accept="image/*,video/*" hidden>
+      <input id="post-input" type="file" accept="image/*,video/*" hidden>
+      <input id="note-audio-input" type="file" accept="audio/*" hidden>
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
     syncCurrentNavigationHistory();
@@ -1681,6 +1718,14 @@
     return updateSlot('highlight-composer-slot', renderHighlightComposer());
   }
 
+  function updatePostComposerSlot() {
+    return updateSlot('post-composer-slot', renderPostComposer());
+  }
+
+  function updateNoteComposerSlot() {
+    return updateSlot('note-composer-slot', renderNoteComposer());
+  }
+
   function updateMediaViewerSlot() {
     return updateSlot('media-viewer-slot', renderMediaViewer());
   }
@@ -1712,16 +1757,18 @@
 
   function renderSidebar() {
     const scrollKey = state.searchProfileOpen && state.publicProfile
-      ? `public-profile:${state.publicProfile.username}:${state.searchProfileSocialView || 'main'}`
-      : `tab:${state.tab}:${state.profileSocialView || 'main'}`;
+      ? `public-profile:${state.publicProfile.username}:${state.searchProfileSocialView || state.searchProfileMediaTab || 'main'}`
+      : `tab:${state.tab}:${state.tab === 'home' ? state.feedMode : (state.profileSocialView || state.profileMediaTab || 'main')}`;
     return `
       <aside class="sidebar">
         <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}" data-scroll-memory="${esc(scrollKey)}">
           ${renderTabContent(state.tab)}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
-          ${navButton('chats', 'Messages', 'messages')}
+          ${navButton('home', 'Home', 'home')}
           ${navButton('search', 'Search', 'search')}
+          <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
+          ${navButton('chats', 'Messages', 'messages')}
           ${navButton('profile', 'Profile', 'profile')}
         </nav>
       </aside>
@@ -1729,10 +1776,343 @@
   }
 
   function renderTabContent(tab) {
+    if (tab === 'home') return renderHomePanel();
     if (tab === 'chats') return renderChatsPanel();
     if (tab === 'search') return renderSearchPanel();
     if (tab === 'notifications') return renderNotificationsPage();
     return renderProfilePanel();
+  }
+
+  function feedModeLabel(mode = state.feedMode) {
+    return mode === 'following' ? 'Followed' : mode === 'favorites' ? 'Favorites' : 'For you';
+  }
+
+  function homeStoryUsers() {
+    const followed = (state.me?.following || []).filter((user) => activeProfileStory(user));
+    const fallback = state.recommendations.filter((user) => activeProfileStory(user));
+    const seen = new Set();
+    return [state.me, ...(followed.length ? followed : fallback)].filter((user) => {
+      if (!user?.id || seen.has(user.id)) return false;
+      seen.add(user.id);
+      return user.id === state.me?.id || Boolean(activeProfileStory(user));
+    }).slice(0, 20);
+  }
+
+  function renderHomeStories() {
+    const users = homeStoryUsers();
+    return `
+      <section class="home-story-rail" aria-label="Stories" data-scroll-memory="home-stories">
+        ${users.map((user) => {
+          const story = activeProfileStory(user);
+          const mine = user.id === state.me?.id;
+          return `
+            <button class="home-story" data-action="${story ? 'view-story' : 'open-story-create'}" ${story ? `data-story-id="${esc(story.id)}"` : ''}>
+              <span class="home-story-avatar ${story ? 'has-story' : ''}">
+                ${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}
+                ${mine ? '<i>+</i>' : ''}
+              </span>
+              <small>${mine ? 'Your story' : esc(user.username)}</small>
+            </button>
+          `;
+        }).join('')}
+      </section>
+    `;
+  }
+
+  function postAuthor(post) {
+    return post?.author || post?.owner || post?.user || null;
+  }
+
+  function postMedia(post) {
+    return post?.media || post?.file || post?.attachment || null;
+  }
+
+  function postFilterStyle(post) {
+    const edits = post?.edits || {};
+    const adjustments = post?.adjustments || edits.adjustments || edits;
+    const presetName = post?.filter || edits.filter || 'normal';
+    const preset = {
+      normal: '',
+      vivid: 'saturate(1.28) contrast(1.06)',
+      warm: 'sepia(.16) saturate(1.18) hue-rotate(-8deg)',
+      cool: 'saturate(1.08) hue-rotate(12deg)',
+      mono: 'grayscale(1) contrast(1.08)',
+      fade: 'saturate(.74) contrast(.9) brightness(1.08)',
+      noir: 'grayscale(1) contrast(1.35) brightness(.84)'
+    }[presetName] || '';
+    const brightness = clamp(Number(adjustments.brightness ?? 100), 60, 140) / 100;
+    const contrast = clamp(Number(adjustments.contrast ?? 100), 60, 140) / 100;
+    const saturation = clamp(Number(adjustments.saturation ?? 100), 0, 200) / 100;
+    const warmth = clamp(Number(adjustments.warmth ?? 0), -50, 50);
+    return `${preset} brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) hue-rotate(${warmth * -0.16}deg)`;
+  }
+
+  function postCropStyle(post) {
+    const crop = post?.crop || post?.edits?.crop || post?.edits || {};
+    const zoom = clamp(Number(crop.zoom ?? 1), 1, 3);
+    const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -50, 50);
+    const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -50, 50);
+    const rotation = clamp(Number(crop.rotation ?? 0), -180, 180);
+    return `transform:translate3d(${x}%,${y}%,0) scale(${zoom}) rotate(${rotation}deg);filter:${postFilterStyle(post)}`;
+  }
+
+  function renderPostMedia(post, options = {}) {
+    const media = postMedia(post);
+    if (!media?.url) return '<div class="post-media-missing">Media unavailable</div>';
+    const isVideo = String(media.mime || '').startsWith('video/');
+    const tags = post.personTags || post.peopleTags || [];
+    return `
+      <div class="post-media-frame ${options.grid ? 'post-media-grid' : ''}">
+        ${isVideo
+          ? `<video src="${esc(media.url)}" style="${esc(postCropStyle(post))}" muted playsinline preload="metadata" ${options.grid ? '' : 'controls'}></video>`
+          : `<img src="${esc(media.url)}" style="${esc(postCropStyle(post))}" alt="${esc(post.title || 'Post')}" loading="lazy">`}
+        ${options.grid ? '' : tags.map((tag) => {
+          const tagged = tag.user || tag.person || null;
+          return `<button class="post-person-tag" style="left:${clamp(Number(tag.x || 50), 2, 98)}%;top:${clamp(Number(tag.y || 50), 2, 98)}%" data-action="view-user-profile" data-username="${esc(tagged?.username || tag.username || '')}">@${esc(tagged?.username || tag.username || '')}</button>`;
+        }).join('')}
+        ${isVideo && options.grid ? `<span class="post-video-mark">${icon('play')}</span>` : ''}
+      </div>
+    `;
+  }
+
+  function renderPostComments(post) {
+    const comments = post.comments || [];
+    const open = state.openPostComments.has(post.id);
+    if (!open && !comments.length) return '';
+    const visible = open ? comments : comments.slice(-2);
+    return `
+      <div class="post-comments ${open ? 'open' : ''}">
+        ${visible.map((comment) => `
+          <p><button data-action="view-user-profile" data-username="${esc(comment.user?.username || '')}">${esc(comment.user?.username || 'user')}</button> ${renderMentionText(comment.text || '')}</p>
+        `).join('')}
+        ${comments.length > 2 ? `<button class="post-comments-more" data-action="toggle-post-comments" data-post-id="${esc(post.id)}">${open ? 'Hide comments' : `View all ${comments.length} comments`}</button>` : ''}
+      </div>
+    `;
+  }
+
+  function renderPostCard(post) {
+    const author = postAuthor(post);
+    if (!author) return '';
+    const description = String(post.description || post.caption || '');
+    const expanded = state.expandedPosts.has(post.id) || description.length <= 135;
+    const hashtags = post.hashtags || post.tags || [];
+    const liked = Boolean(post.likedByMe);
+    const saved = Boolean(post.savedByMe);
+    const reposted = Boolean(post.repostedByMe);
+    return `
+      <article class="feed-post" data-post-id="${esc(post.id)}">
+        <header class="post-head">
+          <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">
+            ${avatarHtml(author)}
+            <span><strong>${esc(author.displayName || author.username)}</strong><small>@${esc(author.username)} · ${esc(shortTime(post.createdAt))}</small></span>
+          </a>
+          ${author.id === state.me?.id ? `<button data-action="post-owner-menu" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>` : ''}
+        </header>
+        ${renderPostMedia(post)}
+        <div class="post-action-row">
+          <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}">${icon('heart')}</button>
+          <button data-action="focus-post-comment" data-post-id="${esc(post.id)}" aria-label="Comment">${icon('comment')}</button>
+          ${post.allowReposts === false ? '' : `<button class="${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="Repost">${icon('repost')}</button>`}
+          <button class="post-save ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="Save">${icon('bookmark')}</button>
+        </div>
+        <div class="post-copy">
+          <strong>${Number(post.likeCount || 0).toLocaleString()} likes</strong>
+          ${post.title ? `<h3>${esc(post.title)}</h3>` : ''}
+          ${description ? `<p>${expanded ? renderMentionText(description) : renderMentionText(`${description.slice(0, 135).trim()}…`)} ${expanded ? '' : `<button data-action="expand-post" data-post-id="${esc(post.id)}">read more</button>`}</p>` : ''}
+          ${hashtags.length ? `<p class="post-hashtags">${hashtags.map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}
+          <small>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments · ${Number(post.repostCount || 0)} reposts</small>
+          ${renderPostComments(post)}
+          <form class="post-comment-form" data-form="post-comment" data-post-id="${esc(post.id)}">
+            <input name="comment" maxlength="500" placeholder="Add a comment…" autocomplete="off">
+            <button type="submit">Post</button>
+          </form>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderHomePanel() {
+    const feed = state.homeFeed || [];
+    return `
+      <section class="home-page">
+        <header class="home-topbar">
+          <div class="feed-picker-wrap">
+            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}">${esc(feedModeLabel())}${icon('chevron')}</button>
+            ${state.feedMenuOpen ? `
+              <div class="feed-picker-menu">
+                ${['for_you', 'following', 'favorites'].map((mode) => `<button class="${state.feedMode === mode ? 'active' : ''}" data-action="set-feed-mode" data-mode="${mode}">${esc(feedModeLabel(mode))}${state.feedMode === mode ? icon('check') : ''}</button>`).join('')}
+              </div>
+            ` : ''}
+          </div>
+          <div class="home-head-actions">
+            <button class="icon-btn" data-action="open-post-create" aria-label="Create post">${icon('plus')}</button>
+            <button class="icon-btn notification-btn" data-action="open-notifications" aria-label="Notifications">${icon('bell')}${state.pendingRequestCount ? '<span class="red-dot"></span>' : ''}</button>
+          </div>
+        </header>
+        ${renderHomeStories()}
+        ${renderNotificationPermissionPrompt()}
+        <section class="home-feed" aria-live="polite">
+          ${state.feedLoading
+            ? '<div class="feed-loading"><i></i><i></i><i></i></div>'
+            : feed.length
+              ? feed.map(renderPostCard).join('')
+              : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${state.feedMode === 'favorites' ? 'Favorite an account from their profile to build this feed.' : 'Share the first post or follow more accounts.'}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
+        </section>
+      </section>
+    `;
+  }
+
+  function composerFilterStyle(composer) {
+    return postFilterStyle({ filter: composer.filter, adjustments: composer.adjustments });
+  }
+
+  function renderPostComposerMedia(composer, taggable = false) {
+    const style = `transform:translate3d(${composer.crop.x}%,${composer.crop.y}%,0) scale(${composer.crop.zoom}) rotate(${composer.crop.rotation}deg);filter:${composerFilterStyle(composer)}`;
+    const media = composer.isVideo
+      ? `<video src="${esc(composer.dataUrl)}" style="${esc(style)}" muted playsinline controls></video>`
+      : `<img src="${esc(composer.dataUrl)}" style="${esc(style)}" alt="Post preview">`;
+    return `
+      <div class="post-composer-media aspect-${esc(composer.crop.aspect || 'portrait')} ${taggable ? 'taggable' : ''}" ${taggable ? 'data-action="pick-post-tag-position"' : ''}>
+        ${media}
+        ${(composer.personTags || []).map((tag, index) => `<button class="post-tag-draft" style="left:${tag.x}%;top:${tag.y}%" data-action="remove-post-tag" data-tag-index="${index}">@${esc(tag.username)}</button>`).join('')}
+        ${composer.pendingTagPoint ? `<span class="post-tag-target" style="left:${composer.pendingTagPoint.x}%;top:${composer.pendingTagPoint.y}%"></span>` : ''}
+      </div>
+    `;
+  }
+
+  function postComposerCandidates() {
+    const seen = new Set();
+    return [state.me, ...state.contacts, ...state.recommendations, ...state.searchResults].filter((user) => {
+      if (!user?.id || seen.has(user.id)) return false;
+      seen.add(user.id);
+      return true;
+    });
+  }
+
+  function renderPostComposer() {
+    const composer = state.postComposer;
+    if (!composer) return '';
+    const stage = clamp(Number(composer.stage || 1), 1, 3);
+    const adjustment = composer.activeAdjustment || 'saturation';
+    return `
+      <div class="post-composer-overlay">
+        <section class="post-composer-page" role="dialog" aria-modal="true" aria-label="Create post">
+          <header class="post-composer-head">
+            <button data-action="${stage === 1 ? 'close-post-composer' : 'post-composer-back'}" aria-label="${stage === 1 ? 'Close' : 'Back'}">${stage === 1 ? icon('x') : icon('back')}</button>
+            <span><strong>${stage === 1 ? 'Crop' : stage === 2 ? 'Look' : 'Share'}</strong><small>Step ${stage} of 3</small></span>
+            ${stage < 3 ? `<button class="post-next" data-action="post-composer-next">Next</button>` : `<button class="post-next" data-action="publish-post" ${state.postPublishing ? 'disabled' : ''}>${state.postPublishing ? 'Sharing…' : 'Share'}</button>`}
+          </header>
+          <div class="post-stage-dots">${[1, 2, 3].map((step) => `<i class="${step <= stage ? 'active' : ''}"></i>`).join('')}</div>
+          ${stage === 1 ? `
+            <div class="post-editor-body">
+              ${renderPostComposerMedia(composer)}
+              <div class="post-crop-controls">
+                <div class="post-aspect-row">
+                  ${[['square','1:1'],['portrait','4:5'],['original','Original']].map(([value,label]) => `<button class="${composer.crop.aspect === value ? 'active' : ''}" data-action="set-post-aspect" data-aspect="${value}">${label}</button>`).join('')}
+                </div>
+                <label>Zoom <input type="range" min="1" max="3" step=".01" value="${composer.crop.zoom}" data-post-crop="zoom"></label>
+                <label>Horizontal <input type="range" min="-50" max="50" step="1" value="${composer.crop.x}" data-post-crop="x"></label>
+                <label>Vertical <input type="range" min="-50" max="50" step="1" value="${composer.crop.y}" data-post-crop="y"></label>
+                <button class="secondary" data-action="rotate-post-media">${icon('rotate')} Rotate</button>
+              </div>
+            </div>
+          ` : stage === 2 ? `
+            <div class="post-editor-body">
+              ${renderPostComposerMedia(composer)}
+              <div class="post-filter-rail" data-scroll-memory="post-filters">
+                ${[['normal','Original'],['vivid','Vivid'],['warm','Warm'],['cool','Cool'],['mono','Mono'],['fade','Fade'],['noir','Noir']].map(([value,label]) => `<button class="${composer.filter === value ? 'active' : ''}" data-action="set-post-filter" data-filter="${value}"><span style="filter:${postFilterStyle({filter:value})}">${composer.isVideo ? `<video src="${esc(composer.dataUrl)}" muted playsinline preload="metadata"></video>` : `<img src="${esc(composer.dataUrl)}" alt="">`}</span><small>${label}</small></button>`).join('')}
+              </div>
+              <div class="post-adjust-tabs">
+                ${['brightness','contrast','saturation','warmth'].map((name) => `<button class="${adjustment === name ? 'active' : ''}" data-action="select-post-adjustment" data-adjustment="${name}">${name}</button>`).join('')}
+              </div>
+              <label class="post-adjust-slider">${adjustment}<input type="range" min="${adjustment === 'warmth' ? -50 : adjustment === 'saturation' ? 0 : 60}" max="${adjustment === 'warmth' ? 50 : adjustment === 'saturation' ? 200 : 140}" value="${composer.adjustments[adjustment]}" data-post-adjust="${adjustment}"><output>${composer.adjustments[adjustment]}</output></label>
+            </div>
+          ` : `
+            <div class="post-details-layout">
+              <div>
+                ${renderPostComposerMedia(composer, true)}
+                <small class="post-tag-help">Tap the photo or video to place a person tag.</small>
+                ${composer.pendingTagPoint ? `
+                  <div class="post-tag-picker">
+                    <input id="post-tag-username" list="post-tag-candidates" placeholder="Username to tag" autocomplete="off">
+                    <datalist id="post-tag-candidates">${postComposerCandidates().filter((user) => user.id !== state.me?.id).map((user) => `<option value="${esc(user.username)}">${esc(user.displayName)}</option>`).join('')}</datalist>
+                    <button data-action="add-post-person-tag">Add tag</button>
+                  </div>
+                ` : ''}
+              </div>
+              <div class="post-details-fields">
+                <label>Title <input id="post-title" maxlength="100" value="${esc(composer.title)}" placeholder="Give this post a title"></label>
+                <label>Description <textarea id="post-description" maxlength="2200" placeholder="Write a description…">${esc(composer.description)}</textarea></label>
+                <label>Tags <input id="post-hashtags" maxlength="300" value="${esc(composer.hashtags)}" placeholder="#travel #summer"></label>
+                <label class="switch-row compact"><span><strong>Allow reposts</strong><small>Other people can share this post to their profile.</small></span><input id="post-allow-reposts" type="checkbox" ${composer.allowReposts ? 'checked' : ''}></label>
+              </div>
+            </div>
+          `}
+        </section>
+      </div>
+    `;
+  }
+
+  function renderNoteRail() {
+    const notes = state.notes || [];
+    const mine = notes.find((note) => (note.owner || note.user)?.id === state.me?.id);
+    const ordered = mine ? [mine, ...notes.filter((note) => note !== mine)] : notes;
+    return `
+      <section class="note-rail" aria-label="Notes" data-scroll-memory="chat-notes">
+        <button class="note-item own-note" data-action="open-note-composer">
+          <span class="note-bubble">${mine ? esc(mine.text || 'Your note') : 'Leave a note'}</span>
+          <span class="note-avatar">${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}<i>+</i></span>
+          <small>You</small>
+        </button>
+        ${ordered.filter((note) => (note.owner || note.user)?.id !== state.me?.id).map((note) => {
+          const owner = note.owner || note.user;
+          return `
+            <article class="note-item">
+              <button class="note-main" data-action="play-note" data-note-id="${esc(note.id)}">
+                <span class="note-bubble">
+                  ${note.audio ? `<b>${esc(note.audioTitle || 'Audio note')}</b><em>${esc(note.audioArtist || owner.displayName || owner.username)}</em>` : ''}
+                  ${esc(note.text || '')}
+                </span>
+                <span class="note-avatar">${owner.avatar?.url ? `<img src="${esc(owner.avatar.url)}" alt="">` : esc(initials(owner))}</span>
+                <small>${esc(owner.username)}</small>
+              </button>
+              ${note.audio?.url ? `<audio id="note-audio-${esc(note.id)}" src="${esc(note.audio.url)}" preload="none"></audio>` : ''}
+            </article>
+          `;
+        }).join('')}
+      </section>
+    `;
+  }
+
+  function renderNoteComposer() {
+    const composer = state.noteComposer;
+    if (!composer) return '';
+    return `
+      <div class="center-overlay note-composer-overlay" data-action="close-note-composer">
+        <section class="center-modal note-composer" data-stop-close>
+          <header class="modal-head"><h2>New note</h2><button class="icon-btn" data-action="close-note-composer">${icon('x')}</button></header>
+          <div class="note-composer-preview">
+            <span>${esc(composer.text || 'Share a thought…')}</span>
+            ${profilePictureElement(state.me, 'note-preview-avatar', { own: true })}
+          </div>
+          <label class="note-text-field"><textarea id="note-text" maxlength="60" placeholder="Share a thought…">${esc(composer.text || '')}</textarea><output>${String(composer.text || '').length}/60</output></label>
+          <section class="note-audio-editor">
+            <div><strong>${icon('music')} Audio snippet</strong><small>Optional · up to 30 seconds</small></div>
+            ${composer.audio ? `<audio src="${esc(composer.audio.dataUrl)}" controls preload="metadata"></audio>` : ''}
+            <div class="note-audio-actions">
+              <button class="secondary" data-action="choose-note-audio">Choose audio</button>
+              <button class="secondary ${state.noteRecording ? 'recording' : ''}" data-action="${state.noteRecording ? 'stop-note-recording' : 'start-note-recording'}">${icon('mic')} ${state.noteRecording ? 'Stop recording' : 'Record'}</button>
+            </div>
+            <label>Track title <input id="note-audio-title" maxlength="80" value="${esc(composer.audioTitle || '')}" placeholder="Song or clip title"></label>
+            <label>Creator <input id="note-audio-artist" maxlength="80" value="${esc(composer.audioArtist || '')}" placeholder="Artist or creator"></label>
+          </section>
+          <div class="note-composer-footer">
+            ${composer.hasExisting ? '<button class="danger-text" data-action="delete-note">Delete note</button>' : ''}
+            <button class="primary note-share" data-action="share-note" ${!String(composer.text || '').trim() && !composer.audio ? 'disabled' : ''}>Share note</button>
+          </div>
+        </section>
+      </div>
+    `;
   }
 
   function renderChatsPanel() {
@@ -1794,16 +2174,12 @@
       }).join('') : '<div class="empty-state">No conversation references match that search.</div>';
 
     return `
+      ${renderNoteRail()}
       <section class="messages-head">
         <div class="messages-search-row">
           <input class="search-input conversation-search" id="conversation-search" placeholder="Search conversations" autocomplete="off" value="${esc(state.conversationQuery)}">
-          <button class="icon-btn notification-btn" title="Notifications" aria-label="Notifications" data-action="open-notifications">
-            ${icon('bell')}
-            ${state.pendingRequestCount ? '<span class="red-dot"></span>' : ''}
-          </button>
         </div>
       </section>
-      ${renderNotificationPermissionPrompt()}
       <section class="panel-heading">
         <h2>Messages</h2>
         <button class="icon-btn new-group-btn" data-action="new-group" title="New group chat" aria-label="New group chat">${icon('edit')}</button>
@@ -1843,6 +2219,10 @@
             <div class="result-list" id="search-results">${renderSearchResults()}</div>
           </section>
         ` : `
+          <section class="search-explore-section">
+            <div class="section-heading"><h2>Explore</h2><small>Popular right now</small></div>
+            ${renderExploreGrid()}
+          </section>
           <section class="search-discover">
             <div class="section-heading">
               <h2>Suggested for you</h2>
@@ -1860,8 +2240,9 @@
   }
 
   function renderProfileStats(user, action) {
-    if (!user.followersVisible) return '<span class="private-social-note">Private account</span>';
+    if (!user.followersVisible) return `<span class="profile-stat profile-post-stat"><strong>${user.postCount ?? 0}</strong><span>posts</span></span><span class="private-social-note">Private account</span>`;
     return `
+      <span class="profile-stat profile-post-stat"><strong>${user.postCount ?? 0}</strong><span>posts</span></span>
       <button type="button" class="social-stat-btn profile-stat" data-action="${esc(action)}" data-social="followers">
         <strong>${user.followerCount ?? 0}</strong><span>followers</span>
       </button>
@@ -1896,25 +2277,33 @@
   }
 
   function renderSearchProfilePage(user) {
+    const canSeeMedia = user.followersVisible !== false;
     return `
       <section class="search-profile-page">
         <header class="page-header search-profile-header">
           <button class="icon-btn" data-action="close-search-profile" aria-label="Back">${icon('back')}</button>
           <h2>@${esc(user.username)}</h2>
-          <button class="icon-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}" aria-label="Report user">${icon('more')}</button>
+          <button class="icon-btn" data-action="open-profile-menu" data-user-id="${esc(user.id)}" aria-label="Profile options">${icon('more')}</button>
         </header>
         <section class="search-profile-hero">
-          ${renderProfileAvatarStack(user)}
-          <div class="profile-stat-grid">
-            ${renderProfileStats(user, 'open-search-social')}
+          <div class="profile-identity-layout">
+            ${renderProfileAvatarStack(user)}
+            <div class="profile-identity-copy">
+              <h1>${esc(user.displayName)}</h1>
+              <small>@${esc(user.username)}</small>
+              <div class="profile-stat-grid">${renderProfileStats(user, 'open-search-social')}</div>
+            </div>
           </div>
           <div class="search-profile-copy profile-details">
-            <strong>${esc(user.displayName)}</strong>
             ${user.bio ? `<p>${esc(user.bio)}</p>` : '<p class="profile-empty-bio">No bio yet.</p>'}
+            ${user.website ? `<a href="${esc(user.website)}" target="_blank" rel="noopener">${esc(user.website)}</a>` : ''}
+            ${user.age !== undefined && user.age !== null ? `<small>${esc(user.age)} years old</small>` : ''}
+            ${user.gender ? `<small>${esc(user.gender)}</small>` : ''}
           </div>
         </section>
         <div class="search-profile-actions">${renderSearchProfileActions(user)}</div>
         ${renderHighlights(user, false)}
+        ${canSeeMedia ? renderProfileMedia(user, false) : `<div class="profile-private-media">${icon('lock')}<strong>This account is private</strong><small>Follow this account to see their posts.</small></div>`}
         ${renderProfileSuggestions(user)}
       </section>
     `;
@@ -1950,24 +2339,66 @@
         <button class="icon-btn" data-action="open-settings" aria-label="Settings">${icon('menu')}</button>
       </header>
       <section class="profile-hero">
-        <div class="profile-avatar-column">
-          <div class="profile-avatar-wrap">
-            ${profilePictureElement(state.me, 'profile-avatar-btn', { own: true })}
-            ${story ? `<button class="profile-story-view" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View your story">${icon('play')}</button>` : ''}
-            <button class="profile-avatar-add" data-action="open-story-create" aria-label="Create story">+</button>
+        <div class="profile-identity-layout">
+          <div class="profile-avatar-column">
+            <div class="profile-avatar-wrap">
+              ${profilePictureElement(state.me, 'profile-avatar-btn', { own: true })}
+              ${story ? `<button class="profile-story-view" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View your story">${icon('play')}</button>` : ''}
+              <button class="profile-avatar-add" data-action="open-story-create" aria-label="Create story">+</button>
+              ${state.notes.find((note) => (note.owner || note.user)?.id === state.me.id) ? `<button class="profile-note-bubble" data-action="open-note-composer">${esc(state.notes.find((note) => (note.owner || note.user)?.id === state.me.id)?.text || 'Your note')}</button>` : ''}
+            </div>
+            <button class="profile-link-icon" data-action="show-profile-link" data-link="${esc(profileUrl)}" aria-label="Share profile link">${icon('link')}</button>
           </div>
-          <button class="profile-link-icon" data-action="show-profile-link" data-link="${esc(profileUrl)}" aria-label="Share profile link">${icon('link')}</button>
-        </div>
-        <div class="profile-stat-grid">
-          ${renderProfileStats(state.me, 'open-social')}
+          <div class="profile-identity-copy">
+            <h1>${esc(state.me.displayName)}</h1>
+            <small>@${esc(state.me.username)}</small>
+            <div class="profile-stat-grid">${renderProfileStats(state.me, 'open-social')}</div>
+          </div>
         </div>
         <div class="profile-details">
-          <span class="profile-display-name"><strong>${esc(state.me.displayName)}</strong><button class="icon-inline-btn" data-action="open-profile-edit" aria-label="Edit profile">${icon('edit')}</button></span>
           ${state.me.bio ? `<p class="profile-bio">${esc(state.me.bio)}</p>` : ''}
+          ${state.me.website ? `<a href="${esc(state.me.website)}" target="_blank" rel="noopener">${esc(state.me.website)}</a>` : ''}
+          <span class="profile-optional-meta">${state.me.age !== undefined && state.me.age !== null ? `${esc(state.me.age)} years old` : ''}${state.me.gender ? `${state.me.age !== undefined && state.me.age !== null ? ' · ' : ''}${esc(state.me.gender)}` : ''}</span>
+        </div>
+        <div class="profile-owner-actions">
+          <button data-action="open-profile-edit">Edit profile</button>
+          <button data-action="open-highlight-archive">${icon('archive')} Archive</button>
         </div>
       </section>
       ${renderHighlights(state.me, true)}
+      ${renderProfileMedia(state.me, true)}
       ${renderRecommendations()}
+    `;
+  }
+
+  function profilePostKey(user, tab) {
+    return `${user?.id || user?.username || 'unknown'}:${tab || 'posts'}`;
+  }
+
+  function profilePostsFor(user, tab) {
+    return state.profilePosts.get(profilePostKey(user, tab)) || [];
+  }
+
+  function renderProfileMedia(user, own = false) {
+    const tab = own ? state.profileMediaTab : state.searchProfileMediaTab;
+    const posts = profilePostsFor(user, tab);
+    const labels = [
+      ['posts', 'Photos and videos', 'grid'],
+      ['saved', 'Saved posts', 'bookmark'],
+      ['reposts', 'Reposts', 'repost'],
+      ['tagged', 'Tagged photos', 'tagged']
+    ];
+    return `
+      <section class="profile-media-section">
+        <div class="profile-media-tabs" role="tablist">
+          ${labels.map(([value, label, iconName]) => `<button class="${tab === value ? 'active' : ''}" data-action="set-profile-media-tab" data-tab="${value}" data-user-id="${esc(user.id)}" data-own="${own}" role="tab" aria-selected="${tab === value}" aria-label="${label}" ${!own && value === 'saved' ? 'title="Saved posts are private"' : ''}>${icon(iconName)}</button>`).join('')}
+        </div>
+        ${!own && tab === 'saved'
+          ? `<div class="profile-media-empty">${icon('lock')}<strong>Saved posts are private</strong><small>Only ${esc(user.displayName)} can see this collection.</small></div>`
+          : posts.length
+            ? `<div class="profile-post-grid">${posts.map((post) => `<button data-action="open-profile-post" data-post-id="${esc(post.id)}">${renderPostMedia(post, { grid: true })}</button>`).join('')}</div>`
+            : `<div class="profile-media-empty">${icon(tab === 'saved' ? 'bookmark' : tab === 'reposts' ? 'repost' : tab === 'tagged' ? 'tagged' : 'grid')}<strong>No ${tab === 'posts' ? 'posts' : tab} yet</strong><small>${own && tab === 'posts' ? 'Photos and videos you share will appear here.' : 'Nothing to show in this tab.'}</small></div>`}
+      </section>
     `;
   }
 
@@ -3521,6 +3952,16 @@
     `;
   }
 
+  function renderExploreGrid() {
+    if (state.exploreLoading) return '<div class="explore-grid explore-loading">' + Array.from({ length: 9 }, () => '<i></i>').join('') + '</div>';
+    if (!state.explorePosts.length) return `<div class="search-empty compact">${icon('grid')}<strong>No public posts yet</strong><small>New photos and videos will appear here.</small></div>`;
+    return `
+      <div class="explore-grid">
+        ${state.explorePosts.map((post) => `<button data-action="open-explore-post" data-post-id="${esc(post.id)}" aria-label="Open ${esc(post.title || 'post')}">${renderPostMedia(post, { grid: true })}<span><b>${icon('heart')}${Number(post.likeCount || 0)}</b></span></button>`).join('')}
+      </div>
+    `;
+  }
+
   function renderHighlightCommentPreview(story) {
     if (!state.storyViewer?.highlightId) return '';
     const comments = (story?.comments || [])
@@ -3593,7 +4034,8 @@
     const postedStories = (state.me.stories || []).filter((story) => story.file);
     const isTarget = composer.mode === 'target';
     const isRename = composer.mode === 'rename';
-    const heading = isRename ? 'Rename highlight' : isTarget ? 'Choose highlight' : 'Add to highlight';
+    const isArchive = composer.mode === 'archive';
+    const heading = isArchive ? 'Highlight archive' : isRename ? 'Rename highlight' : isTarget ? 'Choose highlight' : 'Add to highlight';
     return `
       <div class="highlight-composer-overlay" data-action="close-highlight-composer">
         <section class="highlight-composer" data-stop-close>
@@ -3604,7 +4046,20 @@
             <strong>${heading}</strong>
             <button class="highlight-composer-icon" data-action="close-highlight-composer" aria-label="Close">${icon('x')}</button>
           </header>
-          ${isRename ? `
+          ${isArchive ? `
+            <div class="highlight-target-body highlight-archive-body">
+              <div class="highlight-library-head"><strong>Your highlights</strong><small>Rename or remove any collection</small></div>
+              ${highlights.length ? `<div class="highlight-target-list">${highlights.map((highlight) => `
+                <article class="highlight-target-row highlight-archive-row">
+                  <button class="highlight-target-cover" data-action="view-story" data-story-id="${esc(highlight.stories?.[0]?.id || '')}" data-highlight-id="${esc(highlight.id)}">${highlight.cover?.file ? renderStoryMedia(highlight.cover, true) : icon('archive')}</button>
+                  <span><strong>${esc(highlight.title || 'Highlight')}</strong><small>${highlight.storyCount || highlight.stories?.length || 0} stories</small></span>
+                  <button data-action="rename-highlight" data-highlight-id="${esc(highlight.id)}" aria-label="Rename">${icon('edit')}</button>
+                  <button class="danger-text" data-action="delete-highlight" data-highlight-id="${esc(highlight.id)}" aria-label="Delete">${icon('trash')}</button>
+                </article>
+              `).join('')}</div>` : '<p class="highlight-empty">You have no saved highlights yet.</p>'}
+              <button class="highlight-create-story" data-action="highlight-create-story"><span>${icon('plus')}</span><span><strong>Add a highlight</strong><small>Create a story and save it here</small></span>${icon('chevron')}</button>
+            </div>
+          ` : isRename ? `
             <div class="highlight-name-editor">
               <label for="highlight-rename-input">Name</label>
               <input id="highlight-rename-input" maxlength="32" value="${esc(composer.title || '')}" autocomplete="off" autofocus>
@@ -4674,7 +5129,7 @@
         </span>
       </article>
     `).join('') : '<p class="hint">No unanswered requests.</p>';
-    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention', 'comment_reply', 'comment_like', 'group_added'].includes(note.type));
+    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention', 'comment_reply', 'comment_like', 'group_added', 'post_tag', 'post_like', 'post_repost', 'post_comment'].includes(note.type));
     const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
         ${note.group ? `
@@ -4703,6 +5158,10 @@
         <div class="notification-list">${requests}</div>
         <h3>Recent</h3>
         <div class="notification-list">${recent}</div>
+        <div class="notification-suggestions-head"><h3>Suggested for you</h3><small>Accounts you may want to follow</small></div>
+        <div class="notification-list notification-suggestion-list">
+          ${visibleRecommendations().length ? visibleRecommendations().slice(0, 12).map((user) => renderAccountRow(user, { dismissible: true })).join('') : '<p class="hint">No new suggestions right now.</p>'}
+        </div>
       </section>
     `;
   }
@@ -4774,6 +5233,7 @@
     const sheet = state.actionSheet;
     if (!sheet) return '';
     const peer = sheet.peerId ? userById(sheet.peerId) : null;
+    const profileUser = sheet.userId ? userById(sheet.userId) : null;
     const message = sheet.messageId ? state.messages.find((item) => item.id === sheet.messageId) : null;
     let body = '';
     if (sheet.type === 'chat-user' && peer) {
@@ -4784,6 +5244,22 @@
         ${peer.hasBlocked
           ? `<button data-action="unblock-user" data-user-id="${esc(peer.id)}">Unblock</button>`
           : `<button class="danger-text" data-action="block-user" data-user-id="${esc(peer.id)}">${icon('block')} Block</button>`}
+      `;
+    }
+    if (sheet.type === 'profile-user' && profileUser) {
+      body = `
+        <div class="sheet-note"><strong>${esc(profileUser.displayName)}</strong><small>@${esc(profileUser.username)}</small></div>
+        <button data-action="toggle-favorite-user" data-user-id="${esc(profileUser.id)}">${icon('bookmark')} ${profileUser.isFavorite ? 'Remove from favorites' : 'Add to favorites'}</button>
+        <button data-action="open-report" data-report-type="user" data-user-id="${esc(profileUser.id)}">Report user</button>
+        ${profileUser.hasBlocked
+          ? `<button data-action="unblock-user" data-user-id="${esc(profileUser.id)}">Unblock</button>`
+          : `<button class="danger-text" data-action="block-user" data-user-id="${esc(profileUser.id)}">${icon('block')} Block</button>`}
+      `;
+    }
+    if (sheet.type === 'post-owner') {
+      body = `
+        <div class="sheet-note"><strong>Post options</strong><small>Manage this post</small></div>
+        <button class="danger-text" data-action="delete-post" data-post-id="${esc(sheet.postId)}">${icon('trash')} Delete post</button>
       `;
     }
     if (sheet.type === 'group-member' && state.activeGroup) {
@@ -5319,6 +5795,8 @@
 
   function renderProfileEditModal() {
     if (!state.profileEditOpen) return '';
+    const nextNameChange = state.me.nextDisplayNameChangeAt ? new Date(state.me.nextDisplayNameChangeAt) : null;
+    const displayNameLocked = Boolean(nextNameChange && nextNameChange.getTime() > Date.now());
     return `
       <div class="center-overlay" data-action="close-modal">
         <section class="center-modal profile-edit-modal" data-stop-close>
@@ -5332,12 +5810,31 @@
             <button type="button" class="profile-photo-change" data-action="change-profile-picture">Change</button>
           </div>
           <form class="form profile-edit-form" data-form="profile-edit">
-            <label class="profile-edit-field"><span>Username</span>
-              <input name="username" value="${esc(state.me.username)}" maxlength="24" autocomplete="username">
+            <label class="profile-edit-field"><span>Tag username</span>
+              <input name="username" value="@${esc(state.me.username)}" readonly aria-readonly="true">
+              <small>Your tag username identifies your account and cannot be changed.</small>
+            </label>
+            <label class="profile-edit-field"><span>Display name</span>
+              <input name="displayName" value="${esc(state.me.displayName)}" maxlength="60" ${displayNameLocked ? 'disabled' : ''}>
+              <small>${displayNameLocked ? `You can change this again on ${esc(nextNameChange.toLocaleDateString())}.` : 'You can change your display name once every 14 days.'}</small>
             </label>
             <label class="profile-edit-field"><span>Bio</span>
               <textarea name="bio" maxlength="280">${esc(state.me.bio || '')}</textarea>
             </label>
+            <label class="profile-edit-field"><span>Website</span>
+              <input name="website" type="url" value="${esc(state.me.website || '')}" maxlength="240" placeholder="https://example.com">
+            </label>
+            <div class="profile-edit-split">
+              <label class="profile-edit-field"><span>Age <small>Optional</small></span><input name="age" type="number" inputmode="numeric" min="1" max="120" value="${state.me.age ?? ''}"></label>
+              <label class="profile-edit-field"><span>Gender <small>Optional</small></span><input name="gender" maxlength="40" value="${esc(state.me.gender || '')}" placeholder="How you identify"></label>
+            </div>
+            <fieldset class="profile-visibility-fields">
+              <legend>Show on public profile</legend>
+              <label><input name="bioVisible" type="checkbox" ${state.me.bioVisible !== false ? 'checked' : ''}> Bio</label>
+              <label><input name="websiteVisible" type="checkbox" ${state.me.websiteVisible !== false ? 'checked' : ''}> Website</label>
+              <label><input name="ageVisible" type="checkbox" ${state.me.ageVisible === true ? 'checked' : ''}> Age</label>
+              <label><input name="genderVisible" type="checkbox" ${state.me.genderVisible === true ? 'checked' : ''}> Gender</label>
+            </fieldset>
             <button class="profile-edit-save" type="submit">Save changes</button>
           </form>
         </section>
@@ -5345,8 +5842,93 @@
     `;
   }
 
+  function settingsSectionTitle(section) {
+    return { account: 'Account', blocked: 'Blocked accounts', comments: 'Your comments', reposts: 'Reposts' }[section] || 'Settings';
+  }
+
+  function renderSettingsSubsection(section) {
+    if (section === 'account') return `
+      <section class="settings-block settings-subpage">
+        <h3>Contact details</h3>
+        <form class="form settings-account-form" data-form="account-contact">
+          <label class="profile-edit-field"><span>Email ${state.me.emailVerified ? '<i class="verified-mark">Verified</i>' : '<i>Not verified</i>'}</span><input name="email" type="email" value="${esc(state.me.email || '')}" autocomplete="email" placeholder="you@example.com"></label>
+          ${state.me.email && !state.me.emailVerified ? '<button type="button" class="secondary" data-action="resend-email-verification">Resend verification email</button>' : ''}
+          <label class="profile-edit-field"><span>Phone ${state.me.phoneVerified ? '<i class="verified-mark">Verified</i>' : '<i>Optional</i>'}</span><input name="phone" type="tel" value="${esc(state.me.phone || '')}" autocomplete="tel" placeholder="+49 123 456789"></label>
+          <button class="primary" type="submit">Save contact details</button>
+        </form>
+      </section>
+      <section class="settings-block settings-subpage">
+        <h3>Change password</h3>
+        <form class="form settings-account-form" data-form="change-password">
+          <label class="profile-edit-field"><span>Current password</span><input name="currentPassword" type="password" autocomplete="current-password" required></label>
+          <label class="profile-edit-field"><span>New password</span><input name="newPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+          <label class="profile-edit-field"><span>Confirm new password</span><input name="confirmPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+          <button class="primary" type="submit">Change password</button>
+        </form>
+      </section>
+    `;
+    if (section === 'blocked') return `
+      <section class="settings-block settings-subpage">
+        <p class="hint">Blocked people are removed from search, suggestions, feeds, notes, and messaging.</p>
+        <div class="settings-user-list">
+          ${state.blockedUsers.length ? state.blockedUsers.map((user) => `
+            <article class="account-row">
+              <span class="account-identity">${avatarHtml(user)}<span class="person"><strong>${esc(user.displayName)}</strong><small>@${esc(user.username)}</small></span></span>
+              <button class="mini-btn" data-action="settings-unblock-user" data-user-id="${esc(user.id)}">Unblock</button>
+            </article>
+          `).join('') : '<div class="settings-empty-state">No blocked accounts.</div>'}
+        </div>
+      </section>
+    `;
+    if (section === 'comments') return `
+      <section class="settings-block settings-subpage">
+        <p class="hint">A history of comments you have made on posts you can still view.</p>
+        <div class="settings-activity-list">
+          ${state.accountActivity.comments.length ? state.accountActivity.comments.map((item) => `
+            <button data-action="open-activity-post" data-post-id="${esc(item.post?.id || '')}">
+              <span class="activity-thumb">${item.post ? renderPostMedia(item.post, { grid: true }) : ''}</span>
+              <span><strong>${esc(item.comment?.text || '')}</strong><small>${esc(shortTime(item.createdAt))} · ${esc(postAuthor(item.post)?.username || 'post')}</small></span>
+              ${icon('chevron')}
+            </button>
+          `).join('') : '<div class="settings-empty-state">You have not commented on any visible posts yet.</div>'}
+        </div>
+      </section>
+    `;
+    if (section === 'reposts') return `
+      <section class="settings-block settings-subpage">
+        <label class="switch-row">
+          <span><strong>Allow reposts</strong><small>Let other people repost your posts when an individual post also allows it.</small></span>
+          <input type="checkbox" data-action="toggle-global-reposts" ${state.me.allowReposts !== false ? 'checked' : ''}>
+        </label>
+        <h3>Your reposts</h3>
+        <div class="settings-activity-list">
+          ${state.accountActivity.reposts.length ? state.accountActivity.reposts.map((item) => `
+            <button data-action="open-activity-post" data-post-id="${esc(item.post?.id || '')}">
+              <span class="activity-thumb">${item.post ? renderPostMedia(item.post, { grid: true }) : ''}</span>
+              <span><strong>${esc(item.post?.title || `Post by @${postAuthor(item.post)?.username || 'user'}`)}</strong><small>Reposted ${esc(shortTime(item.createdAt))}</small></span>
+              ${icon('chevron')}
+            </button>
+          `).join('') : '<div class="settings-empty-state">Posts you repost will appear here.</div>'}
+        </div>
+      </section>
+    `;
+    return '';
+  }
+
   function renderSettingsModal() {
     if (!state.settingsOpen) return '';
+    if (state.settingsSection !== 'main') return `
+      <div class="settings-drawer-overlay ${state.settingsOpening ? 'opening' : ''} ${state.settingsClosing ? 'closing' : ''}" data-action="close-settings">
+        <aside class="settings-drawer" role="dialog" aria-modal="true" aria-label="${esc(settingsSectionTitle(state.settingsSection))}" data-stop-close>
+          <header class="settings-drawer-head">
+            <button class="icon-btn" data-action="settings-back" aria-label="Back">${icon('back')}</button>
+            <h2>${esc(settingsSectionTitle(state.settingsSection))}</h2>
+            <button class="icon-btn" data-action="close-settings" aria-label="Close settings">${icon('x')}</button>
+          </header>
+          ${renderSettingsSubsection(state.settingsSection)}
+        </aside>
+      </div>
+    `;
     return `
       <div class="settings-drawer-overlay ${state.settingsOpening ? 'opening' : ''} ${state.settingsClosing ? 'closing' : ''}" data-action="close-settings">
         <aside class="settings-drawer ${state.settingsOpening ? 'opening' : ''} ${state.settingsClosing ? 'closing' : ''}" role="dialog" aria-modal="true" aria-label="Settings" data-stop-close>
@@ -5354,6 +5936,12 @@
             <h2>Settings</h2>
             <button class="icon-btn" data-action="close-settings" aria-label="Close settings">${icon('x')}</button>
           </header>
+          <nav class="settings-menu-grid" aria-label="Settings sections">
+            <button data-action="open-settings-section" data-section="account">${icon('profile')}<span><strong>Account</strong><small>Email, phone, and password</small></span>${icon('chevron')}</button>
+            <button data-action="open-settings-section" data-section="blocked">${icon('block')}<span><strong>Blocked</strong><small>Review blocked accounts</small></span>${icon('chevron')}</button>
+            <button data-action="open-settings-section" data-section="comments">${icon('comment')}<span><strong>Comments</strong><small>Your comment activity</small></span>${icon('chevron')}</button>
+            <button data-action="open-settings-section" data-section="reposts">${icon('repost')}<span><strong>Reposts</strong><small>Sharing controls and activity</small></span>${icon('chevron')}</button>
+          </nav>
           <section class="settings-block">
             <h3>${icon('lock')} Account privacy</h3>
             <label class="switch-row">
@@ -5512,6 +6100,301 @@
         </div>
       </section>
     `;
+  }
+
+  async function loadFeed(mode = state.feedMode, options = {}) {
+    state.feedMode = ['for_you', 'following', 'favorites'].includes(mode) ? mode : 'for_you';
+    localStorage.setItem('feedMode', state.feedMode);
+    state.feedLoading = true;
+    if (options.render !== false && state.tab === 'home') updateSidebar();
+    try {
+      const data = await api(`/api/feed?mode=${encodeURIComponent(state.feedMode)}`);
+      state.homeFeed = data.posts || [];
+    } finally {
+      state.feedLoading = false;
+      if (options.render !== false && state.tab === 'home') updateSidebar();
+    }
+  }
+
+  async function loadExplore(options = {}) {
+    state.exploreLoading = true;
+    try {
+      const data = await api('/api/explore');
+      state.explorePosts = data.posts || [];
+    } finally {
+      state.exploreLoading = false;
+      if (options.render && state.tab === 'search') updateSidebar();
+    }
+  }
+
+  async function loadNotes(options = {}) {
+    const data = await api('/api/notes');
+    state.notes = data.notes || [];
+    if (options.render && ['chats', 'profile'].includes(state.tab)) updateSidebar();
+  }
+
+  async function loadProfilePosts(user, tab = 'posts', options = {}) {
+    if (!user?.username) return [];
+    if (tab === 'saved' && user.id !== state.me?.id) {
+      state.profilePosts.set(profilePostKey(user, tab), []);
+      return [];
+    }
+    const data = await api(`/api/users/${encodeURIComponent(user.username)}/posts?tab=${encodeURIComponent(tab)}`);
+    const posts = data.posts || [];
+    state.profilePosts.set(profilePostKey(user, tab), posts);
+    if (options.render !== false) updateSidebar();
+    return posts;
+  }
+
+  async function loadSocialSurfaces(options = {}) {
+    await Promise.all([
+      loadFeed(state.feedMode, { render: false }).catch(() => { state.homeFeed = []; state.feedLoading = false; }),
+      loadExplore().catch(() => { state.explorePosts = []; state.exploreLoading = false; }),
+      loadNotes().catch(() => { state.notes = []; }),
+      loadProfilePosts(state.me, state.profileMediaTab, { render: false }).catch(() => [])
+    ]);
+    if (options.render) updateSidebar();
+  }
+
+  function allKnownPosts() {
+    return [
+      ...state.homeFeed,
+      ...state.explorePosts,
+      ...Array.from(state.profilePosts.values()).flat(),
+      ...state.accountActivity.reposts.map((item) => item.post || item)
+    ].filter(Boolean);
+  }
+
+  function postById(postId) {
+    return allKnownPosts().find((post) => post.id === postId) || null;
+  }
+
+  function replacePost(updatedPost) {
+    if (!updatedPost?.id) return;
+    const replace = (posts) => (posts || []).map((post) => post.id === updatedPost.id ? { ...post, ...updatedPost } : post);
+    state.homeFeed = replace(state.homeFeed);
+    state.explorePosts = replace(state.explorePosts);
+    for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, replace(posts));
+  }
+
+  async function beginPostComposer(file = null) {
+    if (!file) {
+      document.getElementById('post-input')?.click();
+      return;
+    }
+    if (!String(file.type || '').startsWith('image/') && !String(file.type || '').startsWith('video/')) {
+      throw new Error('Choose a photo or video.');
+    }
+    const dataUrl = await fileToDataUrl(file);
+    state.postComposer = {
+      stage: 1,
+      name: file.name || (file.type?.startsWith('video/') ? 'post.mp4' : 'post.jpg'),
+      type: file.type || mimeFromDataUrl(dataUrl),
+      lastModified: file.lastModified || null,
+      dataUrl,
+      isVideo: String(file.type || '').startsWith('video/'),
+      crop: { aspect: 'portrait', zoom: 1, x: 0, y: 0, rotation: 0 },
+      filter: 'normal',
+      activeAdjustment: 'saturation',
+      adjustments: { brightness: 100, contrast: 100, saturation: 100, warmth: 0 },
+      title: '',
+      description: '',
+      hashtags: '',
+      allowReposts: state.me?.allowReposts !== false,
+      personTags: [],
+      pendingTagPoint: null
+    };
+    updatePostComposerSlot();
+  }
+
+  function closePostComposer() {
+    state.postComposer = null;
+    state.postPublishing = false;
+    updatePostComposerSlot();
+  }
+
+  async function publishPost() {
+    const composer = state.postComposer;
+    if (!composer || state.postPublishing) return;
+    composer.title = document.getElementById('post-title')?.value.slice(0, 100) || composer.title;
+    composer.description = document.getElementById('post-description')?.value.slice(0, 2200) || composer.description;
+    composer.hashtags = document.getElementById('post-hashtags')?.value.slice(0, 300) || composer.hashtags;
+    composer.allowReposts = document.getElementById('post-allow-reposts')?.checked !== false;
+    state.postPublishing = true;
+    updatePostComposerSlot();
+    try {
+      const data = await api('/api/posts', {
+        method: 'POST',
+        body: {
+          file: {
+            name: composer.name,
+            type: composer.type,
+            dataUrl: composer.dataUrl,
+            lastModified: composer.lastModified ? new Date(composer.lastModified).toISOString() : null
+          },
+          title: composer.title,
+          description: composer.description,
+          hashtags: composer.hashtags,
+          personTags: composer.personTags.map(({ userId, x, y }) => ({ userId, x, y })),
+          allowReposts: composer.allowReposts,
+          crop: composer.crop,
+          filter: composer.filter,
+          adjustments: composer.adjustments,
+          edits: { crop: composer.crop, filter: composer.filter, adjustments: composer.adjustments }
+        }
+      });
+      if (data.user) state.me = data.user;
+      state.postComposer = null;
+      state.postPublishing = false;
+      updatePostComposerSlot();
+      await Promise.all([loadFeed(state.feedMode, { render: false }), loadExplore(), loadProfilePosts(state.me, 'posts', { render: false })]);
+      state.profileMediaTab = 'posts';
+      state.tab = 'home';
+      updateSidebar();
+      pushToast({ key: `post-${data.post?.id || Date.now()}`, kind: 'social', title: 'Post shared', body: 'Your photo or video is now live.' });
+    } catch (error) {
+      state.postPublishing = false;
+      updatePostComposerSlot();
+      throw error;
+    }
+  }
+
+  async function togglePostAction(postId, action) {
+    const data = await api(`/api/posts/${encodeURIComponent(postId)}/${action}`, { method: 'POST' });
+    replacePost(data.post);
+    if (action === 'save') await loadProfilePosts(state.me, 'saved', { render: false }).catch(() => []);
+    if (action === 'repost') await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
+    updateSidebar();
+  }
+
+  async function commentOnPost(postId, text) {
+    const clean = String(text || '').trim();
+    if (!clean) return;
+    const data = await api(`/api/posts/${encodeURIComponent(postId)}/comments`, { method: 'POST', body: { text: clean } });
+    replacePost(data.post);
+    state.openPostComments.add(postId);
+    updateSidebar();
+  }
+
+  async function deletePost(postId) {
+    await api(`/api/posts/${encodeURIComponent(postId)}`, { method: 'DELETE' });
+    state.actionSheet = null;
+    state.homeFeed = state.homeFeed.filter((post) => post.id !== postId);
+    state.explorePosts = state.explorePosts.filter((post) => post.id !== postId);
+    for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, posts.filter((post) => post.id !== postId));
+    await loadContactsAndChats();
+    updateActionSheetSlot();
+    updateSidebar();
+  }
+
+  async function toggleFavoriteUser(userId) {
+    const user = userById(userId);
+    if (!user) return;
+    const data = await api(`/api/favorites/${encodeURIComponent(userId)}`, { method: user.isFavorite ? 'DELETE' : 'POST' });
+    const updated = data.user || { ...user, isFavorite: !user.isFavorite };
+    Object.assign(user, updated);
+    if (state.publicProfile?.id === userId) state.publicProfile = { ...state.publicProfile, ...updated };
+    state.actionSheet = null;
+    updateActionSheetSlot();
+    if (state.feedMode === 'favorites') await loadFeed('favorites', { render: false });
+    updateSidebar();
+  }
+
+  function openNoteComposer() {
+    const current = state.notes.find((note) => (note.owner || note.user)?.id === state.me?.id);
+    state.noteComposer = {
+      text: current?.text || '',
+      audio: null,
+      audioTitle: current?.audioTitle || '',
+      audioArtist: current?.audioArtist || '',
+      hasExisting: Boolean(current)
+    };
+    updateNoteComposerSlot();
+  }
+
+  function audioLength(dataUrl) {
+    return new Promise((resolve) => {
+      const audio = new Audio();
+      audio.preload = 'metadata';
+      audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : 0);
+      audio.onerror = () => resolve(0);
+      audio.src = dataUrl;
+    });
+  }
+
+  async function chooseNoteAudio(file) {
+    if (!file || !state.noteComposer) return;
+    if (!String(file.type || '').startsWith('audio/')) throw new Error('Choose an audio file.');
+    const dataUrl = await fileToDataUrl(file);
+    const duration = await audioLength(dataUrl);
+    if (duration > 30.15) throw new Error('Audio notes must be 30 seconds or shorter.');
+    state.noteComposer.audio = {
+      name: file.name || 'note-audio.webm',
+      type: file.type || mimeFromDataUrl(dataUrl),
+      dataUrl,
+      lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null,
+      duration
+    };
+    updateNoteComposerSlot();
+  }
+
+  async function startNoteRecording() {
+    if (!state.noteComposer || state.noteRecording) return;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('Audio recording is not supported in this browser.');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    const recording = { recorder, stream, chunks: [], startedAt: Date.now(), timer: null };
+    recorder.ondataavailable = (event) => { if (event.data?.size) recording.chunks.push(event.data); };
+    recorder.onstop = async () => {
+      clearTimeout(recording.timer);
+      recording.stream.getTracks().forEach((track) => track.stop());
+      const blob = new Blob(recording.chunks, { type: recorder.mimeType || 'audio/webm' });
+      const dataUrl = await blobToDataUrl(blob);
+      if (state.noteComposer) {
+        state.noteComposer.audio = { name: 'recorded-note.webm', type: blob.type || 'audio/webm', dataUrl, duration: Math.min(30, (Date.now() - recording.startedAt) / 1000) };
+      }
+      if (state.noteRecording === recording) state.noteRecording = null;
+      updateNoteComposerSlot();
+    };
+    recorder.start();
+    recording.timer = setTimeout(() => stopNoteRecording(), 30000);
+    state.noteRecording = recording;
+    updateNoteComposerSlot();
+  }
+
+  function stopNoteRecording() {
+    const recording = state.noteRecording;
+    if (!recording) return;
+    if (recording.recorder.state !== 'inactive') recording.recorder.stop();
+  }
+
+  async function shareNote() {
+    if (!state.noteComposer) return;
+    const text = (document.getElementById('note-text')?.value || state.noteComposer.text || '').trim().slice(0, 60);
+    const audioTitle = (document.getElementById('note-audio-title')?.value || state.noteComposer.audioTitle || '').trim().slice(0, 80);
+    const audioArtist = (document.getElementById('note-audio-artist')?.value || state.noteComposer.audioArtist || '').trim().slice(0, 80);
+    if (!text && !state.noteComposer.audio) throw new Error('Write a note or add audio first.');
+    await api('/api/me/note', { method: 'POST', body: { text, audio: state.noteComposer.audio, audioTitle, audioArtist } });
+    state.noteComposer = null;
+    updateNoteComposerSlot();
+    await loadNotes({ render: true });
+  }
+
+  async function deleteNote() {
+    await api('/api/me/note', { method: 'DELETE' });
+    state.noteComposer = null;
+    updateNoteComposerSlot();
+    await loadNotes({ render: true });
+  }
+
+  function playNote(noteId) {
+    const selected = document.getElementById(`note-audio-${noteId}`);
+    document.querySelectorAll('.note-rail audio').forEach((audio) => {
+      if (audio !== selected) audio.pause();
+    });
+    if (!selected) return;
+    if (selected.paused) selected.play().catch(() => {});
+    else selected.pause();
   }
 
   async function loadContactsAndChats() {
@@ -5758,6 +6641,8 @@
       state.recentProfiles,
       state.requests.flatMap((request) => [request.from, request.to]),
       state.notifications.map((note) => note.actor),
+      state.notes.map((note) => note.owner || note.user),
+      allKnownPosts().map((post) => postAuthor(post)),
       state.publicProfile ? [state.publicProfile] : []
     ];
     return pools.flat().find((user) => user?.id === userId) || null;
@@ -5823,12 +6708,14 @@
     if (state.publicProfile?.id === data.user.id) state.publicProfile = data.user;
     if (state.activePeer?.id === data.user.id) state.activePeer = data.user;
     await loadContactsAndChats();
+    await loadSocialSurfaces();
     renderApp();
   }
 
   async function acceptRequest(requestId) {
     await api(`/api/requests/${encodeURIComponent(requestId)}/accept`, { method: 'POST' });
     await loadContactsAndChats();
+    await loadSocialSurfaces();
     renderApp();
   }
 
@@ -5872,6 +6759,7 @@
     mergeKnownUser(data.user);
     if (data.me) state.me = data.me;
     await loadContactsAndChats();
+    await loadSocialSurfaces();
     state.actionSheet = null;
     renderApp();
   }
@@ -5902,6 +6790,7 @@
   async function blockUser(userId) {
     await api(`/api/blocks/${encodeURIComponent(userId)}`, { method: 'POST' });
     await loadContactsAndChats();
+    await loadSocialSurfaces();
     if (state.activePeer?.id === userId) state.activePeer = userById(userId) || state.activePeer;
     state.actionSheet = null;
     renderApp();
@@ -5910,6 +6799,7 @@
   async function unblockUser(userId) {
     await api(`/api/blocks/${encodeURIComponent(userId)}`, { method: 'DELETE' });
     await loadContactsAndChats();
+    await loadSocialSurfaces();
     if (state.activePeer?.id === userId) state.activePeer = userById(userId) || state.activePeer;
     state.actionSheet = null;
     renderApp();
@@ -5928,9 +6818,11 @@
 
   async function updateProfilePatch(patch) {
     const body = {
-      username: state.me.username,
       displayName: state.me.displayName,
       bio: state.me.bio || '',
+      website: state.me.website || '',
+      age: state.me.age ?? null,
+      gender: state.me.gender || '',
       socialPublic: state.me.socialPublic,
       searchable: state.me.searchable !== false,
       recommendable: state.me.recommendable !== false,
@@ -5939,6 +6831,11 @@
       mentionPermission: state.me.mentionPermission || 'everyone',
       storyReplies: state.me.storyReplies || 'everyone',
       friendRequests: state.me.friendRequests || 'everyone',
+      allowReposts: state.me.allowReposts !== false,
+      bioVisible: state.me.bioVisible !== false,
+      websiteVisible: state.me.websiteVisible !== false,
+      ageVisible: state.me.ageVisible === true,
+      genderVisible: state.me.genderVisible === true,
       ...patch
     };
     const data = await api('/api/me/profile', { method: 'PATCH', body });
@@ -5955,7 +6852,9 @@
     const body = {
       displayName: state.me.displayName,
       bio: state.me.bio || '',
-      username: state.me.username,
+      website: state.me.website || '',
+      age: state.me.age ?? null,
+      gender: state.me.gender || '',
       socialPublic: state.me.socialPublic,
       searchable: state.me.searchable !== false,
       recommendable: state.me.recommendable !== false,
@@ -7558,8 +8457,8 @@
     const cachedConversation = conversationType && conversationId
       ? state.conversationCache.get(conversationCacheKey(conversationType, conversationId))
       : null;
-    state.tab = ['chats', 'search', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'search';
-    state.lastTab = ['chats', 'search', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
+    state.tab = ['home', 'chats', 'search', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'home';
+    state.lastTab = ['home', 'chats', 'search', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
     state.profileSocialView = view?.profileSocialView || null;
     state.activePeer = peer;
     state.activeGroup = group;
@@ -7655,10 +8554,12 @@
     state.publicProfile = user;
     state.searchProfileOpen = true;
     state.searchProfileSocialView = null;
+    state.searchProfileMediaTab = 'posts';
     state.profileSocialView = null;
     state.chatProfileOpen = false;
     state.chatProfileSocialView = null;
     state.tabTransition = false;
+    await loadProfilePosts(user, state.searchProfileMediaTab, { render: false }).catch(() => []);
     renderApp();
   }
 
@@ -8488,6 +9389,7 @@
 
   function openSettingsDrawer() {
     clearTimeout(settingsCloseTimer);
+    state.settingsSection = 'main';
     state.settingsOpen = true;
     state.settingsOpening = true;
     state.settingsClosing = false;
@@ -8508,6 +9410,7 @@
     settingsCloseTimer = setTimeout(() => {
       state.settingsOpen = false;
       state.settingsClosing = false;
+      state.settingsSection = 'main';
       updateProfileModalSlots();
     }, 240);
   }
@@ -8518,6 +9421,25 @@
       messages.scrollLeft = 0;
       messages.scrollTop = messages.scrollHeight;
     }
+  }
+
+  async function openSettingsSection(section) {
+    const allowed = ['account', 'blocked', 'comments', 'reposts'];
+    if (!allowed.includes(section)) return;
+    if (section === 'account') {
+      const data = await api('/api/account');
+      Object.assign(state.me, data.account || {});
+    }
+    if (section === 'blocked') {
+      const data = await api('/api/account/blocked');
+      state.blockedUsers = data.users || [];
+    }
+    if (section === 'comments' || section === 'reposts') {
+      const data = await api(`/api/me/activity?type=${section}`);
+      state.accountActivity[section] = data.items || [];
+    }
+    state.settingsSection = section;
+    updateProfileModalSlots();
   }
 
   async function toggleStoryCommentGifPicker() {
@@ -8666,13 +9588,15 @@
             }
           : {
               username: formValue(form, 'username'),
+              email: formValue(form, 'email'),
+              phone: formValue(form, 'phone'),
               password: formValue(form, 'password')
             };
         const data = await api(`/api/auth/${state.authMode}`, { method: 'POST', body });
         state.me = data.user;
         state.needsTwoFactor = false;
-        state.tab = 'chats';
-        state.lastTab = 'chats';
+        state.tab = 'home';
+        state.lastTab = 'home';
         state.activePeer = null;
         state.activeGroup = null;
         state.chatLoading = false;
@@ -8685,6 +9609,7 @@
         state.profileSocialView = null;
         state.chatProfileSocialView = null;
         await loadContactsAndChats();
+        await loadSocialSurfaces();
         await loadGifPool();
         renderApp();
         connectWs();
@@ -8699,11 +9624,40 @@
         state.me = data.user;
         updateSidebar();
       }
+      if (form.dataset.form === 'post-comment') {
+        const input = form.elements.comment;
+        await commentOnPost(form.dataset.postId, input?.value || '');
+        if (input) input.value = '';
+      }
+      if (form.dataset.form === 'account-contact') {
+        const data = await api('/api/account', {
+          method: 'PATCH',
+          body: { email: formValue(form, 'email'), phone: formValue(form, 'phone') }
+        });
+        if (data.user) state.me = data.user;
+        else Object.assign(state.me, data.account || {});
+        updateProfileModalSlots();
+        pushToast({ key: `account-contact-${Date.now()}`, kind: 'social', title: 'Contact details saved', body: data.verificationEmailSent ? 'We sent a verification email.' : 'Your account details are up to date.' });
+      }
+      if (form.dataset.form === 'change-password') {
+        const currentPassword = formValue(form, 'currentPassword');
+        const newPassword = formValue(form, 'newPassword');
+        if (newPassword !== formValue(form, 'confirmPassword')) throw new Error('The new passwords do not match.');
+        await api('/api/account/password', { method: 'PATCH', body: { currentPassword, newPassword } });
+        form.reset();
+        pushToast({ key: `password-${Date.now()}`, kind: 'social', title: 'Password changed', body: 'Other signed-in devices have been logged out.' });
+      }
       if (form.dataset.form === 'profile-edit') {
         await updateProfilePatch({
-          username: formValue(form, 'username'),
-          displayName: state.me.displayName,
-          bio: formValue(form, 'bio')
+          displayName: form.elements.displayName?.disabled ? state.me.displayName : formValue(form, 'displayName'),
+          bio: formValue(form, 'bio'),
+          website: formValue(form, 'website'),
+          age: formValue(form, 'age') || null,
+          gender: formValue(form, 'gender'),
+          bioVisible: Boolean(form.elements.bioVisible?.checked),
+          websiteVisible: Boolean(form.elements.websiteVisible?.checked),
+          ageVisible: Boolean(form.elements.ageVisible?.checked),
+          genderVisible: Boolean(form.elements.genderVisible?.checked)
         });
         state.profileEditOpen = false;
         updateProfileModalSlots();
@@ -8734,6 +9688,7 @@
     const action = target.dataset.action;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-note-composer' && target.classList.contains('note-composer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-highlight-composer' && target.classList.contains('highlight-composer-overlay') && event.target.closest('[data-stop-close]')) return;
@@ -8773,8 +9728,8 @@
         state.forwardNavigationEntries.clear();
         state.routeForward = null;
         state.navigationBusy = false;
-        state.tab = 'chats';
-        state.lastTab = 'chats';
+        state.tab = 'home';
+        state.lastTab = 'home';
         state.profileSocialView = null;
         state.chatProfileSocialView = null;
         state.settingsOpen = false;
@@ -8785,6 +9740,129 @@
       if (action === 'tab') {
         switchMainTab(target.dataset.tab);
       }
+      if (action === 'toggle-feed-menu') {
+        state.feedMenuOpen = !state.feedMenuOpen;
+        updateSidebar();
+      }
+      if (action === 'set-feed-mode') {
+        state.feedMenuOpen = false;
+        await loadFeed(target.dataset.mode, { render: true });
+      }
+      if (action === 'open-post-create') {
+        state.feedMenuOpen = false;
+        document.getElementById('post-input')?.click();
+      }
+      if (action === 'close-post-composer') closePostComposer();
+      if (action === 'post-composer-back' && state.postComposer) {
+        state.postComposer.stage = Math.max(1, state.postComposer.stage - 1);
+        updatePostComposerSlot();
+      }
+      if (action === 'post-composer-next' && state.postComposer) {
+        state.postComposer.stage = Math.min(3, state.postComposer.stage + 1);
+        updatePostComposerSlot();
+      }
+      if (action === 'set-post-aspect' && state.postComposer) {
+        state.postComposer.crop.aspect = target.dataset.aspect || 'portrait';
+        updatePostComposerSlot();
+      }
+      if (action === 'rotate-post-media' && state.postComposer) {
+        state.postComposer.crop.rotation = (Number(state.postComposer.crop.rotation || 0) + 90) % 360;
+        updatePostComposerSlot();
+      }
+      if (action === 'set-post-filter' && state.postComposer) {
+        state.postComposer.filter = target.dataset.filter || 'normal';
+        updatePostComposerSlot();
+      }
+      if (action === 'select-post-adjustment' && state.postComposer) {
+        state.postComposer.activeAdjustment = target.dataset.adjustment || 'saturation';
+        updatePostComposerSlot();
+      }
+      if (action === 'pick-post-tag-position' && state.postComposer?.stage === 3) {
+        if (event.target.closest('.post-tag-draft')) return;
+        const rect = target.getBoundingClientRect();
+        state.postComposer.pendingTagPoint = {
+          x: Math.round(clamp(((event.clientX - rect.left) / rect.width) * 100, 2, 98) * 10) / 10,
+          y: Math.round(clamp(((event.clientY - rect.top) / rect.height) * 100, 2, 98) * 10) / 10
+        };
+        updatePostComposerSlot();
+        setTimeout(() => document.getElementById('post-tag-username')?.focus(), 0);
+      }
+      if (action === 'remove-post-tag' && state.postComposer) {
+        state.postComposer.personTags.splice(Number(target.dataset.tagIndex), 1);
+        updatePostComposerSlot();
+      }
+      if (action === 'add-post-person-tag' && state.postComposer?.pendingTagPoint) {
+        const username = String(document.getElementById('post-tag-username')?.value || '').replace(/^@/, '').trim();
+        if (!username) throw new Error('Choose a username to tag.');
+        let tagged = postComposerCandidates().find((user) => user.username.toLowerCase() === username.toLowerCase());
+        if (!tagged) {
+          const data = await api(`/api/users/search?q=${encodeURIComponent(username)}`);
+          tagged = (data.users || []).find((user) => user.username.toLowerCase() === username.toLowerCase());
+        }
+        if (!tagged) throw new Error('That username was not found.');
+        state.postComposer.personTags = [
+          ...state.postComposer.personTags.filter((tag) => tag.userId !== tagged.id),
+          { userId: tagged.id, username: tagged.username, ...state.postComposer.pendingTagPoint }
+        ];
+        state.postComposer.pendingTagPoint = null;
+        updatePostComposerSlot();
+      }
+      if (action === 'publish-post') await publishPost();
+      if (action === 'toggle-post-like') await togglePostAction(target.dataset.postId, 'like');
+      if (action === 'toggle-post-save') await togglePostAction(target.dataset.postId, 'save');
+      if (action === 'toggle-post-repost') await togglePostAction(target.dataset.postId, 'repost');
+      if (action === 'expand-post') {
+        state.expandedPosts.add(target.dataset.postId);
+        updateSidebar();
+      }
+      if (action === 'toggle-post-comments') {
+        const postId = target.dataset.postId;
+        if (state.openPostComments.has(postId)) state.openPostComments.delete(postId);
+        else state.openPostComments.add(postId);
+        updateSidebar();
+      }
+      if (action === 'focus-post-comment') {
+        state.openPostComments.add(target.dataset.postId);
+        updateSidebar();
+        setTimeout(() => document.querySelector(`[data-post-id="${window.CSS?.escape ? CSS.escape(target.dataset.postId) : target.dataset.postId}"] .post-comment-form input`)?.focus(), 0);
+      }
+      if (action === 'open-explore-post' || action === 'open-profile-post') {
+        const post = postById(target.dataset.postId);
+        if (post) {
+          state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
+          switchMainTab('home');
+          setTimeout(() => document.querySelector(`.feed-post[data-post-id="${window.CSS?.escape ? CSS.escape(post.id) : post.id}"]`)?.scrollIntoView({ block: 'start' }), 0);
+        }
+      }
+      if (action === 'post-owner-menu') openActionSheet({ type: 'post-owner', postId: target.dataset.postId });
+      if (action === 'delete-post') {
+        if (confirm('Delete this post forever?')) await deletePost(target.dataset.postId);
+      }
+      if (action === 'set-profile-media-tab') {
+        const own = target.dataset.own === 'true';
+        const tab = ['posts', 'saved', 'reposts', 'tagged'].includes(target.dataset.tab) ? target.dataset.tab : 'posts';
+        if (own) state.profileMediaTab = tab;
+        else state.searchProfileMediaTab = tab;
+        const user = own ? state.me : state.publicProfile;
+        await loadProfilePosts(user, tab, { render: true }).catch((error) => {
+          updateSidebar();
+          if (tab !== 'saved') throw error;
+        });
+      }
+      if (action === 'open-profile-menu') openActionSheet({ type: 'profile-user', userId: target.dataset.userId });
+      if (action === 'toggle-favorite-user') await toggleFavoriteUser(target.dataset.userId);
+      if (action === 'open-note-composer') openNoteComposer();
+      if (action === 'close-note-composer') {
+        if (state.noteRecording) stopNoteRecording();
+        state.noteComposer = null;
+        updateNoteComposerSlot();
+      }
+      if (action === 'choose-note-audio') document.getElementById('note-audio-input')?.click();
+      if (action === 'start-note-recording') await startNoteRecording();
+      if (action === 'stop-note-recording') stopNoteRecording();
+      if (action === 'share-note') await shareNote();
+      if (action === 'delete-note') await deleteNote();
+      if (action === 'play-note') playNote(target.dataset.noteId);
       if (action === 'open-chat') {
         if (state.longPressTriggered) {
           state.longPressTriggered = false;
@@ -9612,7 +10690,7 @@
         navigationBackOr(() => {
           state.tabTransition = true;
           state.tabDirection = 'left';
-          state.tab = state.lastTab === 'notifications' ? 'chats' : (state.lastTab || 'chats');
+          state.tab = state.lastTab === 'notifications' ? 'home' : (state.lastTab || 'home');
           renderApp();
         });
       }
@@ -9632,6 +10710,37 @@
       }
       if (action === 'open-settings') {
         openSettingsDrawer();
+      }
+      if (action === 'open-settings-section') await openSettingsSection(target.dataset.section);
+      if (action === 'settings-back') {
+        state.settingsSection = 'main';
+        updateProfileModalSlots();
+      }
+      if (action === 'resend-email-verification') {
+        const data = await api('/api/account/email/verification', { method: 'POST' });
+        Object.assign(state.me, data.account || {});
+        updateProfileModalSlots();
+        pushToast({ key: `verify-email-${Date.now()}`, kind: 'social', title: data.sent ? 'Verification sent' : 'Verification queued', body: data.sent ? 'Check your inbox for the confirmation link.' : 'Email delivery needs server mail configuration.' });
+      }
+      if (action === 'settings-unblock-user') {
+        await unblockUser(target.dataset.userId);
+        const data = await api('/api/account/blocked');
+        state.blockedUsers = data.users || [];
+        state.settingsOpen = true;
+        state.settingsSection = 'blocked';
+        updateProfileModalSlots();
+      }
+      if (action === 'toggle-global-reposts') {
+        await updateProfilePatch({ allowReposts: target.checked });
+        updateProfileModalSlots();
+      }
+      if (action === 'open-activity-post') {
+        const post = postById(target.dataset.postId) || [...state.accountActivity.comments, ...state.accountActivity.reposts].find((item) => item.post?.id === target.dataset.postId)?.post;
+        if (post) {
+          closeSettingsDrawer();
+          state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
+          switchMainTab('home');
+        }
       }
       if (action === 'close-modal') {
         state.profileEditOpen = false;
@@ -9735,6 +10844,10 @@
       if (action === 'open-highlight-composer') {
         openHighlightComposer();
       }
+      if (action === 'open-highlight-archive') {
+        state.highlightComposer = { mode: 'archive' };
+        updateHighlightComposerSlot();
+      }
       if (action === 'close-highlight-composer') {
         state.highlightComposer = null;
         updateHighlightComposerSlot();
@@ -9770,6 +10883,15 @@
       }
       if (action === 'save-highlight-name') {
         await renameHighlight(target.dataset.highlightId, document.getElementById('highlight-rename-input')?.value);
+      }
+      if (action === 'delete-highlight') {
+        if (confirm('Delete this highlight? Stories that are not saved elsewhere will leave your archive.')) {
+          const data = await api(`/api/highlights/${encodeURIComponent(target.dataset.highlightId)}`, { method: 'DELETE' });
+          state.me = data.user;
+          state.highlightComposer = { mode: 'archive' };
+          updateHighlightComposerSlot();
+          updateSidebar();
+        }
       }
       if (action === 'change-profile-picture') {
         document.getElementById('avatar-input')?.click();
@@ -9887,6 +11009,16 @@
         event.target.value = '';
         if (file) await beginAvatarCrop(file);
       }
+      if (event.target.id === 'post-input') {
+        const file = event.target.files[0];
+        event.target.value = '';
+        if (file) await beginPostComposer(file);
+      }
+      if (event.target.id === 'note-audio-input') {
+        const file = event.target.files[0];
+        event.target.value = '';
+        if (file) await chooseNoteAudio(file);
+      }
       if (event.target.id === 'story-input') {
         const file = event.target.files[0];
         event.target.value = '';
@@ -9922,6 +11054,56 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.matches('[data-post-crop]') && state.postComposer) {
+      const key = event.target.dataset.postCrop;
+      state.postComposer.crop[key] = Number(event.target.value);
+      const media = document.querySelector('.post-composer-media > img, .post-composer-media > video');
+      if (media) media.style.cssText = `transform:translate3d(${state.postComposer.crop.x}%,${state.postComposer.crop.y}%,0) scale(${state.postComposer.crop.zoom}) rotate(${state.postComposer.crop.rotation}deg);filter:${composerFilterStyle(state.postComposer)}`;
+      return;
+    }
+    if (event.target.matches('[data-post-adjust]') && state.postComposer) {
+      const key = event.target.dataset.postAdjust;
+      state.postComposer.adjustments[key] = Number(event.target.value);
+      const output = event.target.closest('label')?.querySelector('output');
+      if (output) output.textContent = event.target.value;
+      const media = document.querySelector('.post-composer-media > img, .post-composer-media > video');
+      if (media) media.style.filter = composerFilterStyle(state.postComposer);
+      return;
+    }
+    if (event.target.id === 'post-title' && state.postComposer) {
+      state.postComposer.title = event.target.value.slice(0, 100);
+      return;
+    }
+    if (event.target.id === 'post-description' && state.postComposer) {
+      state.postComposer.description = event.target.value.slice(0, 2200);
+      return;
+    }
+    if (event.target.id === 'post-hashtags' && state.postComposer) {
+      state.postComposer.hashtags = event.target.value.slice(0, 300);
+      return;
+    }
+    if (event.target.id === 'post-allow-reposts' && state.postComposer) {
+      state.postComposer.allowReposts = event.target.checked;
+      return;
+    }
+    if (event.target.id === 'note-text' && state.noteComposer) {
+      state.noteComposer.text = event.target.value.slice(0, 60);
+      const output = event.target.closest('label')?.querySelector('output');
+      if (output) output.textContent = `${state.noteComposer.text.length}/60`;
+      const preview = document.querySelector('.note-composer-preview > span');
+      if (preview) preview.textContent = state.noteComposer.text || 'Share a thought…';
+      const share = document.querySelector('.note-share');
+      if (share) share.disabled = !state.noteComposer.text.trim() && !state.noteComposer.audio;
+      return;
+    }
+    if (event.target.id === 'note-audio-title' && state.noteComposer) {
+      state.noteComposer.audioTitle = event.target.value.slice(0, 80);
+      return;
+    }
+    if (event.target.id === 'note-audio-artist' && state.noteComposer) {
+      state.noteComposer.audioArtist = event.target.value.slice(0, 80);
+      return;
+    }
     if (event.target.id === 'group-name-input' && state.groupComposer) {
       state.groupComposer.name = event.target.value.slice(0, 60);
       return;
@@ -10228,6 +11410,18 @@
   }, true);
 
   document.addEventListener('keydown', async (event) => {
+    if (event.key === 'Escape' && state.postComposer) {
+      event.preventDefault();
+      closePostComposer();
+      return;
+    }
+    if (event.key === 'Escape' && state.noteComposer) {
+      event.preventDefault();
+      if (state.noteRecording) stopNoteRecording();
+      state.noteComposer = null;
+      updateNoteComposerSlot();
+      return;
+    }
     if (event.key === 'Escape' && state.cameraCapture) {
       event.preventDefault();
       closeCameraCapture();
@@ -10333,7 +11527,8 @@
       return;
     }
     const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture ||
-      state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer;
+      state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer ||
+      state.postComposer || state.noteComposer || state.noteRecording;
     const backEntry = state.navigationStack[state.navigationStack.length - 1];
     const gestureControl = event.target.closest('button, a, input, textarea, select, [contenteditable="true"], [data-action], [role="button"]');
     // The physical edge belongs to iOS/Safari. Starting the app gesture just
