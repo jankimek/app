@@ -143,6 +143,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /conversationScroll: new Map\(\)/);
   assert.match(clientSource, /function updateChatPane/);
   assert.match(clientSource, /function promoteNavigationPreview/);
+  assert.match(clientSource, /const liveScroll = captureLiveScroll\(target\)/);
+  assert.match(clientSource, /function restoreLiveScrollAfterMove/);
+  assert.match(clientSource, /restoreLiveScrollAfterMove\(liveScroll\)/);
+  assert.match(clientSource, /preview\.usesLiveShell = Boolean\(liveShell\)/);
+  assert.match(clientSource, /if \(state\.navigationBusy\) return;/);
   assert.match(clientSource, /function renderCameraCapture/);
   assert.match(clientSource, /navigator\.mediaDevices\?\.getUserMedia/);
   assert.match(clientSource, /openCameraCapture\('story'/);

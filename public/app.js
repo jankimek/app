@@ -288,6 +288,7 @@
       messageScroll: captureMessagesScroll(),
       scrollMemory: { ...state.scrollMemory },
       liveShell,
+      liveScroll: captureLiveScroll(liveShell),
       previewHtml: currentAppShell()?.outerHTML || ''
     };
   }
@@ -349,11 +350,17 @@
     }
   }
 
+  function restoreLiveScrollAfterMove(positions) {
+    restoreLiveScroll(positions);
+    requestAnimationFrame(() => restoreLiveScroll(positions));
+  }
+
   function stashNavigationPreview(preview) {
     if (!preview) return;
     const entry = preview.navigationEntry;
     const shell = preview.querySelector(':scope > .app-shell');
     if (entry && shell) {
+      entry.liveScroll = captureLiveScroll(shell);
       shell.remove();
       entry.liveShell = shell;
     }
@@ -372,7 +379,12 @@
     preview.setAttribute('aria-hidden', 'true');
     preview.navigationEntry = entry;
     const liveShell = entry.liveShell;
+    preview.usesLiveShell = Boolean(liveShell);
+    const liveScroll = entry.liveScroll?.length
+      ? entry.liveScroll
+      : (liveShell ? captureLiveScroll(liveShell) : []);
     if (liveShell) {
+      if (!entry.liveScroll?.length) entry.liveScroll = liveScroll;
       liveShell.remove();
       preview.append(liveShell);
     } else {
@@ -380,7 +392,8 @@
     }
     app.insertBefore(preview, currentAppShell());
     sanitizeNavigationPreview(preview);
-    restorePreviewScroll(preview, entry);
+    if (preview.usesLiveShell) restoreLiveScrollAfterMove(liveScroll);
+    else restorePreviewScroll(preview, entry);
     return preview;
   }
 
@@ -401,7 +414,12 @@
     const target = preview?.querySelector(':scope > .app-shell');
     const current = currentAppShell();
     if (!target || !current) return false;
-    restorePreviewScroll(preview, entry);
+    const usesLiveShell = Boolean(preview.usesLiveShell);
+    // Moving a live page out of the fixed preview can reset native scroll
+    // containers even though the DOM nodes themselves are retained. Keep the
+    // live positions and put them back after the page is in its final layout.
+    const liveScroll = captureLiveScroll(target);
+    if (!usesLiveShell) restorePreviewScroll(preview, entry);
     restoreNavigationPreviewIds(preview);
     target.classList.remove('route-page-current', 'route-page-entering', 'route-page-exiting', 'route-swipe-current');
     target.style.transform = '';
@@ -411,14 +429,21 @@
     preview.before(target);
     current.remove();
     preview.remove();
+    if (usesLiveShell) restoreLiveScrollAfterMove(liveScroll);
+    else {
+      restorePreviewScroll(target, entry);
+      requestAnimationFrame(() => restorePreviewScroll(target, entry));
+    }
     entry.liveShell = null;
-    stashNavigationPreviews();
-    refreshNavigationEdgeZone();
-    resizeComposerInput();
-    attachCallStreams();
-    attachCameraStream();
-    attachStoryEditorVideo();
-    attachStoryViewerVideo();
+    requestAnimationFrame(() => {
+      stashNavigationPreviews();
+      refreshNavigationEdgeZone();
+      resizeComposerInput();
+      attachCallStreams();
+      attachCameraStream();
+      attachStoryEditorVideo();
+      attachStoryViewerVideo();
+    });
     return true;
   }
 
@@ -470,13 +495,16 @@
   async function finishNavigationBack(entry, options = {}) {
     if (!entry || state.navigationBusy === 'finishing') return;
     state.navigationBusy = 'finishing';
-    if (state.navigationStack[state.navigationStack.length - 1] === entry) state.navigationStack.pop();
-    await restoreNavigationEntry(entry, { preview: options.preview });
-    if (!options.skipHistory && history.length > 1) {
-      state.suppressNextPopstate = true;
-      history.back();
+    try {
+      if (state.navigationStack[state.navigationStack.length - 1] === entry) state.navigationStack.pop();
+      await restoreNavigationEntry(entry, { preview: options.preview });
+      if (!options.skipHistory && history.length > 1) {
+        state.suppressNextPopstate = true;
+        history.back();
+      }
+    } finally {
+      state.navigationBusy = false;
     }
-    state.navigationBusy = false;
   }
 
   function animateNavigationBack(options = {}) {
@@ -1079,6 +1107,8 @@
     const scrollMode = options.scroll || 'preserve';
     const forwardEntry = state.routeForward;
     const forwardLiveShell = forwardEntry?.liveShell || null;
+    const forwardLiveScroll = forwardLiveShell ? captureLiveScroll(forwardLiveShell) : [];
+    if (forwardEntry && forwardLiveShell) forwardEntry.liveScroll = forwardLiveScroll;
     forwardLiveShell?.remove();
     app.innerHTML = `
       ${forwardEntry?.previewHtml && !forwardLiveShell ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
@@ -1112,17 +1142,20 @@
       preview.className = 'route-page-preview route-preview-forward';
       preview.setAttribute('aria-hidden', 'true');
       preview.navigationEntry = forwardEntry;
+      preview.usesLiveShell = true;
       preview.append(forwardLiveShell);
       app.insertBefore(preview, currentAppShell());
     }
     state.tabTransition = false;
     const forwardPreview = app.querySelector(':scope > .route-preview-forward');
     if (forwardPreview) forwardPreview.navigationEntry = forwardEntry;
+    if (forwardPreview && forwardLiveShell) forwardPreview.usesLiveShell = true;
     sanitizeNavigationPreview(forwardPreview);
     resizeComposerInput();
     applyRenderScroll(scrollMode, scrollSnapshot);
     restorePersistentScroll();
-    if (forwardEntry) restorePreviewScroll(forwardPreview, forwardEntry);
+    if (forwardPreview?.usesLiveShell) restoreLiveScrollAfterMove(forwardLiveScroll);
+    else if (forwardEntry) restorePreviewScroll(forwardPreview, forwardEntry);
     setTimeout(() => {
       resizeComposerInput();
       if (state.storyEditor?.textEditing) {
@@ -6771,6 +6804,7 @@
   }
 
   function navigationBackOr(fallback) {
+    if (state.navigationBusy) return;
     if (!animateNavigationBack()) fallback?.();
   }
 
