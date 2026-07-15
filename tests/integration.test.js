@@ -112,13 +112,22 @@ async function sendMessage(client, peerId, body) {
   });
 }
 
+function sourceSection(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  assert.notEqual(start, -1, `Missing source marker: ${startMarker}`);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(end, -1, `Missing source marker: ${endMarker}`);
+  return source.slice(start, end);
+}
+
 test('mobile viewport and story editing controls stay inside their gesture boundaries', () => {
   const clientSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
   const styleSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   const htmlSource = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   assert.match(htmlSource, /maximum-scale=1, user-scalable=no/);
-  assert.match(htmlSource, /styles\.css\?v=20260715-8/);
-  assert.match(htmlSource, /app\.js\?v=20260715-8/);
+  assert.match(htmlSource, /styles\.css\?v=\d{8}-\d+/);
+  assert.match(htmlSource, /app\.js\?v=\d{8}-\d+/);
   assert.match(styleSource, /html \{[\s\S]*?overscroll-behavior: none;[\s\S]*?touch-action: manipulation;/);
   assert.match(styleSource, /#app \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
   assert.match(styleSource, /\.chat-pane \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
@@ -201,6 +210,21 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /class="message-focus-host"/);
   assert.match(clientSource, /function renderStickerManager/);
   assert.match(clientSource, /data-action="like-story-comment"/);
+  assert.match(clientSource, /function renderHighlightCommentPreview/);
+  assert.match(clientSource, /class="highlight-comment-preview" data-action="open-story-comments"/);
+  assert.match(clientSource, /data-action="send-story-comment-gif"/);
+  assert.match(clientSource, /data-action="toggle-story-comment-gifs"/);
+  assert.match(clientSource, /function searchStoryCommentGifs/);
+  assert.match(clientSource, /data-action="view-own-profile"/);
+  assert.match(clientSource, /function openOwnProfileFromStoryComments/);
+  assert.match(styleSource, /\.story-comments-sheet \.comment-username,[\s\S]*?display: inline;/);
+  assert.match(styleSource, /\.story-comment-gif-grid/);
+  assert.match(styleSource, /@keyframes highlightCommentPreviewIn/);
+  assert.match(styleSource, /\.story-comment-gif-toggle \{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/);
+  assert.match(serverSource, /function publicStoryCommentGif/);
+  assert.match(serverSource, /const jsonSaveStates = new Map\(\)/);
+  assert.match(serverSource, /const kind = body\.kind === 'gif' \? 'gif' : 'text'/);
+  assert.match(serverSource, /gif\.status !== 'approved'/);
   assert.doesNotMatch(clientSource, /profile-network:\$\{esc\(user\?/);
   assert.match(clientSource, /initialTool = null/);
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
@@ -291,6 +315,451 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function syncGroupComposerSelection/);
   assert.match(clientSource, /class="navigation-edge-zone"/);
   assert.match(styleSource, /\.group-composer-create/);
+
+  const sidebarSource = sourceSection(clientSource, 'function renderSidebar()', 'function renderTabContent');
+  for (const [tab, label] of [['home', 'Home'], ['search', 'Search'], ['chats', 'Messages'], ['profile', 'Profile']]) {
+    assert.match(sidebarSource, new RegExp(`navButton\\('${tab}', '${label}'`));
+  }
+  assert.match(sidebarSource, /class="bottom-tab bottom-tab-create"[^>]*data-action="open-post-create"[^>]*aria-label="Create post"/);
+  assert.doesNotMatch(sidebarSource, /navButton\('create'/);
+  const swipeTabSource = sourceSection(clientSource, 'function tabSwipeTarget', 'function ensureTabSwipePreview');
+  for (const tab of ['home', 'search', 'chats', 'profile']) assert.match(swipeTabSource, new RegExp(`['"]${tab}['"]`));
+  assert.doesNotMatch(swipeTabSource, /create|notifications/);
+
+  const homeStorySource = sourceSection(clientSource, 'function homeStoryUsers', 'function postAuthor');
+  assert.match(homeStorySource, /state\.me\?\.following/);
+  assert.match(homeStorySource, /followed\.length \? followed : fallback/);
+  assert.match(homeStorySource, /aria-label="Stories"/);
+  assert.match(homeStorySource, /story \? 'view-story' : 'open-story-create'/);
+  const homePanelSource = sourceSection(clientSource, 'function renderHomePanel', 'function composerFilterStyle');
+  assert.match(homePanelSource, /data-action="toggle-feed-menu"/);
+  for (const mode of ['for_you', 'following', 'favorites']) assert.match(homePanelSource, new RegExp(`['"]${mode}['"]`));
+  assert.match(homePanelSource, /renderHomeStories\(\)/);
+  assert.match(homePanelSource, /data-action="open-post-create"/);
+  assert.match(homePanelSource, /data-action="open-notifications"/);
+  assert.match(homePanelSource, /feed\.map\(renderPostCard\)/);
+  assert.match(clientSource, /renderMentionText\(comment\.text \|\| ''\)/);
+  assert.match(clientSource, /renderMentionText\(description\)/);
+  assert.doesNotMatch(clientSource, /renderMentions\(/);
+
+  const postComposerSource = sourceSection(clientSource, 'function renderPostComposerMedia(', 'function renderNoteRail');
+  assert.match(postComposerSource, /const stage = clamp\(Number\(composer\.stage \|\| 1\), 1, 3\)/);
+  assert.match(postComposerSource, /Step \$\{stage\} of 3/);
+  assert.match(postComposerSource, /stage === 1 \? 'Crop' : stage === 2 \? 'Look' : 'Share'/);
+  for (const control of ['zoom', 'x', 'y']) assert.match(postComposerSource, new RegExp(`data-post-crop="${control}"`));
+  assert.match(postComposerSource, /data-action="rotate-post-media"/);
+  for (const filter of ['normal', 'vivid', 'warm', 'cool', 'mono', 'fade', 'noir']) assert.match(postComposerSource, new RegExp(`['"]${filter}['"]`));
+  for (const adjustment of ['brightness', 'contrast', 'saturation', 'warmth']) assert.match(postComposerSource, new RegExp(`['"]${adjustment}['"]`));
+  assert.match(postComposerSource, /renderPostComposerMedia\(composer, true\)/);
+  assert.match(postComposerSource, /data-action="pick-post-tag-position"/);
+  assert.match(postComposerSource, /data-action="add-post-person-tag"/);
+  assert.match(postComposerSource, /id="post-title"[^>]*maxlength="100"/);
+  assert.match(postComposerSource, /id="post-description"[^>]*maxlength="2200"/);
+  assert.match(postComposerSource, /id="post-hashtags"[^>]*maxlength="300"/);
+  assert.match(postComposerSource, /id="post-allow-reposts"/);
+  assert.match(clientSource, /pendingTagPoint = \{[\s\S]{0,300}?x: Math\.round\([\s\S]{0,300}?y: Math\.round\(/);
+
+  const ownProfileSource = sourceSection(clientSource, 'function renderProfilePanel()', 'function profilePostKey');
+  assert.match(ownProfileSource, /<h1>\$\{esc\(state\.me\.displayName\)\}<\/h1>/);
+  assert.match(ownProfileSource, /<small>@\$\{esc\(state\.me\.username\)\}<\/small>/);
+  assert.match(ownProfileSource, /renderProfileStats\(state\.me, 'open-social'\)/);
+  assert.match(ownProfileSource, /data-action="open-profile-edit"/);
+  assert.match(ownProfileSource, /data-action="open-highlight-archive"/);
+  const profileMediaSource = sourceSection(clientSource, 'function renderProfileMedia(', 'function renderProfileSocialPage');
+  for (const [tab, label] of [['posts', 'Photos and videos'], ['saved', 'Saved posts'], ['reposts', 'Reposts'], ['tagged', 'Tagged photos']]) {
+    assert.match(profileMediaSource, new RegExp(`['"]${tab}['"], ['"]${label}['"]`));
+  }
+  assert.match(profileMediaSource, /!own && tab === 'saved'/);
+  assert.match(profileMediaSource, /Saved posts are private/);
+  const profileEditSource = sourceSection(clientSource, 'function renderProfileEditModal()', 'function settingsSectionTitle');
+  assert.match(profileEditSource, /name="username"[^>]*readonly[^>]*aria-readonly="true"/);
+  assert.match(profileEditSource, /cannot be changed/);
+  assert.match(profileEditSource, /once every 14 days/);
+  assert.match(serverSource, /body\.username !== undefined[\s\S]{0,180}?permanent and cannot be changed/);
+  assert.match(serverSource, /DISPLAY_NAME_COOLDOWN_MS[\s\S]{0,500}?once every 14 days/);
+
+  const noteUiSource = sourceSection(clientSource, 'function renderNoteRail()', 'function renderChatsPanel');
+  assert.match(noteUiSource, /data-action="play-note"/);
+  assert.match(noteUiSource, /<audio[^>]*preload="none"/);
+  assert.doesNotMatch(noteUiSource, /autoplay/);
+  assert.match(noteUiSource, /id="note-text" maxlength="60"/);
+  assert.match(noteUiSource, /up to 30 seconds/);
+  const noteBehaviorSource = sourceSection(clientSource, 'function openNoteComposer()', 'async function loadContactsAndChats');
+  assert.match(noteBehaviorSource, /duration > 30\.15/);
+  assert.match(noteBehaviorSource, /setTimeout\(\(\) => stopNoteRecording\(\), 30000\)/);
+  assert.match(noteBehaviorSource, /function playNote\(noteId\)/);
+  assert.match(noteBehaviorSource, /if \(selected\.paused\) selected\.play\(\)/);
+  assert.match(serverSource, /Array\.from\(textValue\)\.length > 60/);
+  assert.match(serverSource, /audioDuration > 30/);
+
+  const settingsSource = sourceSection(clientSource, 'function settingsSectionTitle', 'function renderAvatarCropper');
+  for (const [section, label] of [['account', 'Account'], ['blocked', 'Blocked'], ['comments', 'Comments'], ['reposts', 'Reposts']]) {
+    assert.match(settingsSource, new RegExp(`data-section="${section}"[\\s\\S]{0,120}?<strong>${label}<\\/strong>`));
+  }
+  assert.match(settingsSource, /data-form="account-contact"/);
+  assert.match(settingsSource, /data-form="change-password"/);
+  assert.match(settingsSource, /data-action="settings-unblock-user"/);
+  assert.match(settingsSource, /state\.accountActivity\.comments/);
+  assert.match(settingsSource, /state\.accountActivity\.reposts/);
+  assert.match(settingsSource, /data-action="toggle-global-reposts"/);
+
+  assert.match(clientSource, /event\.target\.id === 'post-input'[\s\S]{0,140}?event\.target\.value = ''[\s\S]{0,140}?beginPostComposer\(file\)/);
+  assert.match(clientSource, /event\.target\.id === 'note-audio-input'[\s\S]{0,140}?event\.target\.value = ''[\s\S]{0,140}?chooseNoteAudio\(file\)/);
+  assert.match(clientSource, /event\.key === 'Escape' && state\.postComposer[\s\S]{0,140}?closePostComposer\(\)/);
+  assert.match(clientSource, /event\.key === 'Escape' && state\.noteComposer[\s\S]{0,220}?stopNoteRecording\(\)[\s\S]{0,220}?state\.noteComposer = null/);
+  assert.match(clientSource, /const gestureBlocked =[\s\S]{0,400}?state\.postComposer \|\| state\.noteComposer \|\| state\.noteRecording/);
+
+  const notificationsSource = sourceSection(clientSource, 'function renderNotificationsPage()', 'function renderNotificationPermissionPrompt');
+  assert.match(notificationsSource, /Suggested for you/);
+  assert.match(notificationsSource, /visibleRecommendations\(\)\.slice\(0, 12\)/);
+  assert.match(notificationsSource, /renderAccountRow\(user, \{ dismissible: true \}\)/);
+});
+
+test('social posts, feeds, profile privacy, account settings, and notes remain repeatable', async (t) => {
+  const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-app-social-test-'));
+  const dataDir = path.join(runtime, 'data');
+  const uploadDir = path.join(runtime, 'uploads');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const port = 36500 + Math.floor(Math.random() * 1500);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DATA_DIR: dataDir,
+      UPLOAD_DIR: uploadDir,
+      SENDMAIL_PATH: path.join(runtime, 'missing-sendmail')
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let serverError = '';
+  child.stderr.on('data', (chunk) => { serverError += chunk.toString('utf8'); });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill();
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      child.once('exit', resolve);
+      setTimeout(resolve, 1500);
+    });
+    fs.rmSync(runtime, { recursive: true, force: true });
+  });
+
+  await waitForServer(baseUrl, child);
+  assert.equal(serverError, '');
+
+  const alice = new ApiClient(baseUrl);
+  const bob = new ApiClient(baseUrl);
+  const charlie = new ApiClient(baseUrl);
+  const dora = new ApiClient(baseUrl);
+  const aliceUser = await register(alice, 'social_alice');
+  const bobUser = await register(bob, 'social_bob');
+  const charlieUser = await register(charlie, 'social_charlie');
+  const doraUser = await register(dora, 'social_dora');
+
+  const immutableUsername = await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { username: 'renamed_alice' }
+  });
+  assert.equal(immutableUsername.status, 400);
+  assert.match(immutableUsername.data.error, /permanent/i);
+
+  const profileUpdate = await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: {
+      username: aliceUser.username,
+      displayName: 'Alice Social',
+      bio: 'Photos from deterministic tests',
+      website: 'example.test/profile',
+      age: 29,
+      gender: 'Non-binary',
+      bioVisible: true,
+      websiteVisible: true,
+      ageVisible: true,
+      genderVisible: true
+    }
+  });
+  assert.equal(profileUpdate.status, 200);
+  assert.equal(profileUpdate.data.user.username, aliceUser.username);
+  assert.equal(profileUpdate.data.user.tagUsername, aliceUser.username);
+  assert.equal(profileUpdate.data.user.displayName, 'Alice Social');
+  assert.equal(profileUpdate.data.user.website, 'https://example.test/profile');
+  assert.ok(profileUpdate.data.user.nextDisplayNameChangeAt);
+
+  const publicIdentity = await bob.request('/api/users/social_alice');
+  assert.equal(publicIdentity.status, 200);
+  assert.equal(publicIdentity.data.user.displayName, 'Alice Social');
+  assert.equal(publicIdentity.data.user.tagUsername, aliceUser.username);
+  assert.equal(publicIdentity.data.user.age, 29);
+  assert.equal(publicIdentity.data.user.gender, 'Non-binary');
+  assert.equal(publicIdentity.data.user.website, 'https://example.test/profile');
+
+  const displayNameCooldown = await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { displayName: 'Alice Again' }
+  });
+  assert.equal(displayNameCooldown.status, 429);
+  assert.match(displayNameCooldown.data.error, /14 days/i);
+  assert.ok(displayNameCooldown.data.nextDisplayNameChangeAt);
+  assert.equal((await alice.request('/api/me')).data.user.displayName, 'Alice Social');
+
+  const hiddenOptionalFields = await alice.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { bioVisible: false, websiteVisible: false, ageVisible: false, genderVisible: false }
+  });
+  assert.equal(hiddenOptionalFields.status, 200);
+  const hiddenPublicIdentity = (await bob.request('/api/users/social_alice')).data.user;
+  assert.equal(hiddenPublicIdentity.bio, '');
+  assert.equal(hiddenPublicIdentity.website, '');
+  assert.equal(hiddenPublicIdentity.age, null);
+  assert.equal(hiddenPublicIdentity.gender, '');
+
+  const accountUpdate = await alice.request('/api/account', {
+    method: 'PATCH',
+    body: { email: 'social-alice@example.test', phone: '+49 30 1234567' }
+  });
+  assert.equal(accountUpdate.status, 200);
+  assert.equal(accountUpdate.data.account.email, 'social-alice@example.test');
+  assert.equal(accountUpdate.data.account.phone, '+49 30 1234567');
+  assert.equal(accountUpdate.data.account.emailVerified, false);
+  assert.equal(accountUpdate.data.account.phoneVerified, false);
+  assert.equal(accountUpdate.data.verificationEmailSent, false);
+  const accountSnapshot = await alice.request('/api/account');
+  assert.equal(accountSnapshot.status, 200);
+  assert.equal(accountSnapshot.data.account.email, 'social-alice@example.test');
+  assert.equal(accountSnapshot.data.account.phone, '+49 30 1234567');
+  assert.equal((await alice.request('/api/account/password', {
+    method: 'PATCH',
+    body: { currentPassword: 'incorrect-password', newPassword: 'ChangedPass456!' }
+  })).status, 403);
+  assert.equal((await alice.request('/api/account/password', {
+    method: 'PATCH',
+    body: { currentPassword: PASSWORD, newPassword: 'ChangedPass456!' }
+  })).status, 200);
+
+  const createdPost = await alice.request('/api/posts', {
+    method: 'POST',
+    body: {
+      file: { name: 'social-post.png', type: 'image/png', dataUrl: PNG_DATA },
+      title: 'Summer launch',
+      description: 'A repeatable post with @social_bob and #Launch.',
+      hashtags: ['Summer', '#Launch', 'summer'],
+      personTags: [{ userId: bobUser.id, x: 23.5, y: 78.25 }],
+      edits: {
+        crop: { x: 12, y: -9, width: 84, height: 91, zoom: 1.7, rotation: 90, aspectRatio: 'portrait', flipX: true },
+        adjustments: { brightness: 114, contrast: 93, saturation: 142, warmth: 18, fade: 7, vignette: 21 },
+        filter: 'vivid'
+      },
+      allowReposts: true
+    }
+  });
+  assert.equal(createdPost.status, 201);
+  const post = createdPost.data.post;
+  assert.equal(post.title, 'Summer launch');
+  assert.equal(post.description, 'A repeatable post with @social_bob and #Launch.');
+  assert.deepEqual(post.hashtags, ['summer', 'launch']);
+  assert.equal(post.personTags.length, 1);
+  assert.equal(post.personTags[0].user.id, bobUser.id);
+  assert.equal(post.personTags[0].x, 23.5);
+  assert.equal(post.personTags[0].y, 78.25);
+  assert.equal(post.crop.aspectRatio, 'portrait');
+  assert.equal(post.crop.zoom, 1.7);
+  assert.equal(post.adjustments.saturation, 142);
+  assert.equal(post.filter, 'vivid');
+  assert.equal(post.allowReposts, true);
+  assert.equal(createdPost.data.user.postCount, 1);
+  assert.equal((await alice.request('/api/me')).data.user.postCount, 1);
+  assert.deepEqual((await alice.request(`/api/users/${aliceUser.id}/posts?tab=posts`)).data.posts.map((item) => item.id), [post.id]);
+  assert.deepEqual((await bob.request(`/api/users/${bobUser.id}/posts?tab=tagged`)).data.posts.map((item) => item.id), [post.id]);
+  assert.equal((await bob.request(post.media.url)).status, 200);
+
+  const liked = await bob.request(`/api/posts/${post.id}/like`, { method: 'POST' });
+  assert.equal(liked.status, 200);
+  assert.equal(liked.data.post.likedByMe, true);
+  assert.equal(liked.data.post.likeCount, 1);
+  const unliked = await bob.request(`/api/posts/${post.id}/like`, { method: 'POST' });
+  assert.equal(unliked.status, 200);
+  assert.equal(unliked.data.post.likedByMe, false);
+  assert.equal(unliked.data.post.likeCount, 0);
+
+  const saved = await bob.request(`/api/posts/${post.id}/save`, { method: 'POST' });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.post.savedByMe, true);
+  const ownSavedTab = await bob.request(`/api/users/${bobUser.id}/posts?tab=saved`);
+  assert.equal(ownSavedTab.status, 200);
+  assert.equal(ownSavedTab.data.private, false);
+  assert.deepEqual(ownSavedTab.data.posts.map((item) => item.id), [post.id]);
+  const someoneElsesSavedTab = await alice.request(`/api/users/${bobUser.id}/posts?tab=saved`);
+  assert.equal(someoneElsesSavedTab.status, 200);
+  assert.equal(someoneElsesSavedTab.data.private, true);
+  assert.deepEqual(someoneElsesSavedTab.data.posts, []);
+  const unsaved = await bob.request(`/api/posts/${post.id}/save`, { method: 'POST' });
+  assert.equal(unsaved.data.post.savedByMe, false);
+  assert.deepEqual((await bob.request(`/api/users/${bobUser.id}/posts?tab=saved`)).data.posts, []);
+
+  const reposted = await bob.request(`/api/posts/${post.id}/repost`, { method: 'POST' });
+  assert.equal(reposted.status, 200);
+  assert.equal(reposted.data.post.repostedByMe, true);
+  assert.equal(reposted.data.post.repostCount, 1);
+  assert.deepEqual((await bob.request(`/api/users/${bobUser.id}/posts?tab=reposts`)).data.posts.map((item) => item.id), [post.id]);
+  assert.deepEqual((await bob.request('/api/me/activity?type=reposts')).data.items.map((item) => item.post.id), [post.id]);
+  const unreposted = await bob.request(`/api/posts/${post.id}/repost`, { method: 'POST' });
+  assert.equal(unreposted.status, 200);
+  assert.equal(unreposted.data.post.repostedByMe, false);
+  assert.equal(unreposted.data.post.repostCount, 0);
+  assert.deepEqual((await bob.request('/api/me/activity?type=reposts')).data.items, []);
+  assert.equal((await alice.request('/api/me/profile', { method: 'PATCH', body: { allowReposts: false } })).status, 200);
+  const globallyDisabledRepost = await bob.request(`/api/posts/${post.id}/repost`, { method: 'POST' });
+  assert.equal(globallyDisabledRepost.status, 403);
+  assert.match(globallyDisabledRepost.data.error, /turned off reposts/i);
+  assert.equal((await alice.request('/api/me/profile', { method: 'PATCH', body: { allowReposts: true } })).status, 200);
+
+  const comment = await bob.request(`/api/posts/${post.id}/comments`, {
+    method: 'POST',
+    body: { text: 'A stable comment for @social_alice.' }
+  });
+  assert.equal(comment.status, 201);
+  assert.equal(comment.data.post.commentCount, 1);
+  assert.equal(comment.data.comment.user.id, bobUser.id);
+  assert.equal(comment.data.comment.text, 'A stable comment for @social_alice.');
+  const commentActivity = await bob.request('/api/me/activity?type=comments');
+  assert.equal(commentActivity.status, 200);
+  assert.deepEqual(commentActivity.data.items.map((item) => item.comment.id), [comment.data.comment.id]);
+  assert.ok((await alice.request('/api/notifications')).data.notifications.some((note) => note.type === 'post_tag' || note.type === 'mention' || note.type === 'post_comment'));
+
+  assert.equal((await bob.request(`/api/follows/${aliceUser.id}`, { method: 'POST' })).status, 200);
+  assert.equal((await bob.request(`/api/favorites/${aliceUser.id}`, { method: 'POST' })).status, 200);
+  const forYouFeed = await bob.request('/api/feed?mode=for_you');
+  const followingFeed = await bob.request('/api/feed?mode=following');
+  const favoritesFeed = await bob.request('/api/feed?mode=favorites');
+  const explore = await bob.request('/api/explore');
+  assert.equal(forYouFeed.data.mode, 'for_you');
+  assert.ok(forYouFeed.data.posts.some((item) => item.id === post.id));
+  assert.ok(followingFeed.data.posts.some((item) => item.id === post.id));
+  assert.deepEqual(favoritesFeed.data.posts.map((item) => item.id), [post.id]);
+  assert.ok(explore.data.posts.some((item) => item.id === post.id));
+  assert.equal((await bob.request('/api/feed?mode=unknown')).data.mode, 'for_you');
+
+  assert.equal((await charlie.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { socialPublic: false }
+  })).status, 200);
+  const privatePostResponse = await charlie.request('/api/posts', {
+    method: 'POST',
+    body: {
+      file: { name: 'private.png', type: 'image/png', dataUrl: PNG_DATA },
+      title: 'Followers only',
+      description: 'Private post'
+    }
+  });
+  assert.equal(privatePostResponse.status, 201);
+  const privatePost = privatePostResponse.data.post;
+  const privateNonFollowerTab = await alice.request(`/api/users/${charlieUser.id}/posts?tab=posts`);
+  assert.equal(privateNonFollowerTab.status, 200);
+  assert.equal(privateNonFollowerTab.data.private, true);
+  assert.deepEqual(privateNonFollowerTab.data.posts, []);
+  assert.equal((await alice.request(`/api/posts/${privatePost.id}`)).status, 404);
+  assert.ok(!(await alice.request('/api/explore')).data.posts.some((item) => item.id === privatePost.id));
+
+  const privateFollowRequest = await bob.request('/api/contacts/social_charlie', { method: 'POST' });
+  assert.equal(privateFollowRequest.status, 201);
+  assert.equal((await charlie.request(`/api/requests/${privateFollowRequest.data.request.id}/accept`, { method: 'POST' })).status, 200);
+  const approvedFollowerTab = await bob.request(`/api/users/${charlieUser.id}/posts?tab=posts`);
+  assert.equal(approvedFollowerTab.status, 200);
+  assert.equal(approvedFollowerTab.data.private, false);
+  assert.deepEqual(approvedFollowerTab.data.posts.map((item) => item.id), [privatePost.id]);
+  assert.equal((await bob.request(`/api/posts/${privatePost.id}`)).status, 200);
+  assert.ok((await bob.request('/api/feed?mode=following')).data.posts.some((item) => item.id === privatePost.id));
+
+  const tooLongNote = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: { text: 'x'.repeat(61) }
+  });
+  assert.equal(tooLongNote.status, 400);
+  assert.match(tooLongNote.data.error, /60 characters/i);
+  const tooLongAudio = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: {
+      text: 'Audio is too long',
+      audio: { name: 'long.wav', type: 'audio/wav', dataUrl: AUDIO_DATA },
+      audioDuration: 30.01
+    }
+  });
+  assert.equal(tooLongAudio.status, 400);
+  assert.match(tooLongAudio.data.error, /30 seconds/i);
+  const firstNote = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: {
+      text: 'n'.repeat(60),
+      audio: { name: 'thirty.wav', type: 'audio/wav', dataUrl: AUDIO_DATA },
+      audioTitle: 'Thirty seconds',
+      audioArtist: 'Test Artist',
+      audioDuration: 30,
+      audioStart: 12
+    }
+  });
+  assert.equal(firstNote.status, 201);
+  assert.equal(Array.from(firstNote.data.note.text).length, 60);
+  assert.equal(firstNote.data.note.audioDuration, 30);
+  assert.equal(firstNote.data.note.audioStart, 12);
+  assert.equal(firstNote.data.note.audioTitle, 'Thirty seconds');
+  assert.equal(firstNote.data.note.audioArtist, 'Test Artist');
+  assert.ok(firstNote.data.note.audio?.url);
+  const followedNotes = await bob.request('/api/notes');
+  assert.ok(followedNotes.data.notes.some((note) => note.id === firstNote.data.note.id));
+  assert.equal((await bob.request(firstNote.data.note.audio.url)).status, 200);
+
+  const replacementNote = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: { text: 'Replacement note' }
+  });
+  assert.equal(replacementNote.status, 201);
+  assert.notEqual(replacementNote.data.note.id, firstNote.data.note.id);
+  const afterReplacement = await bob.request('/api/notes');
+  assert.ok(afterReplacement.data.notes.some((note) => note.id === replacementNote.data.note.id));
+  assert.ok(!afterReplacement.data.notes.some((note) => note.id === firstNote.data.note.id));
+  assert.equal((await alice.request('/api/me/note', { method: 'DELETE' })).status, 200);
+  assert.ok(!(await bob.request('/api/notes')).data.notes.some((note) => note.ownerId === aliceUser.id));
+
+  const doraPostResponse = await dora.request('/api/posts', {
+    method: 'POST',
+    body: { file: { name: 'blocked.png', type: 'image/png', dataUrl: PNG_DATA }, title: 'Block me' }
+  });
+  assert.equal(doraPostResponse.status, 201);
+  const doraPost = doraPostResponse.data.post;
+  const doraNote = await dora.request('/api/me/note', { method: 'POST', body: { text: 'Blocked note' } });
+  assert.equal(doraNote.status, 201);
+  assert.equal((await bob.request(`/api/follows/${doraUser.id}`, { method: 'POST' })).status, 200);
+  assert.equal((await bob.request(`/api/favorites/${doraUser.id}`, { method: 'POST' })).status, 200);
+  assert.ok((await bob.request('/api/notes')).data.notes.some((note) => note.id === doraNote.data.note.id));
+  assert.ok((await bob.request('/api/feed?mode=following')).data.posts.some((item) => item.id === doraPost.id));
+  assert.equal((await bob.request(`/api/blocks/${doraUser.id}`, { method: 'POST' })).status, 200);
+  const blockedAccounts = await bob.request('/api/account/blocked');
+  assert.equal(blockedAccounts.status, 200);
+  assert.deepEqual(blockedAccounts.data.users.map((user) => user.id), [doraUser.id]);
+  assert.ok(!(await bob.request('/api/users/search?q=social_dora')).data.users.some((user) => user.id === doraUser.id));
+  assert.ok(!(await bob.request('/api/users/recommendations')).data.users.some((user) => user.id === doraUser.id));
+  assert.ok(!(await bob.request('/api/feed?mode=for_you')).data.posts.some((item) => item.id === doraPost.id));
+  assert.ok(!(await bob.request('/api/feed?mode=following')).data.posts.some((item) => item.id === doraPost.id));
+  assert.ok(!(await bob.request('/api/feed?mode=favorites')).data.posts.some((item) => item.id === doraPost.id));
+  assert.ok(!(await bob.request('/api/explore')).data.posts.some((item) => item.id === doraPost.id));
+  assert.ok(!(await bob.request('/api/notes')).data.notes.some((note) => note.id === doraNote.data.note.id));
+  assert.equal((await bob.request(`/api/posts/${doraPost.id}`)).status, 404);
+  assert.ok(!(await bob.request('/api/me')).data.user.favoriteUserIds.includes(doraUser.id));
+
+  const oldPasswordLogin = await new ApiClient(baseUrl).request('/api/auth/login', {
+    method: 'POST',
+    body: { identifier: aliceUser.username, password: PASSWORD }
+  });
+  assert.equal(oldPasswordLogin.status, 401);
+  const changedPasswordLogin = await new ApiClient(baseUrl).request('/api/auth/login', {
+    method: 'POST',
+    body: { identifier: aliceUser.username, password: 'ChangedPass456!' }
+  });
+  assert.equal(changedPasswordLogin.status, 200);
+  assert.equal(changedPasswordLogin.data.user.username, aliceUser.username);
+  assert.equal(serverError, '');
 });
 
 test('account, social, messaging, media, story, privacy, and 2FA flows', async (t) => {
@@ -338,6 +807,9 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
 
   const aliceUser = await register(alice, 'alice_test');
   const bobUser = await register(bob, 'bob_test');
+  await Promise.all(Array.from({ length: 12 }, () => bob.request('/api/me')));
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(serverError, '');
   const charlieUser = await register(charlie, 'charlie_test');
   const doraUser = await register(dora, 'dora_test');
 
@@ -860,6 +1332,43 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(commentReply.data.story.comments[1].replyPreview.user.id, bobUser.id);
   assert.equal((await alice.request('/api/notifications')).data.notifications
     .filter((notification) => notification.type === 'mention').length, aliceMentionCount);
+
+  assert.equal((await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { text: '' }
+  })).status, 400);
+  assert.equal((await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { kind: 'gif', gifId: 'missing_gif' }
+  })).status, 404);
+  const pendingCommentGif = await bob.request('/api/gifs', {
+    method: 'POST',
+    body: {
+      title: 'Pending comment GIF',
+      tags: 'comment pending',
+      file: { name: 'pending-comment.gif', type: 'image/gif', dataUrl: GIF_DATA }
+    }
+  });
+  assert.equal(pendingCommentGif.status, 201);
+  assert.equal(pendingCommentGif.data.gif.status, 'pending');
+  assert.equal((await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { kind: 'gif', gifId: pendingCommentGif.data.gif.id }
+  })).status, 404);
+  const gifComment = await bob.request(`/api/stories/${story.id}/comments`, {
+    method: 'POST',
+    body: { kind: 'gif', gifId: gifSubmission.data.gif.id }
+  });
+  assert.equal(gifComment.status, 201);
+  assert.equal(gifComment.data.story.commentCount, 3);
+  const serializedGifComment = gifComment.data.story.comments.find((item) => item.kind === 'gif');
+  assert.equal(serializedGifComment.gif.id, gifSubmission.data.gif.id);
+  assert.equal(serializedGifComment.text, '');
+  assert.equal((await bob.request(serializedGifComment.gif.file.url)).status, 200);
+  const highlightCommentView = await bob.request('/api/users/alice_test');
+  const highlightedStoryWithGif = highlightCommentView.data.user.highlights
+    .find((item) => item.id === highlightId).stories.find((item) => item.id === story.id);
+  assert.equal(highlightedStoryWithGif.comments.find((item) => item.id === serializedGifComment.id).gif.id, gifSubmission.data.gif.id);
 
   assert.equal((await alice.request('/api/me/profile', {
     method: 'PATCH',

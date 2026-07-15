@@ -14,7 +14,11 @@ const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 35 * 1024 * 1024);
 const COOKIE_NAME = 'chat_sid';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const REPORT_EMAIL = process.env.REPORT_EMAIL || 'newcomearound@gmail.com';
+const MAIL_FROM = process.env.MAIL_FROM || 'New Around <no-reply@newaround.local>';
 const SENDMAIL_PATH = process.env.SENDMAIL_PATH || '/usr/sbin/sendmail';
+const DISPLAY_NAME_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
+const NOTE_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const EMAIL_VERIFICATION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const GOOGLE_WEATHER_API_KEY = String(process.env.GOOGLE_WEATHER_API_KEY || '').trim();
 const MODERATOR_USERNAMES = String(process.env.MODERATOR_USERNAMES || '')
   .split(',')
@@ -59,6 +63,9 @@ const db = {
   blocks: readJson('blocks.json', {}),
   mutes: readJson('mutes.json', {}),
   stories: readJson('stories.json', {}),
+  posts: readJson('posts.json', {}),
+  notes: readJson('notes.json', {}),
+  emailVerifications: readJson('emailVerifications.json', {}),
   gifs: readJson('gifs.json', {}),
   reports: readJson('reports.json', []),
   userMeta: readJson('userMeta.json', {})
@@ -81,11 +88,62 @@ function readJson(fileName, fallback) {
   }
 }
 
-async function saveJson(fileName, data) {
+const jsonSaveStates = new Map();
+
+async function flushJsonSaves(fileName, state) {
+  if (state.writing) return;
+  state.writing = true;
   const finalPath = path.join(DATA_DIR, fileName);
-  const tempPath = `${finalPath}.${process.pid}.tmp`;
-  await fsp.writeFile(tempPath, JSON.stringify(data, null, 2));
-  await fsp.rename(tempPath, finalPath);
+  while (state.pendingSnapshot !== null) {
+    const snapshot = state.pendingSnapshot;
+    const resolveBatch = state.resolvePending;
+    const rejectBatch = state.rejectPending;
+    state.pendingSnapshot = null;
+    state.pendingPromise = null;
+    state.resolvePending = null;
+    state.rejectPending = null;
+    const tempPath = `${finalPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await fsp.writeFile(tempPath, snapshot);
+      await fsp.rename(tempPath, finalPath);
+      resolveBatch();
+    } catch (error) {
+      rejectBatch(error);
+    } finally {
+      await fsp.unlink(tempPath).catch(() => {});
+    }
+  }
+  state.writing = false;
+  if (state.pendingSnapshot !== null) {
+    void flushJsonSaves(fileName, state);
+  } else if (jsonSaveStates.get(fileName) === state) {
+    jsonSaveStates.delete(fileName);
+  }
+}
+
+function saveJson(fileName, data) {
+  const snapshot = JSON.stringify(data, null, 2);
+  let state = jsonSaveStates.get(fileName);
+  if (!state) {
+    state = {
+      writing: false,
+      pendingSnapshot: null,
+      pendingPromise: null,
+      resolvePending: null,
+      rejectPending: null
+    };
+    jsonSaveStates.set(fileName, state);
+  }
+  state.pendingSnapshot = snapshot;
+  if (!state.pendingPromise) {
+    state.pendingPromise = new Promise((resolve, reject) => {
+      state.resolvePending = resolve;
+      state.rejectPending = reject;
+    });
+  }
+  const pending = state.pendingPromise;
+  void flushJsonSaves(fileName, state);
+  return pending;
 }
 
 function saveUsers() {
@@ -138,6 +196,18 @@ function saveMutes() {
 
 function saveStories() {
   return saveJson('stories.json', db.stories);
+}
+
+function savePosts() {
+  return saveJson('posts.json', db.posts);
+}
+
+function saveNotes() {
+  return saveJson('notes.json', db.notes);
+}
+
+function saveEmailVerifications() {
+  return saveJson('emailVerifications.json', db.emailVerifications);
 }
 
 function saveGifs() {
@@ -313,11 +383,21 @@ function basicPublicUser(user, viewerId = null) {
   if (!user) return null;
   const avatar = user.profile.avatarFileId ? db.files[user.profile.avatarFileId] : null;
   const canSeeStories = canViewStories(user.id, viewerId);
+  const isOwner = viewerId === user.id;
+  const profile = user.profile || {};
+  const displayNameChangedTime = new Date(profile.displayNameChangedAt || 0).getTime();
+  const nextDisplayNameChangeAt = Number.isFinite(displayNameChangedTime) && displayNameChangedTime > 0
+    ? new Date(displayNameChangedTime + DISPLAY_NAME_COOLDOWN_MS).toISOString()
+    : null;
   return {
     id: user.id,
     username: user.username,
-    displayName: user.profile.displayName || user.username,
-    bio: user.profile.bio || '',
+    tagUsername: user.username,
+    displayName: profile.displayName || user.username,
+    bio: isOwner || profile.bioVisible !== false ? (profile.bio || '') : '',
+    website: profile.website && (isOwner || profile.websiteVisible !== false) ? profile.website : '',
+    age: profile.age != null && (isOwner || profile.ageVisible === true) ? profile.age : null,
+    gender: profile.gender && (isOwner || profile.genderVisible === true) ? profile.gender : '',
     avatar: publicFile(avatar),
     stories: canSeeStories
       ? activeStoriesFor(user.id).map((story) => publicStory(story, viewerId))
@@ -325,14 +405,31 @@ function basicPublicUser(user, viewerId = null) {
     highlights: canSeeStories ? publicHighlightsFor(user, viewerId) : [],
     url: `/u/${encodeURIComponent(user.username)}`,
     createdAt: user.createdAt,
-    socialPublic: user.profile?.socialPublic !== false,
-    searchable: user.profile?.searchable !== false,
-    recommendable: user.profile?.recommendable !== false,
-    avatarViewable: user.profile?.avatarViewable !== false,
-    allowGroupAdds: viewerId === user.id ? user.profile?.allowGroupAdds !== false : undefined,
-    mentionPermission: viewerId === user.id ? (user.profile?.mentionPermission || 'everyone') : undefined,
-    storyReplies: viewerId === user.id ? (user.profile?.storyReplies || 'everyone') : undefined,
-    friendRequests: viewerId === user.id ? (user.profile?.friendRequests || 'everyone') : undefined
+    socialPublic: profile.socialPublic !== false,
+    searchable: profile.searchable !== false,
+    recommendable: profile.recommendable !== false,
+    avatarViewable: profile.avatarViewable !== false,
+    postCount: activePostsFor(user.id).length,
+    allowReposts: profile.allowReposts !== false,
+    allowGroupAdds: isOwner ? profile.allowGroupAdds !== false : undefined,
+    mentionPermission: isOwner ? (profile.mentionPermission || 'everyone') : undefined,
+    storyReplies: isOwner ? (profile.storyReplies || 'everyone') : undefined,
+    friendRequests: isOwner ? (profile.friendRequests || 'everyone') : undefined,
+    websiteVisible: isOwner ? profile.websiteVisible !== false : undefined,
+    bioVisible: isOwner ? profile.bioVisible !== false : undefined,
+    ageVisible: isOwner ? profile.ageVisible === true : undefined,
+    genderVisible: isOwner ? profile.genderVisible === true : undefined,
+    favoriteUserIds: isOwner ? favoriteUserIdsFor(user) : undefined,
+    isFavorite: Boolean(viewerId && favoriteUserIdsFor(db.users[viewerId]).includes(user.id)),
+    displayNameChangedAt: isOwner ? (profile.displayNameChangedAt || null) : undefined,
+    nextDisplayNameChangeAt: isOwner ? nextDisplayNameChangeAt : undefined,
+    email: isOwner ? (user.email || '') : undefined,
+    phone: isOwner ? (user.phone || '') : undefined,
+    emailVerified: isOwner ? Boolean(user.emailVerified) : undefined,
+    emailVerifiedAt: isOwner ? (user.emailVerifiedAt || null) : undefined,
+    emailVerificationSentAt: isOwner ? (user.emailVerificationSentAt || null) : undefined,
+    phoneVerified: isOwner ? Boolean(user.phoneVerified) : undefined,
+    phoneVerifiedAt: isOwner ? (user.phoneVerifiedAt || null) : undefined
   };
 }
 
@@ -360,7 +457,7 @@ function publicUser(user, viewerId = null) {
 function followStatsFor(user, viewerId = null) {
   const followers = Object.keys(db.users).filter((id) => isFollowing(id, user.id));
   const following = Array.from(new Set(db.follows[user.id] || [])).filter((id) => db.users[id]);
-  const visible = user.profile?.socialPublic !== false || viewerId === user.id;
+  const visible = user.profile?.socialPublic !== false || viewerId === user.id || Boolean(viewerId && isFollowing(viewerId, user.id));
   return {
     socialPublic: user.profile?.socialPublic !== false,
     followersVisible: visible,
@@ -517,6 +614,8 @@ function publicNotification(notification, viewerId) {
     actor: basicPublicUser(db.users[notification.actorId], viewerId),
     request: notification.requestId ? publicRequest(db.friendRequests[notification.requestId], viewerId) : null,
     group: notification.groupId ? publicGroup(db.groups[notification.groupId], viewerId) : null,
+    postId: notification.postId || null,
+    commentId: notification.commentId || null,
     text: notification.text,
     createdAt: notification.createdAt
   };
@@ -650,6 +749,301 @@ function storyActor(user) {
   };
 }
 
+function favoriteUserIdsFor(user) {
+  if (!user) return [];
+  const values = Array.isArray(user.profile?.favoriteUserIds) ? user.profile.favoriteUserIds : [];
+  return Array.from(new Set(values)).filter((userId) => userId !== user.id && db.users[userId]);
+}
+
+function activePostsFor(ownerId = null) {
+  return Object.values(db.posts || {})
+    .filter((post) => post && !post.deletedAt && (!ownerId || post.ownerId === ownerId))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+function canViewPostsBy(ownerId, viewerId = null) {
+  const owner = db.users[ownerId];
+  if (!owner) return false;
+  if (viewerId && viewerId !== ownerId && isBlockedBetween(ownerId, viewerId)) return false;
+  if (owner.profile?.socialPublic !== false) return true;
+  return Boolean(viewerId && (viewerId === ownerId || isFollowing(viewerId, ownerId)));
+}
+
+function canViewPost(post, viewerId = null) {
+  return Boolean(post && !post.deletedAt && canViewPostsBy(post.ownerId, viewerId));
+}
+
+function postRepostsAllowed(post) {
+  const owner = post ? db.users[post.ownerId] : null;
+  return Boolean(post && owner && post.allowReposts !== false && owner.profile?.allowReposts !== false);
+}
+
+function postActor(user, viewerId = null) {
+  if (!user) return null;
+  const avatar = user.profile?.avatarFileId ? db.files[user.profile.avatarFileId] : null;
+  return {
+    id: user.id,
+    username: user.username,
+    tagUsername: user.username,
+    displayName: user.profile?.displayName || user.username,
+    avatar: publicFile(avatar),
+    url: `/u/${encodeURIComponent(user.username)}`,
+    socialPublic: user.profile?.socialPublic !== false,
+    isFavorite: Boolean(viewerId && favoriteUserIdsFor(db.users[viewerId]).includes(user.id))
+  };
+}
+
+function publicPostComment(comment, viewerId) {
+  if (!comment || comment.deletedAt) return null;
+  return {
+    id: comment.id,
+    text: comment.text || '',
+    createdAt: comment.createdAt,
+    user: postActor(db.users[comment.userId], viewerId),
+    isMine: comment.userId === viewerId
+  };
+}
+
+function publicPost(post, viewerId = null) {
+  if (!post) return null;
+  const likes = Array.isArray(post.likes) ? post.likes.filter((userId) => db.users[userId]) : [];
+  const saves = Array.isArray(post.savedBy) ? post.savedBy.filter((userId) => db.users[userId]) : [];
+  const reposts = Array.isArray(post.repostedBy) ? post.repostedBy.filter((userId) => db.users[userId]) : [];
+  const comments = Array.isArray(post.comments) ? post.comments.filter((comment) => !comment.deletedAt) : [];
+  const personTags = Array.isArray(post.personTags) ? post.personTags : [];
+  return {
+    id: post.id,
+    ownerId: post.ownerId,
+    author: postActor(db.users[post.ownerId], viewerId),
+    user: postActor(db.users[post.ownerId], viewerId),
+    media: publicFile(db.files[post.fileId]),
+    file: publicFile(db.files[post.fileId]),
+    mediaType: String(db.files[post.fileId]?.mime || '').startsWith('video/') ? 'video' : 'image',
+    title: post.title || '',
+    description: post.description || '',
+    hashtags: Array.isArray(post.hashtags) ? post.hashtags : [],
+    personTags: personTags.map((tag) => ({
+      userId: tag.userId,
+      user: postActor(db.users[tag.userId], viewerId),
+      x: tag.x,
+      y: tag.y
+    })).filter((tag) => tag.user),
+    edits: post.edits || {},
+    crop: post.edits?.crop || {},
+    adjustments: post.edits?.adjustments || {},
+    filter: post.edits?.filter || 'normal',
+    allowReposts: postRepostsAllowed(post),
+    createdAt: post.createdAt,
+    updatedAt: post.updatedAt || post.createdAt,
+    likeCount: likes.length,
+    likedByMe: Boolean(viewerId && likes.includes(viewerId)),
+    savedByMe: Boolean(viewerId && saves.includes(viewerId)),
+    repostCount: reposts.length,
+    repostedByMe: Boolean(viewerId && reposts.includes(viewerId)),
+    commentCount: comments.length,
+    comments: comments.slice(-100).map((comment) => publicPostComment(comment, viewerId)).filter(Boolean),
+    canDelete: post.ownerId === viewerId
+  };
+}
+
+function postFeedScore(post) {
+  const created = new Date(post.createdAt).getTime() || 0;
+  const ageHours = Math.max(0, (Date.now() - created) / (60 * 60 * 1000));
+  const engagement = (post.likes?.length || 0) * 3 + (post.comments?.length || 0) * 4 + (post.repostedBy?.length || 0) * 5;
+  return engagement + Math.max(0, 72 - ageHours) / 12;
+}
+
+function cleanHashtags(value) {
+  const raw = Array.isArray(value) ? value : String(value || '').split(/[\s,]+/);
+  const tags = raw
+    .map((tag) => cleanText(String(tag || '').replace(/^#+/, ''), 40).toLowerCase())
+    .filter((tag) => tag && /^[\p{L}\p{N}_]+$/u.test(tag));
+  return Array.from(new Set(tags)).slice(0, 30);
+}
+
+function boundedNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+}
+
+function cleanPostEdits(body) {
+  const raw = body?.edits && typeof body.edits === 'object' ? body.edits : {};
+  const cropRaw = body?.crop && typeof body.crop === 'object' ? body.crop : (raw.crop || raw);
+  const adjustRaw = body?.adjustments && typeof body.adjustments === 'object' ? body.adjustments : (raw.adjustments || raw);
+  const trimRaw = body?.trim && typeof body.trim === 'object' ? body.trim : (raw.trim || {});
+  return {
+    crop: {
+      x: boundedNumber(cropRaw.x ?? cropRaw.offsetX ?? cropRaw.cropX, -100, 100, 0),
+      y: boundedNumber(cropRaw.y ?? cropRaw.offsetY ?? cropRaw.cropY, -100, 100, 0),
+      width: boundedNumber(cropRaw.width ?? cropRaw.cropWidth, 1, 100, 100),
+      height: boundedNumber(cropRaw.height ?? cropRaw.cropHeight, 1, 100, 100),
+      zoom: boundedNumber(cropRaw.zoom ?? cropRaw.scale ?? cropRaw.cropZoom, 1, 5, 1),
+      rotation: boundedNumber(cropRaw.rotation ?? cropRaw.cropRotation, -360, 360, 0),
+      aspectRatio: cleanText(cropRaw.aspectRatio || cropRaw.aspect || 'original', 24) || 'original',
+      flipX: Boolean(cropRaw.flipX ?? cropRaw.flipHorizontal),
+      flipY: Boolean(cropRaw.flipY ?? cropRaw.flipVertical)
+    },
+    adjustments: {
+      brightness: boundedNumber(adjustRaw.brightness, 0, 200, 100),
+      contrast: boundedNumber(adjustRaw.contrast, 0, 200, 100),
+      saturation: boundedNumber(adjustRaw.saturation, 0, 200, 100),
+      warmth: boundedNumber(adjustRaw.warmth, -100, 100, 0),
+      fade: boundedNumber(adjustRaw.fade, 0, 100, 0),
+      highlights: boundedNumber(adjustRaw.highlights, -100, 100, 0),
+      shadows: boundedNumber(adjustRaw.shadows, -100, 100, 0),
+      vignette: boundedNumber(adjustRaw.vignette, 0, 100, 0),
+      sharpen: boundedNumber(adjustRaw.sharpen, 0, 100, 0),
+      blur: boundedNumber(adjustRaw.blur, 0, 20, 0)
+    },
+    filter: cleanText(body?.filter || raw.filter || 'normal', 40).toLowerCase() || 'normal',
+    trim: {
+      start: boundedNumber(trimRaw.start, 0, 60 * 60, 0),
+      end: boundedNumber(trimRaw.end, 0, 60 * 60, 0),
+      muted: Boolean(trimRaw.muted ?? raw.videoMuted),
+      volume: boundedNumber(trimRaw.volume ?? raw.videoVolume, 0, 1, 1),
+      speed: boundedNumber(trimRaw.speed ?? raw.videoSpeed, 0.25, 4, 1)
+    }
+  };
+}
+
+function cleanPersonTags(value, ownerId) {
+  const tags = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const cleaned = [];
+  for (const raw of tags) {
+    const target = db.users[cleanText(raw?.userId || raw?.id || '', 120)] || userByUsername(raw?.username);
+    if (!target || seen.has(target.id) || isBlockedBetween(ownerId, target.id)) continue;
+    const mentionPermission = target.profile?.mentionPermission || 'everyone';
+    if (mentionPermission === 'nobody') continue;
+    if (mentionPermission === 'following' && !isFollowing(target.id, ownerId)) continue;
+    if (db.users[ownerId]?.profile?.socialPublic === false && target.id !== ownerId && !isFollowing(target.id, ownerId)) continue;
+    seen.add(target.id);
+    cleaned.push({
+      userId: target.id,
+      x: boundedNumber(raw?.x, 0, 100, 50),
+      y: boundedNumber(raw?.y, 0, 100, 50)
+    });
+    if (cleaned.length >= 20) break;
+  }
+  return cleaned;
+}
+
+function activeNoteFor(userId) {
+  const note = db.notes?.[userId];
+  if (!note || note.deletedAt || new Date(note.expiresAt).getTime() <= Date.now()) return null;
+  return note;
+}
+
+function canViewNote(note, viewerId) {
+  if (!note || !viewerId || note.deletedAt || new Date(note.expiresAt).getTime() <= Date.now()) return false;
+  if (!db.users[note.ownerId] || isBlockedBetween(note.ownerId, viewerId)) return false;
+  return note.ownerId === viewerId || isFollowing(viewerId, note.ownerId);
+}
+
+function publicNote(note, viewerId) {
+  if (!note) return null;
+  return {
+    id: note.id,
+    ownerId: note.ownerId,
+    user: postActor(db.users[note.ownerId], viewerId),
+    text: note.text || '',
+    audio: publicFile(db.files[note.audioFileId]),
+    audioTitle: note.audioTitle || '',
+    audioArtist: note.audioArtist || '',
+    audioDuration: note.audioDuration ?? null,
+    audioStart: note.audioStart || 0,
+    createdAt: note.createdAt,
+    expiresAt: note.expiresAt,
+    isMine: note.ownerId === viewerId
+  };
+}
+
+function validEmail(value) {
+  return !value || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254);
+}
+
+function validPhone(value) {
+  if (!value) return true;
+  const digits = value.replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15 && /^\+?[0-9 ()-]+$/.test(value);
+}
+
+function cleanWebsite(value) {
+  const input = cleanText(value || '', 240);
+  if (!input) return '';
+  let parsed;
+  try {
+    parsed = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+  } catch {
+    throw Object.assign(new Error('Enter a valid website address.'), { status: 400 });
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+    throw Object.assign(new Error('Website addresses must use http or https.'), { status: 400 });
+  }
+  return parsed.toString().slice(0, 300);
+}
+
+function accountSnapshot(user) {
+  return {
+    email: user.email || '',
+    phone: user.phone || '',
+    emailVerified: Boolean(user.emailVerified),
+    emailVerifiedAt: user.emailVerifiedAt || null,
+    emailVerificationSentAt: user.emailVerificationSentAt || null,
+    phoneVerified: Boolean(user.phoneVerified),
+    phoneVerifiedAt: user.phoneVerifiedAt || null,
+    twoFactorEnabled: Boolean(user.twoFactor?.enabled)
+  };
+}
+
+function requestBaseUrl(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = ['http', 'https'].includes(forwardedProto) ? forwardedProto : (req.socket?.encrypted ? 'https' : 'http');
+  const host = mailHeader(req.headers.host || `localhost:${PORT}`);
+  return `${protocol}://${host}`;
+}
+
+async function issueEmailVerification(user, req) {
+  if (!user?.email) return { sent: false, reason: 'no email address' };
+  for (const [key, record] of Object.entries(db.emailVerifications)) {
+    if (record?.userId === user.id && !record.usedAt) delete db.emailVerifications[key];
+  }
+  const token = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = sha256(token);
+  const createdAt = nowIso();
+  const record = {
+    id: id('verify'),
+    userId: user.id,
+    email: user.email,
+    createdAt,
+    expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_LIFETIME_MS).toISOString(),
+    usedAt: null
+  };
+  db.emailVerifications[tokenHash] = record;
+  user.emailVerificationSentAt = createdAt;
+  await Promise.all([saveEmailVerifications(), saveUsers()]);
+  const verifyUrl = `${requestBaseUrl(req)}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+  const name = user.profile?.displayName || user.username;
+  const body = [
+    `Hi ${name},`,
+    '',
+    'Welcome to New Around. Please confirm that this email address belongs to you:',
+    verifyUrl,
+    '',
+    'This private link expires in 24 hours. If you did not add this address, you can ignore this message.',
+    '',
+    '— The New Around team'
+  ].join('\n');
+  return sendMailViaSendmail(user.email, 'Verify your New Around email', body);
+}
+
+function publicStoryCommentGif(comment, viewerId = null) {
+  const gif = comment?.gifId ? db.gifs[comment.gifId] : null;
+  const file = gif?.fileId ? db.files[gif.fileId] : null;
+  if (!gif || gif.status !== 'approved' || !file || !['image/gif', 'image/webp'].includes(file.mime)) return null;
+  return publicGif(gif, viewerId);
+}
+
 function publicStory(story, viewerId = null) {
   if (!story) return null;
   const views = Array.isArray(story.views) ? story.views : [];
@@ -696,15 +1090,21 @@ function publicStory(story, viewerId = null) {
     comments: comments.slice(-80).map((comment) => {
       const commentLikes = Array.isArray(comment.likes) ? comment.likes : [];
       const parent = comment.replyTo ? commentById.get(comment.replyTo) : null;
+      const gif = publicStoryCommentGif(comment, viewerId);
+      const parentGif = publicStoryCommentGif(parent, viewerId);
       return {
         id: comment.id,
-        text: comment.text,
+        kind: comment.kind === 'gif' ? 'gif' : 'text',
+        text: comment.text || '',
+        gif,
         createdAt: comment.createdAt,
         user: storyActor(db.users[comment.userId]),
         replyTo: parent?.id || null,
         replyPreview: parent ? {
           id: parent.id,
-          text: parent.text,
+          kind: parent.kind === 'gif' ? 'gif' : 'text',
+          text: parent.text || '',
+          gif: parentGif,
           user: storyActor(db.users[parent.userId])
         } : null,
         likeCount: commentLikes.length,
@@ -1197,6 +1597,7 @@ function sendMailViaSendmail(to, subject, text) {
     });
     child.stdin.end([
       `To: ${mailHeader(to)}`,
+      `From: ${mailHeader(MAIL_FROM)}`,
       `Subject: ${mailHeader(subject)}`,
       'Content-Type: text/plain; charset=utf-8',
       '',
@@ -1372,6 +1773,14 @@ function canAccessFile(userId, file) {
     ));
     return canViewStory(story, userId);
   }
+  if (file.scope === 'post') {
+    const post = Object.values(db.posts).find((item) => item.fileId === file.id);
+    return canViewPost(post, userId);
+  }
+  if (file.scope === 'note-audio') {
+    const note = Object.values(db.notes).find((item) => item.audioFileId === file.id);
+    return canViewNote(note, userId);
+  }
   if (!userId) return false;
   if (file.ownerId === userId) return true;
   if (!file.messageId) return false;
@@ -1444,13 +1853,15 @@ async function handleApi(req, res, pathname, query) {
       return sendError(res, 400, 'Username must be 3-24 characters and use letters, numbers, underscores, or dots.');
     }
     if (password.length < 8) return sendError(res, 400, 'Password must be at least 8 characters.');
+    if (!validEmail(email)) return sendError(res, 400, 'Enter a valid email address.');
+    if (!validPhone(phone)) return sendError(res, 400, 'Enter a valid phone number.');
     if (Object.values(db.users).some((user) => user.usernameLower === usernameLower)) {
       return sendError(res, 409, 'That username is already taken.');
     }
-    if (email && Object.values(db.users).some((user) => user.email === email)) {
+    if (email && Object.values(db.users).some((user) => String(user.email || '').toLowerCase() === email)) {
       return sendError(res, 409, 'That email is already registered.');
     }
-    if (phone && Object.values(db.users).some((user) => user.phone === phone)) {
+    if (phone && Object.values(db.users).some((user) => String(user.phone || '').replace(/\D/g, '') === phone.replace(/\D/g, ''))) {
       return sendError(res, 409, 'That phone number is already registered.');
     }
 
@@ -1461,18 +1872,33 @@ async function handleApi(req, res, pathname, query) {
       usernameLower,
       email,
       phone,
+      emailVerified: false,
+      emailVerifiedAt: null,
+      emailVerificationSentAt: null,
+      phoneVerified: false,
+      phoneVerifiedAt: null,
       passwordSalt: passwordRecord.salt,
       passwordHash: passwordRecord.hash,
       createdAt: nowIso(),
       profile: {
         displayName: username,
+        displayNameChangedAt: null,
         bio: '',
+        bioVisible: true,
+        website: '',
+        websiteVisible: true,
+        age: null,
+        ageVisible: false,
+        gender: '',
+        genderVisible: false,
         avatarFileId: null,
         socialPublic: true,
         searchable: true,
         recommendable: true,
         avatarViewable: true,
         allowGroupAdds: true,
+        allowReposts: true,
+        favoriteUserIds: [],
         mentionPermission: 'everyone',
         storyReplies: 'everyone',
         friendRequests: 'everyone',
@@ -1491,9 +1917,34 @@ async function handleApi(req, res, pathname, query) {
     db.blocks[user.id] = [];
     db.mutes[user.id] = {};
     await Promise.all([saveUsers(), saveContacts(), saveFollows(), saveNotifications(), saveBlocks(), saveMutes()]);
+    const verificationMail = email ? await issueEmailVerification(user, req) : { sent: false };
     await createSession(res, user.id);
     rememberUserRequest(user.id, req);
-    return sendJson(res, 201, { user: publicUser(user, user.id) });
+    return sendJson(res, 201, {
+      user: publicUser(user, user.id),
+      verificationRequired: Boolean(email),
+      verificationEmailSent: Boolean(verificationMail.sent)
+    });
+  }
+
+  const emailVerificationMatch = /^\/api\/(?:auth\/verify-email|account\/verify-email|verify-email|email\/verify|email-verifications)(?:\/([^/]+))?$/.exec(pathname);
+  if (req.method === 'GET' && emailVerificationMatch) {
+    const token = cleanText(emailVerificationMatch[1] ? decodeURIComponent(emailVerificationMatch[1]) : query.get('token'), 200);
+    if (!token) return sendError(res, 400, 'A verification token is required.');
+    const record = db.emailVerifications[sha256(token)];
+    if (!record || record.usedAt || new Date(record.expiresAt).getTime() <= Date.now()) {
+      return sendError(res, 400, 'This verification link is invalid or has expired.');
+    }
+    const user = db.users[record.userId];
+    if (!user || String(user.email || '').toLowerCase() !== String(record.email || '').toLowerCase()) {
+      return sendError(res, 400, 'This verification link no longer matches the account email.');
+    }
+    const verifiedAt = nowIso();
+    user.emailVerified = true;
+    user.emailVerifiedAt = verifiedAt;
+    record.usedAt = verifiedAt;
+    await Promise.all([saveUsers(), saveEmailVerifications()]);
+    return sendJson(res, 200, { ok: true, verified: true, email: user.email, verifiedAt });
   }
 
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -1535,25 +1986,46 @@ async function handleApi(req, res, pathname, query) {
     const user = await requireAuth(req, res);
     if (!user) return;
     const body = await readJsonBody(req);
-    const username = cleanText(body.username || user.username, 24);
-    const usernameLower = normalizeUsername(username);
-    if (username !== user.username) {
-      if (!/^[a-zA-Z0-9_.]{3,24}$/.test(username)) {
-        return sendError(res, 400, 'Username must be 3-24 characters and use letters, numbers, underscores, or dots.');
-      }
-      if (Object.values(db.users).some((item) => item.id !== user.id && item.usernameLower === usernameLower)) {
-        return sendError(res, 409, 'That username is already taken.');
-      }
-      user.username = username;
-      user.usernameLower = usernameLower;
+    const visibility = body.visibility && typeof body.visibility === 'object' ? body.visibility : {};
+    if (!user.profile || typeof user.profile !== 'object') user.profile = {};
+    if (body.username !== undefined && cleanText(body.username, 24) !== user.username) {
+      return sendError(res, 400, 'Your @username is permanent and cannot be changed.');
     }
-    user.profile.displayName = cleanText(body.displayName || user.profile.displayName || user.username, 60) || user.username;
-    user.profile.bio = cleanText(body.bio || '', 280);
+    if (body.displayName !== undefined) {
+      const displayName = cleanText(body.displayName, 60) || user.username;
+      if (displayName !== (user.profile.displayName || user.username)) {
+        const lastChanged = new Date(user.profile.displayNameChangedAt || 0).getTime();
+        const nextChangeAt = lastChanged ? lastChanged + DISPLAY_NAME_COOLDOWN_MS : 0;
+        if (nextChangeAt > Date.now()) {
+          return sendError(res, 429, 'Display names can only be changed once every 14 days.', {
+            nextDisplayNameChangeAt: new Date(nextChangeAt).toISOString()
+          });
+        }
+        user.profile.displayName = displayName;
+        user.profile.displayNameChangedAt = nowIso();
+      }
+    }
+    if (body.bio !== undefined) user.profile.bio = cleanText(body.bio, 280);
+    if (body.website !== undefined) user.profile.website = cleanWebsite(body.website);
+    if (body.age !== undefined) {
+      if (body.age === null || body.age === '') user.profile.age = null;
+      else {
+        const age = Number(body.age);
+        if (!Number.isInteger(age) || age < 1 || age > 120) return sendError(res, 400, 'Age must be a whole number from 1 to 120.');
+        user.profile.age = age;
+      }
+    }
+    if (body.gender !== undefined) user.profile.gender = cleanText(body.gender, 40);
     if (body.socialPublic !== undefined) user.profile.socialPublic = Boolean(body.socialPublic);
     if (body.searchable !== undefined) user.profile.searchable = Boolean(body.searchable);
     if (body.recommendable !== undefined) user.profile.recommendable = Boolean(body.recommendable);
     if (body.avatarViewable !== undefined) user.profile.avatarViewable = Boolean(body.avatarViewable);
     if (body.allowGroupAdds !== undefined) user.profile.allowGroupAdds = Boolean(body.allowGroupAdds);
+    if (body.allowReposts !== undefined) user.profile.allowReposts = Boolean(body.allowReposts);
+    if (body.bioVisible !== undefined || body.showBio !== undefined || visibility.bio !== undefined) user.profile.bioVisible = Boolean(body.bioVisible ?? body.showBio ?? visibility.bio);
+    if (body.websiteVisible !== undefined || body.showWebsite !== undefined || visibility.website !== undefined) user.profile.websiteVisible = Boolean(body.websiteVisible ?? body.showWebsite ?? visibility.website);
+    if (body.ageVisible !== undefined || body.showAge !== undefined || visibility.age !== undefined) user.profile.ageVisible = Boolean(body.ageVisible ?? body.showAge ?? visibility.age);
+    if (body.genderVisible !== undefined || body.showGender !== undefined || visibility.gender !== undefined) user.profile.genderVisible = Boolean(body.genderVisible ?? body.showGender ?? visibility.gender);
     if (['everyone', 'following', 'nobody'].includes(body.mentionPermission)) user.profile.mentionPermission = body.mentionPermission;
     if (['everyone', 'following', 'off'].includes(body.storyReplies)) user.profile.storyReplies = body.storyReplies;
     if (['everyone', 'followers', 'off'].includes(body.friendRequests)) user.profile.friendRequests = body.friendRequests;
@@ -1564,6 +2036,373 @@ async function handleApi(req, res, pathname, query) {
     }
     await saveUsers();
     return sendJson(res, 200, { user: publicUser(user, user.id) });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/account') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    return sendJson(res, 200, { account: accountSnapshot(user) });
+  }
+
+  if (req.method === 'PATCH' && pathname === '/api/account') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    let emailChanged = false;
+    if (body.email !== undefined) {
+      const email = String(body.email || '').trim().toLowerCase();
+      if (!validEmail(email)) return sendError(res, 400, 'Enter a valid email address.');
+      if (email && Object.values(db.users).some((item) => item.id !== user.id && String(item.email || '').toLowerCase() === email)) {
+        return sendError(res, 409, 'That email is already registered.');
+      }
+      if (email !== String(user.email || '').toLowerCase()) {
+        user.email = email;
+        user.emailVerified = false;
+        user.emailVerifiedAt = null;
+        user.emailVerificationSentAt = null;
+        emailChanged = true;
+      }
+    }
+    if (body.phone !== undefined) {
+      const phone = String(body.phone || '').trim();
+      if (!validPhone(phone)) return sendError(res, 400, 'Enter a valid phone number.');
+      const phoneDigits = phone.replace(/\D/g, '');
+      if (phone && Object.values(db.users).some((item) => item.id !== user.id && String(item.phone || '').replace(/\D/g, '') === phoneDigits)) {
+        return sendError(res, 409, 'That phone number is already registered.');
+      }
+      if (phone !== String(user.phone || '')) {
+        user.phone = phone;
+        user.phoneVerified = false;
+        user.phoneVerifiedAt = null;
+      }
+    }
+    await saveUsers();
+    let verificationMail = { sent: false };
+    if (emailChanged) {
+      if (user.email) verificationMail = await issueEmailVerification(user, req);
+      else {
+        for (const [key, record] of Object.entries(db.emailVerifications)) {
+          if (record?.userId === user.id && !record.usedAt) delete db.emailVerifications[key];
+        }
+        await saveEmailVerifications();
+      }
+    }
+    return sendJson(res, 200, {
+      account: accountSnapshot(user),
+      user: publicUser(user, user.id),
+      verificationEmailSent: Boolean(verificationMail.sent)
+    });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/account/email/verification') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    if (!user.email) return sendError(res, 400, 'Add an email address first.');
+    if (user.emailVerified) return sendJson(res, 200, { ok: true, alreadyVerified: true, account: accountSnapshot(user) });
+    const lastSent = new Date(user.emailVerificationSentAt || 0).getTime();
+    if (lastSent && Date.now() - lastSent < 60 * 1000) {
+      return sendError(res, 429, 'Please wait a minute before requesting another verification email.');
+    }
+    const result = await issueEmailVerification(user, req);
+    return sendJson(res, 200, { ok: true, sent: Boolean(result.sent), account: accountSnapshot(user) });
+  }
+
+  if (req.method === 'PATCH' && pathname === '/api/account/password') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const currentPassword = String(body.currentPassword || body.current || '');
+    const newPassword = String(body.newPassword || body.password || '');
+    if (!verifyPassword(currentPassword, user)) return sendError(res, 403, 'Your current password is incorrect.');
+    if (newPassword.length < 8) return sendError(res, 400, 'New password must be at least 8 characters.');
+    if (newPassword === currentPassword) return sendError(res, 400, 'Choose a different password.');
+    const passwordRecord = createPassword(newPassword);
+    user.passwordSalt = passwordRecord.salt;
+    user.passwordHash = passwordRecord.hash;
+    const currentSessionKey = sha256(parseCookies(req)[COOKIE_NAME] || '');
+    for (const [sessionKey, session] of Object.entries(db.sessions)) {
+      if (session.userId === user.id && sessionKey !== currentSessionKey) delete db.sessions[sessionKey];
+    }
+    await Promise.all([saveUsers(), saveSessions()]);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/account/blocked') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const users = Array.from(new Set(db.blocks[user.id] || []))
+      .map((userId) => db.users[userId])
+      .filter(Boolean)
+      .map((blocked) => relationshipPublicUser(blocked, user.id));
+    return sendJson(res, 200, { users });
+  }
+
+  const favoriteMatch = /^\/api\/favorites\/([^/]+)$/.exec(pathname);
+  if ((req.method === 'POST' || req.method === 'DELETE') && favoriteMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const targetKey = decodeURIComponent(favoriteMatch[1]);
+    const target = db.users[targetKey] || userByUsername(targetKey);
+    if (!target || target.id === user.id) return sendError(res, 404, 'User not found.');
+    if (isBlockedBetween(user.id, target.id)) return sendError(res, 403, 'This user cannot be favorited right now.');
+    const favorites = favoriteUserIdsFor(user);
+    if (req.method === 'POST' && !favorites.includes(target.id)) favorites.push(target.id);
+    user.profile.favoriteUserIds = req.method === 'DELETE' ? favorites.filter((userId) => userId !== target.id) : favorites;
+    await saveUsers();
+    return sendJson(res, 200, { user: publicUser(target, user.id), favoriteUserIds: favoriteUserIdsFor(user) });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/feed') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const requestedMode = cleanText(query.get('mode') || 'for_you', 20).toLowerCase();
+    const mode = ['for_you', 'following', 'favorites'].includes(requestedMode) ? requestedMode : 'for_you';
+    const following = new Set(db.follows[user.id] || []);
+    const favorites = new Set(favoriteUserIdsFor(user));
+    const limit = Math.floor(boundedNumber(query.get('limit') || 40, 1, 100, 40));
+    let posts = activePostsFor().filter((post) => canViewPost(post, user.id));
+    if (mode === 'following') posts = posts.filter((post) => following.has(post.ownerId));
+    if (mode === 'favorites') posts = posts.filter((post) => favorites.has(post.ownerId));
+    if (mode === 'for_you') posts.sort((a, b) => postFeedScore(b) - postFeedScore(a) || String(b.createdAt).localeCompare(String(a.createdAt)));
+    else posts.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    return sendJson(res, 200, { mode, posts: posts.slice(0, limit).map((post) => publicPost(post, user.id)) });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/explore') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const limit = Math.floor(boundedNumber(query.get('limit') || 60, 1, 120, 60));
+    const posts = activePostsFor()
+      .filter((post) => canViewPost(post, user.id))
+      .sort((a, b) => postFeedScore(b) - postFeedScore(a) || String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, limit)
+      .map((post) => publicPost(post, user.id));
+    return sendJson(res, 200, { posts });
+  }
+
+  const userPostsMatch = /^\/api\/users\/([^/]+)\/posts$/.exec(pathname);
+  if (req.method === 'GET' && userPostsMatch) {
+    const viewer = sessionFromRequest(req)?.user || null;
+    const targetKey = decodeURIComponent(userPostsMatch[1]);
+    const target = db.users[targetKey] || userByUsername(targetKey);
+    if (!target) return sendError(res, 404, 'User not found.');
+    const requestedTab = cleanText(query.get('tab') || 'posts', 20).toLowerCase();
+    const tab = ['posts', 'saved', 'reposts', 'tagged'].includes(requestedTab) ? requestedTab : 'posts';
+    const viewerId = viewer?.id || null;
+    const privateProfile = !canViewPostsBy(target.id, viewerId);
+    if (privateProfile || (tab === 'saved' && viewerId !== target.id)) {
+      return sendJson(res, 200, { posts: [], private: true, tab });
+    }
+    let posts;
+    if (tab === 'saved') posts = activePostsFor().filter((post) => (post.savedBy || []).includes(target.id));
+    else if (tab === 'reposts') posts = activePostsFor().filter((post) => (post.repostedBy || []).includes(target.id));
+    else if (tab === 'tagged') posts = activePostsFor().filter((post) => (post.personTags || []).some((tag) => tag.userId === target.id));
+    else posts = activePostsFor(target.id);
+    posts = posts.filter((post) => canViewPost(post, viewerId));
+    return sendJson(res, 200, { posts: posts.map((post) => publicPost(post, viewerId)), private: false, tab });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/posts') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const upload = body.file || body.media;
+    if (!upload?.dataUrl) return sendError(res, 400, 'Choose one photo or video to post.');
+    const mime = mimeFromDataUrl(upload.dataUrl);
+    if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
+    const decoded = dataUrlToBuffer(upload.dataUrl);
+    const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
+    if (decoded.buffer.length > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+    const title = cleanText(body.title || '', 100);
+    const description = cleanText(body.description || body.caption || '', 2200);
+    const personTags = cleanPersonTags(body.personTags || body.taggedPeople || body.taggedUsers || body.tags, user.id);
+    const inlineHashtags = description.match(/#[\p{L}\p{N}_]+/gu) || [];
+    const suppliedHashtags = body.hashtags ?? ((typeof body.tags === 'string' || (Array.isArray(body.tags) && body.tags.every((tag) => typeof tag === 'string'))) ? body.tags : '');
+    const file = await saveUpload(upload, user.id, 'post');
+    const post = {
+      id: id('post'),
+      ownerId: user.id,
+      fileId: file.id,
+      title,
+      description,
+      hashtags: cleanHashtags([...(Array.isArray(suppliedHashtags) ? suppliedHashtags : String(suppliedHashtags || '').split(/[\s,]+/)), ...inlineHashtags]),
+      personTags,
+      edits: cleanPostEdits(body),
+      allowReposts: body.allowReposts !== false,
+      likes: [],
+      savedBy: [],
+      repostedBy: [],
+      repostDates: {},
+      comments: [],
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      deletedAt: null
+    };
+    db.posts[post.id] = post;
+    for (const tag of personTags) {
+      if (tag.userId === user.id) continue;
+      const note = addNotification(tag.userId, 'post_tag', user.id, null, `${user.username} tagged you in a post.`, { postId: post.id });
+      if (note) pushToUser(tag.userId, { type: 'notification:new', notification: publicNotification(note, tag.userId) });
+    }
+    notifyMentions(user, `${title} ${description}`, 'in a post');
+    await Promise.all([savePosts(), saveNotifications()]);
+    return sendJson(res, 201, { post: publicPost(post, user.id), user: publicUser(user, user.id) });
+  }
+
+  const postMatch = /^\/api\/posts\/([^/]+)$/.exec(pathname);
+  if (req.method === 'GET' && postMatch) {
+    const viewer = sessionFromRequest(req)?.user || null;
+    const post = db.posts[decodeURIComponent(postMatch[1])];
+    if (!canViewPost(post, viewer?.id || null)) return sendError(res, 404, 'Post not found.');
+    return sendJson(res, 200, { post: publicPost(post, viewer?.id || null) });
+  }
+
+  const postToggleMatch = /^\/api\/posts\/([^/]+)\/(like|save|repost)$/.exec(pathname);
+  if (req.method === 'POST' && postToggleMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postToggleMatch[1])];
+    if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    const action = postToggleMatch[2];
+    let notification = null;
+    if (action === 'like') {
+      if (!Array.isArray(post.likes)) post.likes = [];
+      const active = post.likes.includes(user.id);
+      post.likes = active ? post.likes.filter((userId) => userId !== user.id) : [...post.likes, user.id];
+      if (!active && post.ownerId !== user.id) notification = addNotification(post.ownerId, 'post_like', user.id, null, `${user.username} liked your post.`, { postId: post.id });
+    } else if (action === 'save') {
+      if (!Array.isArray(post.savedBy)) post.savedBy = [];
+      post.savedBy = post.savedBy.includes(user.id) ? post.savedBy.filter((userId) => userId !== user.id) : [...post.savedBy, user.id];
+    } else {
+      if (!Array.isArray(post.repostedBy)) post.repostedBy = [];
+      if (!post.repostDates || typeof post.repostDates !== 'object') post.repostDates = {};
+      const active = post.repostedBy.includes(user.id);
+      if (!active && !postRepostsAllowed(post)) return sendError(res, 403, 'The author has turned off reposts for this post.');
+      post.repostedBy = active ? post.repostedBy.filter((userId) => userId !== user.id) : [...post.repostedBy, user.id];
+      if (active) delete post.repostDates[user.id];
+      else {
+        post.repostDates[user.id] = nowIso();
+        if (post.ownerId !== user.id) notification = addNotification(post.ownerId, 'post_repost', user.id, null, `${user.username} reposted your post.`, { postId: post.id });
+      }
+    }
+    await Promise.all([savePosts(), notification ? saveNotifications() : Promise.resolve()]);
+    if (notification) pushToUser(post.ownerId, { type: 'notification:new', notification: publicNotification(notification, post.ownerId) });
+    return sendJson(res, 200, { post: publicPost(post, user.id) });
+  }
+
+  const postCommentMatch = /^\/api\/posts\/([^/]+)\/comments$/.exec(pathname);
+  if (req.method === 'POST' && postCommentMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postCommentMatch[1])];
+    if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    const body = await readJsonBody(req);
+    const text = cleanText(body.text || '', 1000);
+    if (!text) return sendError(res, 400, 'Write a comment first.');
+    const comment = { id: id('comment'), userId: user.id, text, createdAt: nowIso(), deletedAt: null };
+    if (!Array.isArray(post.comments)) post.comments = [];
+    post.comments.push(comment);
+    post.comments = post.comments.slice(-500);
+    const mentionNotes = notifyMentions(user, text, 'in a post comment');
+    let notification = null;
+    if (post.ownerId !== user.id && !mentionNotes.some(({ target }) => target.id === post.ownerId)) {
+      notification = addNotification(post.ownerId, 'post_comment', user.id, null, `${user.username} commented on your post.`, { postId: post.id, commentId: comment.id });
+    }
+    await Promise.all([savePosts(), saveNotifications()]);
+    if (notification) pushToUser(post.ownerId, { type: 'notification:new', notification: publicNotification(notification, post.ownerId) });
+    return sendJson(res, 201, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id) });
+  }
+
+  if (req.method === 'DELETE' && postMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postMatch[1])];
+    if (!post || post.deletedAt) return sendError(res, 404, 'Post not found.');
+    if (post.ownerId !== user.id) return sendError(res, 403, 'Only the author can delete this post.');
+    post.deletedAt = nowIso();
+    await savePosts();
+    return sendJson(res, 200, { ok: true, user: publicUser(user, user.id) });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/notes') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const allowedOwners = new Set([user.id, ...(db.follows[user.id] || [])]);
+    const notes = Object.values(db.notes)
+      .filter((note) => allowedOwners.has(note.ownerId) && canViewNote(note, user.id))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .map((note) => publicNote(note, user.id));
+    return sendJson(res, 200, { notes });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/me/note') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const textValue = String(body.text || '').trim();
+    if (Array.from(textValue).length > 60) return sendError(res, 400, 'Notes can be at most 60 characters.');
+    const text = Array.from(textValue).slice(0, 60).join('');
+    const audioUpload = body.audio?.dataUrl ? body.audio : null;
+    const durationRaw = body.audioDuration ?? body.audio?.durationSeconds ?? body.audio?.duration;
+    const audioDuration = durationRaw === undefined || durationRaw === null || durationRaw === '' ? null : Number(durationRaw);
+    const audioStart = boundedNumber(body.audioStart ?? body.audio?.start, 0, 60 * 60, 0);
+    if (audioDuration !== null && (!Number.isFinite(audioDuration) || audioDuration < 0 || audioDuration > 30)) {
+      return sendError(res, 400, 'Note audio snippets can be at most 30 seconds.');
+    }
+    if (!text && !audioUpload && !body.audioTitle) return sendError(res, 400, 'Write a note or choose an audio snippet.');
+    let audioFile = null;
+    if (audioUpload) {
+      if (!mimeFromDataUrl(audioUpload.dataUrl).startsWith('audio/')) return sendError(res, 400, 'Note audio must be an audio file.');
+      if (dataUrlToBuffer(audioUpload.dataUrl).buffer.length > 12 * 1024 * 1024) return sendError(res, 413, 'Note audio is too large.');
+      audioFile = await saveUpload(audioUpload, user.id, 'note-audio');
+    }
+    const note = {
+      id: id('note'),
+      ownerId: user.id,
+      text,
+      audioFileId: audioFile?.id || null,
+      audioTitle: cleanText(body.audioTitle || body.audio?.title || '', 100),
+      audioArtist: cleanText(body.audioArtist || body.audio?.artist || '', 100),
+      audioDuration,
+      audioStart,
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + NOTE_LIFETIME_MS).toISOString(),
+      deletedAt: null
+    };
+    db.notes[user.id] = note;
+    await saveNotes();
+    return sendJson(res, 201, { note: publicNote(note, user.id) });
+  }
+
+  if (req.method === 'DELETE' && pathname === '/api/me/note') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    if (db.notes[user.id]) delete db.notes[user.id];
+    await saveNotes();
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/me/activity') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const type = cleanText(query.get('type') || 'comments', 20).toLowerCase();
+    if (!['comments', 'reposts'].includes(type)) return sendError(res, 400, 'Activity type must be comments or reposts.');
+    let items = [];
+    if (type === 'comments') {
+      for (const post of activePostsFor()) {
+        if (!canViewPost(post, user.id)) continue;
+        for (const comment of post.comments || []) {
+          if (comment.userId !== user.id || comment.deletedAt) continue;
+          items.push({ id: comment.id, type: 'comment', createdAt: comment.createdAt, comment: publicPostComment(comment, user.id), post: publicPost(post, user.id) });
+        }
+      }
+    } else {
+      items = activePostsFor()
+        .filter((post) => canViewPost(post, user.id) && (post.repostedBy || []).includes(user.id))
+        .map((post) => ({ id: `repost_${post.id}`, type: 'repost', createdAt: post.repostDates?.[user.id] || post.createdAt, post: publicPost(post, user.id) }));
+    }
+    items.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    return sendJson(res, 200, { type, items });
   }
 
   if (req.method === 'GET' && pathname === '/api/gifs') {
@@ -1829,6 +2668,25 @@ async function handleApi(req, res, pathname, query) {
     });
   }
 
+  if (req.method === 'DELETE' && highlightMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const highlightId = decodeURIComponent(highlightMatch[1]);
+    const highlight = highlightFor(user, highlightId);
+    if (!highlight) return sendError(res, 404, 'Highlight not found.');
+    const remaining = ensureUserHighlights(user).filter((item) => item.id !== highlightId);
+    const stillReferenced = new Set(remaining.flatMap((item) => item.storyIds || []));
+    for (const storyId of highlight.storyIds || []) {
+      const story = db.stories[storyId];
+      if (!story || stillReferenced.has(storyId)) continue;
+      story.saved = false;
+      story.expiresAt = new Date(new Date(story.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString();
+    }
+    user.profile.highlights = remaining;
+    await Promise.all([saveUsers(), saveStories()]);
+    return sendJson(res, 200, { ok: true, user: publicUser(user, user.id) });
+  }
+
   const highlightStoryMatch = /^\/api\/highlights\/([^/]+)\/stories$/.exec(pathname);
   if (req.method === 'POST' && highlightStoryMatch) {
     const user = await requireAuth(req, res);
@@ -1897,8 +2755,20 @@ async function handleApi(req, res, pathname, query) {
     if (!canViewStory(story, user.id)) return sendError(res, 404, 'Story not found.');
     if (!canReplyToStory(story, user.id)) return sendError(res, 403, 'This user has turned off story replies.');
     const body = await readJsonBody(req);
-    const text = cleanText(body.text || '', 280);
-    if (!text) return sendError(res, 400, 'Write a comment first.');
+    const kind = body.kind === 'gif' ? 'gif' : 'text';
+    const text = kind === 'text' ? cleanText(body.text || '', 280) : '';
+    const gifId = kind === 'gif' ? cleanText(body.gifId || '', 80) : '';
+    let gif = null;
+    if (kind === 'gif') {
+      if (!gifId) return sendError(res, 400, 'Choose a GIF first.');
+      gif = db.gifs[gifId];
+      const gifFile = gif?.fileId ? db.files[gif.fileId] : null;
+      if (!gif || gif.status !== 'approved' || !gifFile || !['image/gif', 'image/webp'].includes(gifFile.mime)) {
+        return sendError(res, 404, 'Approved GIF not found.');
+      }
+    } else if (!text) {
+      return sendError(res, 400, 'Write a comment first.');
+    }
     if (!Array.isArray(story.comments)) story.comments = [];
     const parent = body.replyTo
       ? story.comments.find((comment) => comment.id === cleanText(body.replyTo, 120))
@@ -1906,14 +2776,16 @@ async function handleApi(req, res, pathname, query) {
     const comment = {
       id: id('comment'),
       userId: user.id,
+      kind,
       text,
+      gifId: gif?.id || null,
       replyTo: parent?.id || null,
       likes: [],
       createdAt: nowIso()
     };
     story.comments.push(comment);
     story.comments = story.comments.slice(-200);
-    const mentionNotes = notifyMentions(user, text, 'in a story comment');
+    const mentionNotes = text ? notifyMentions(user, text, 'in a story comment') : [];
     if (parent && parent.userId !== user.id && !mentionNotes.some(({ target }) => target.id === parent.userId)) {
       const note = addNotification(parent.userId, 'comment_reply', user.id, null, `${user.username} replied to your comment.`);
       if (note) pushToUser(parent.userId, {
@@ -2283,7 +3155,11 @@ async function handleApi(req, res, pathname, query) {
     const list = ensureObjectList(db.blocks, user.id);
     if (req.method === 'POST' && !list.includes(peer.id)) list.push(peer.id);
     if (req.method === 'DELETE') db.blocks[user.id] = list.filter((id) => id !== peer.id);
-    await saveBlocks();
+    if (req.method === 'POST') {
+      user.profile.favoriteUserIds = favoriteUserIdsFor(user).filter((userId) => userId !== peer.id);
+      peer.profile.favoriteUserIds = favoriteUserIdsFor(peer).filter((userId) => userId !== user.id);
+    }
+    await Promise.all([saveBlocks(), ...(req.method === 'POST' ? [saveUsers()] : [])]);
     pushToUsers([user.id, peer.id], { type: 'relationship:updated' });
     return sendJson(res, 200, { user: publicUser(peer, user.id) });
   }

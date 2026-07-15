@@ -1,6 +1,6 @@
 # Chat Website Starter
 
-This is a small full-stack chat website you can run with Node.js. It includes accounts, username search, public profile pages, contacts, real-time chat, swipe-to-reply, message deletion, images, videos, documents, voice notes, local-device stickers, chat export, file metadata downloads, optional 2FA, and basic WebRTC call signaling.
+This is a small full-stack social and chat website you can run with Node.js. It includes a photo/video feed, profiles, stories, highlights, Notes, account discovery, private accounts, real-time chat, media messages, optional 2FA, and basic WebRTC call signaling.
 
 This is a learning-friendly starter app, not a finished Instagram-scale production system. It uses JSON files and disk uploads so you can understand and deploy it before adding a real database later.
 
@@ -8,14 +8,21 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 
 ## What Is Included
 
-- Username plus password signup; login also accepts an attached email or phone number.
+- Permanent tag username plus password signup, with optional email and phone; login accepts any of those identifiers.
+- Customized verification emails through the host's `sendmail` service, account contact management, and password changes.
 - Optional authenticator-app 2FA.
 - Public user pages at `/u/username`.
-- Profile tab with profile picture, bio, 24-hour stories, saved highlights, and profile-link sharing.
+- Home feed with For you, Following, and Favorites views; story rail, likes, comments, saves, and reposts.
+- Three-step photo/video post composer with crop controls, filters/adjustments, captions, hashtags, and positioned person tags.
+- Profile tab with display name, permanent tag username, post/follower/following counts, profile details, 24-hour stories, editable highlights, and profile-link sharing.
+- Profile media tabs for posts, private saves, reposts, and tagged photos/videos.
+- Search Explore grid, account suggestions, favorites, post activity, and block-aware discovery.
+- 24-hour Notes above chats and on your profile, including optional click-to-play audio snippets up to 30 seconds.
+- Account, privacy, interaction, blocked-user, comment-history, and repost settings.
 - Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, interactive polls/quizzes/sliders, mentions, maps, live weather, audio clips, and downloads.
 - Shared GIF pool with moderator approval; the usernames in `MODERATOR_USERNAMES` can approve submissions.
 - Full-screen story/highlight viewer with progress, navigation, likes, comments, and private-account access control.
-- Bottom navigation tabs for messages, search, and profile.
+- Five-control bottom navigation for Home, Search, Create, Messages, and Profile.
 - Username search, friend requests, and a notification center for accepting or declining requests.
 - Conversation search on the Messages tab that finds saved message references.
 - Public/private followers and following lists.
@@ -210,7 +217,7 @@ sudo cp deploy/oracle/chat-app.env.example /etc/chat-app/chat-app.env
 sudo nano /etc/chat-app/chat-app.env
 ```
 
-Set `MODERATOR_USERNAMES` to your website username. Weather uses Open-Meteo automatically; adding a `GOOGLE_WEATHER_API_KEY` makes the server try Google Weather first and fall back when it is unavailable. Keep API keys only in this server environment file, never in GitHub.
+Set `MODERATOR_USERNAMES` to your website username. Weather uses Open-Meteo automatically; adding a `GOOGLE_WEATHER_API_KEY` makes the server try Google Weather first and fall back when it is unavailable. Set `MAIL_FROM` to your verified sender identity and `SENDMAIL_PATH` to the server's sendmail-compatible binary so verification emails can be delivered. Keep credentials only in this server environment file, never in GitHub.
 
 Copy the service template:
 
