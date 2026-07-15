@@ -4779,9 +4779,12 @@ html.keyboard-open .bottom-tabs {
   color: #fff;
   background: rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .story-viewer-actions button {
+  position: relative;
+  z-index: 2;
   width: 40px;
   height: 40px;
   min-height: 40px;
@@ -4792,6 +4795,9 @@ html.keyboard-open .bottom-tabs {
   color: #fff;
   background: rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .story-viewer-actions button.active {
@@ -6836,6 +6842,18 @@ html.keyboard-open .bottom-tabs {
   font-size: 11px;
 }
 
+.story-viewer-actions button.story-owner-metric {
+  width: auto;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 10px;
+  display: inline-flex;
+  place-items: initial;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+}
+
 .story-owner-metric .ui-icon {
   width: 16px;
   height: 16px;
@@ -8072,6 +8090,14 @@ html.keyboard-open .bottom-tabs {
 [data-action="like-story"] {
   position: relative;
   overflow: visible;
+}
+
+.story-viewer-actions button,
+.story-comments-sheet button,
+.story-viewer-actions input,
+.story-comments-sheet input {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 [data-action="like-story"].is-pending {
