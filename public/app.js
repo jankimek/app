@@ -307,12 +307,18 @@
   }
 
   function currentAppShell() {
-    return app.querySelector(':scope > .app-shell');
+    return app.querySelector(':scope > .app-shell:not(.route-page-underlay)');
   }
 
   function captureNavigationEntry(kind = 'page') {
     capturePersistentScroll();
     const liveShell = currentAppShell();
+    const messageScroll = captureMessagesScroll();
+    const liveScroll = captureLiveScroll(liveShell);
+    // A page that just finished a back transition stays fixed until it is
+    // needed again. Normalize it while it is still the current page, before
+    // renderApp detaches it for the next forward transition.
+    releaseNavigationShellLayer(liveShell);
     return {
       kind,
       view: captureNavigationView(),
@@ -324,10 +330,10 @@
       hasOlderMessages: state.hasOlderMessages,
       chatLoading: state.chatLoading,
       highlightMessageId: state.highlightMessageId,
-      messageScroll: captureMessagesScroll(),
+      messageScroll,
       scrollMemory: { ...state.scrollMemory },
       liveShell,
-      liveScroll: captureLiveScroll(liveShell),
+      liveScroll,
       // The retained shell is the route snapshot. Serializing the entire app
       // on every navigation produces large short-lived allocations that make
       // mobile garbage collection show up as an end-of-transition hitch.
@@ -408,7 +414,9 @@
       element.dataset.navigationId = element.id;
       element.removeAttribute('id');
     });
-    root?.querySelector(':scope > .app-shell')?.classList.remove(
+    const shell = root?.querySelector(':scope > .app-shell');
+    releaseNavigationShellLayer(shell);
+    shell?.classList.remove(
       'route-page-current',
       'route-page-entering',
       'route-page-exiting',
@@ -421,6 +429,128 @@
       element.id = element.dataset.navigationId;
       delete element.dataset.navigationId;
     });
+  }
+
+  function navigationPreviewTarget(preview) {
+    return preview?.navigationTarget || preview?.querySelector(':scope > .app-shell') || null;
+  }
+
+  function navigationUnderlayOffset() {
+    return isMobileLayout() ? '-18%' : '-4%';
+  }
+
+  function navigationMotionDuration(duration) {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 1 : duration;
+  }
+
+  function releaseNavigationShellLayer(shell) {
+    if (!shell || (!shell.classList.contains('route-page-underlay') && !shell.classList.contains('route-page-active-fixed'))) return;
+    shell.classList.remove('route-page-underlay', 'route-page-active-fixed');
+    shell.style.position = '';
+    shell.style.inset = '';
+    shell.style.width = '';
+    shell.style.zIndex = '';
+    shell.style.pointerEvents = '';
+    shell.style.willChange = '';
+    shell.style.transform = '';
+    shell.style.opacity = '';
+    shell.style.transition = '';
+    shell.style.boxShadow = '';
+  }
+
+  function prepareNavigationUnderlay(preview, target, surface) {
+    if (!preview || !target || !surface) return false;
+    preview.navigationTarget = target;
+    preview.navigationSurface = surface;
+    preview.navigationSurfaceZIndex = surface.style.zIndex;
+    preview.style.background = 'transparent';
+    preview.style.transform = 'none';
+    preview.style.opacity = '1';
+    preview.style.zIndex = '2';
+    preview.style.setProperty('--route-backdrop-opacity', '.22');
+    target.classList.remove('route-page-active-fixed');
+    target.classList.add('route-page-underlay');
+    target.style.position = 'fixed';
+    target.style.inset = '0';
+    target.style.width = '100%';
+    target.style.zIndex = '1';
+    target.style.pointerEvents = 'none';
+    target.style.willChange = 'transform';
+    target.style.transform = `translateX(${navigationUnderlayOffset()})`;
+    surface.style.zIndex = '3';
+    return true;
+  }
+
+  function stopNavigationUnderlayAnimations(preview) {
+    preview?.navigationTargetAnimation?.cancel?.();
+    preview?.navigationBackdropAnimation?.cancel?.();
+    if (preview) {
+      preview.navigationTargetAnimation = null;
+      preview.navigationBackdropAnimation = null;
+    }
+  }
+
+  function animateNavigationUnderlay(preview, duration = 260) {
+    const target = navigationPreviewTarget(preview);
+    if (!preview || !target) return;
+    const offset = `translateX(${navigationUnderlayOffset()})`;
+    const timing = {
+      duration: navigationMotionDuration(duration),
+      easing: 'cubic-bezier(.28,.74,.22,1)',
+      fill: 'forwards'
+    };
+    stopNavigationUnderlayAnimations(preview);
+    target.style.transition = '';
+    target.style.transform = offset;
+    preview.style.opacity = '1';
+    if (typeof target.animate === 'function') {
+      preview.navigationTargetAnimation = target.animate([
+        { transform: offset },
+        { transform: 'translateX(0)' }
+      ], timing);
+    } else {
+      target.style.transition = `transform ${timing.duration}ms ${timing.easing}`;
+      requestAnimationFrame(() => {
+        if (target.isConnected) target.style.transform = 'translateX(0)';
+      });
+    }
+    if (typeof preview.animate === 'function') {
+      preview.navigationBackdropAnimation = preview.animate([
+        { opacity: 1 },
+        { opacity: 0 }
+      ], timing);
+    } else {
+      preview.style.transition = `opacity ${timing.duration}ms ${timing.easing}`;
+      requestAnimationFrame(() => {
+        if (preview.isConnected) preview.style.opacity = '0';
+      });
+    }
+  }
+
+  function settleNavigationUnderlay(preview) {
+    const target = navigationPreviewTarget(preview);
+    stopNavigationUnderlayAnimations(preview);
+    if (target) target.style.transform = 'translateX(0)';
+    if (preview) {
+      preview.style.opacity = '0';
+      preview.style.setProperty('--route-backdrop-opacity', '0');
+    }
+  }
+
+  function activateNavigationShellLayer(shell) {
+    if (!shell) return;
+    shell.classList.remove('route-page-underlay');
+    shell.classList.add('route-page-active-fixed');
+    shell.style.position = 'fixed';
+    shell.style.inset = '0';
+    shell.style.width = '100%';
+    shell.style.zIndex = '';
+    shell.style.pointerEvents = '';
+    shell.style.willChange = '';
+    shell.style.transform = '';
+    shell.style.opacity = '';
+    shell.style.transition = '';
+    shell.style.boxShadow = '';
   }
 
   function captureLiveScroll(root) {
@@ -469,13 +599,20 @@
   function stashNavigationPreview(preview) {
     if (!preview) return;
     const entry = preview.navigationEntry;
-    const shell = preview.querySelector(':scope > .app-shell');
+    const shell = navigationPreviewTarget(preview);
+    stopNavigationUnderlayAnimations(preview);
     if (entry && shell) {
       entry.liveScroll = captureLiveScroll(shell);
       shell.remove();
+      releaseNavigationShellLayer(shell);
       entry.liveShell = shell;
+    } else {
+      shell?.remove();
     }
     preview.remove();
+    if (preview.navigationSurface?.isConnected) {
+      preview.navigationSurface.style.zIndex = preview.navigationSurfaceZIndex || '';
+    }
   }
 
   function stashNavigationPreviews() {
@@ -485,6 +622,8 @@
   function installNavigationPreview(entry, mode = 'back') {
     stashNavigationPreviews();
     if (!entry?.liveShell && !entry?.previewHtml) return null;
+    const current = currentAppShell();
+    if (!current) return null;
     const preview = document.createElement('div');
     preview.className = `route-page-preview route-preview-${mode}`;
     preview.setAttribute('aria-hidden', 'true');
@@ -501,10 +640,21 @@
     } else {
       preview.innerHTML = entry.previewHtml;
     }
-    app.insertBefore(preview, currentAppShell());
+    app.insertBefore(preview, current);
     sanitizeNavigationPreview(preview);
+    const target = preview.querySelector(':scope > .app-shell');
+    if (!target) {
+      preview.remove();
+      return null;
+    }
+    // Keep the retained page as a direct fixed underlay for the full gesture.
+    // This moves its layout work to the start and avoids reparenting the full
+    // chat DOM at the last animation frame.
+    current.after(preview);
+    preview.after(target);
+    prepareNavigationUnderlay(preview, target, current);
     if (preview.usesLiveShell) restoreLiveScrollAfterMove(liveScroll);
-    else restorePreviewScroll(preview, entry);
+    else restorePreviewScroll(target, entry);
     return preview;
   }
 
@@ -522,7 +672,7 @@
   }
 
   function promoteNavigationPreview(preview, entry) {
-    const target = preview?.querySelector(':scope > .app-shell');
+    const target = navigationPreviewTarget(preview);
     const current = currentAppShell();
     if (!target || !current) return false;
     const usesLiveShell = Boolean(preview.usesLiveShell);
@@ -530,17 +680,13 @@
     // containers even though the DOM nodes themselves are retained. Keep the
     // live positions and put them back after the page is in its final layout.
     const liveScroll = captureLiveScroll(target);
-    if (!usesLiveShell) restorePreviewScroll(preview, entry);
-    restoreNavigationPreviewIds(preview);
-    target.classList.remove('route-page-current', 'route-page-entering', 'route-page-exiting', 'route-swipe-current');
-    target.style.transform = '';
-    target.style.opacity = '';
-    target.style.transition = '';
-    target.style.boxShadow = '';
-    preview.before(target);
+    if (!usesLiveShell) restorePreviewScroll(target, entry);
+    restoreNavigationPreviewIds(target);
+    settleNavigationUnderlay(preview);
+    activateNavigationShellLayer(target);
     current.remove();
     preview.remove();
-    if (usesLiveShell) restoreLiveScrollAfterMove(liveScroll);
+    if (usesLiveShell) restoreLiveScroll(liveScroll);
     else {
       restorePreviewScroll(target, entry);
       requestAnimationFrame(() => restorePreviewScroll(target, entry));
@@ -672,13 +818,14 @@
     cancelForwardNavigationAnimation(current);
     const preview = installNavigationPreview(entry, 'back');
     if (options.instant) {
+      settleNavigationUnderlay(preview);
       deferNavigationHandoff(() => {
         finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
       });
       return true;
     }
     current.classList.add('route-page-exiting');
-    preview?.classList.add('route-page-revealing');
+    animateNavigationUnderlay(preview);
     afterVisualMotion(current, 'animationend', 280, () => {
       deferNavigationHandoff(() => {
         finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
@@ -10241,8 +10388,11 @@
         }
         if (state.edgeSwipe.preview) {
           const progress = clamp(amount / state.edgeSwipe.width, 0, 1);
-          state.edgeSwipe.preview.style.transition = 'none';
-          state.edgeSwipe.preview.style.transform = `translateX(${(-18 + progress * 18).toFixed(2)}%)`;
+          const target = navigationPreviewTarget(state.edgeSwipe.preview);
+          if (target) {
+            target.style.transition = 'none';
+            target.style.transform = `translateX(${(-18 + progress * 18).toFixed(2)}%)`;
+          }
           state.edgeSwipe.preview.style.setProperty('--route-backdrop-opacity', `${(0.22 * (1 - progress)).toFixed(3)}`);
         }
       }
@@ -10400,9 +10550,10 @@
       const commitDistance = Math.min(56, swipe.width * 0.16);
       const commit = Math.abs(dx) > Math.abs(dy) && (dx > commitDistance || (dx > 24 && velocity > 0.42));
       if (surface) surface.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), box-shadow 240ms ease';
+      const underlay = navigationPreviewTarget(swipe.preview);
+      if (underlay) underlay.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1)';
       if (swipe.preview) {
         swipe.preview.classList.add('route-swipe-settling');
-        swipe.preview.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1)';
       }
       if (commit) {
         const pending = beginSwipeNavigationBack(swipe.entry, swipe.preview);
@@ -10411,7 +10562,7 @@
           surface.style.boxShadow = '-18px 0 38px rgba(0,0,0,.2)';
         }
         if (swipe.preview) {
-          swipe.preview.style.transform = 'translateX(0)';
+          underlay?.style.setProperty('transform', 'translateX(0)');
           swipe.preview.style.setProperty('--route-backdrop-opacity', '0');
         }
         afterVisualMotion(surface, 'transitionend', 260, () => {
@@ -10425,7 +10576,7 @@
           surface.style.boxShadow = '';
         }
         if (swipe.preview) {
-          swipe.preview.style.transform = 'translateX(-18%)';
+          underlay?.style.setProperty('transform', `translateX(${navigationUnderlayOffset()})`);
           swipe.preview.style.setProperty('--route-backdrop-opacity', '.22');
         }
         setTimeout(() => {

@@ -130,7 +130,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function centerStoryActiveChoice/);
   assert.match(clientSource, /const continuingTextGesture = storyTextPointers\.size > 0/);
   assert.match(clientSource, /const appSwipeStartsAt = 16/);
+  assert.match(clientSource, /const gestureControl = event\.target\.closest\('button, a, input, textarea, select/);
   assert.match(clientSource, /event\.clientX >= appSwipeStartsAt && event\.clientX < appSwipeStartsAt \+ 32/);
+  assert.match(clientSource, /if \(!swipe\.moved\) \{[\s\S]*?state\.edgeSwipe = null;[\s\S]*?return;/);
   assert.match(clientSource, /function renderMessageFocus/);
   assert.match(clientSource, /function capturePersistentScroll/);
   assert.match(clientSource, /state\.tabSwipe = \{/);
@@ -144,8 +146,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /conversationScroll: new Map\(\)/);
   assert.match(clientSource, /function updateChatPane/);
   assert.match(clientSource, /function promoteNavigationPreview/);
+  assert.match(clientSource, /function prepareNavigationUnderlay/);
+  assert.match(clientSource, /function activateNavigationShellLayer/);
+  assert.match(clientSource, /:scope > \.app-shell:not\(\.route-page-underlay\)/);
   assert.match(clientSource, /const liveScroll = captureLiveScroll\(target\)/);
   assert.match(clientSource, /function restoreLiveScrollAfterMove/);
+  assert.match(clientSource, /function restoreScrollPosition/);
+  assert.match(clientSource, /function scheduleNavigationMaintenance/);
   assert.match(clientSource, /restoreLiveScrollAfterMove\(liveScroll\)/);
   assert.match(clientSource, /preview\.usesLiveShell = Boolean\(liveShell\)/);
   assert.match(clientSource, /if \(state\.navigationBusy\) return;/);
@@ -154,6 +161,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function restoreForwardNavigationEntry/);
   assert.match(clientSource, /cancelForwardNavigationAnimation\(current\)/);
   assert.match(clientSource, /function deferNavigationHandoff/);
+  assert.match(clientSource, /propertyName = ''/);
   assert.match(clientSource, /const isOneStepBack = currentDepth > 0 && targetDepth === currentDepth - 1/);
   assert.match(clientSource, /instant: !requestedByApp/);
   assert.match(clientSource, /const isOneStepForward = targetDepth === currentDepth \+ 1/);
@@ -170,6 +178,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /activeTool: textEditing \? 'text' : initialTool/);
   assert.match(clientSource, /class="story-effects-panel"/);
   assert.match(clientSource, /let stableViewportHeight = 0/);
+  assert.match(clientSource, /function scheduleViewportHeight/);
   assert.match(clientSource, /root\.classList\.toggle\('keyboard-open', keyboardOpen\)/);
   assert.match(clientSource, /class="story-video-timeline"/);
   assert.match(clientSource, /data-story-video-trim="start"/);
@@ -230,10 +239,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="toggle-group-invites"/);
   assert.match(styleSource, /\.group-composer-overlay/);
   assert.match(clientSource, /function captureNavigationEntry/);
+  assert.match(clientSource, /previewHtml: liveShell \? '' : currentAppShell\(\)\?\.outerHTML \|\| ''/);
   assert.match(clientSource, /function animateNavigationBack/);
   assert.match(clientSource, /liveShell,/);
   assert.match(clientSource, /function stashNavigationPreview/);
   assert.match(clientSource, /state\.edgeSwipe\.preview = installNavigationPreview\(state\.edgeSwipe\.entry, 'swipe'\)/);
+  assert.match(clientSource, /isMobileLayout\(\) && backEntry/);
   assert.match(styleSource, /\.route-page-preview/);
   assert.match(styleSource, /\.route-page-preview::after/);
   assert.doesNotMatch(styleSource, /will-change: transform, filter/);
