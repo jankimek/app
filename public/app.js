@@ -1388,7 +1388,7 @@
     else restoreMessagesScroll(scrollSnapshot, { anchor: 'bottom' });
   }
 
-  function waitForChatMedia(messages) {
+  function waitForChatMedia(messages, onLayout = null) {
     const media = [...messages.querySelectorAll('img, video')];
     if (!media.length) return Promise.resolve();
     return Promise.all(media.map((element) => new Promise((resolve) => {
@@ -1400,6 +1400,7 @@
         element.removeEventListener('load', done);
         element.removeEventListener('error', done);
         element.removeEventListener('loadedmetadata', done);
+        onLayout?.();
         resolve();
       };
       element.addEventListener('load', done, { once: true });
@@ -1416,10 +1417,12 @@
     let cancelled = false;
     let frame = 0;
     let revealTimer = 0;
+    let resizeObserver = null;
     const cleanup = () => {
       cancelled = true;
       cancelAnimationFrame(frame);
       clearTimeout(revealTimer);
+      resizeObserver?.disconnect();
       messages.removeEventListener('pointerdown', cancel);
       messages.removeEventListener('touchstart', cancel);
       messages.removeEventListener('wheel', cancel);
@@ -1439,9 +1442,14 @@
       if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
       messages.scrollTop = messages.scrollHeight;
     };
+    if ('ResizeObserver' in window) {
+      resizeObserver = new ResizeObserver(settle);
+      resizeObserver.observe(messages);
+      [...messages.children].forEach((message) => resizeObserver.observe(message));
+    }
     settle();
     Promise.race([
-      waitForChatMedia(messages),
+      waitForChatMedia(messages, settle),
       new Promise((resolve) => setTimeout(resolve, 850))
     ]).then(() => {
       if (cancelled || token !== state.chatOpenToken || !messages.isConnected) return;
@@ -5484,11 +5492,14 @@
     state.loadingOlderMessages = false;
     delete state.unreadByPeer[userId];
     if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
-    const scrollMode = highlightMessageId ? 'preserve' : savedScroll ? 'restore' : 'bottom';
+    // Opening a conversation from the chat list is a request for the newest
+    // messages. Navigation snapshots restore their own live DOM scroll state.
+    const scrollMode = highlightMessageId ? 'preserve' : 'bottom';
     if (navigationEntry || !updateChatPane({ scroll: scrollMode, scrollSnapshot: savedScroll })) {
       renderApp({ scroll: scrollMode, scrollSnapshot: savedScroll });
     }
     else updateSidebar();
+    if (scrollMode === 'bottom' && cached?.messages?.length) stabilizeBottomScroll();
     try {
       const [data, appearance] = await Promise.all([
         api(`/api/chats/${encodeURIComponent(userId)}/messages?limit=200`),
@@ -5553,11 +5564,12 @@
       state.lastTab = 'chats';
     }
     if (navigationEntry) pushNavigationEntry(navigationEntry, '/');
-    const scrollMode = highlightMessageId ? 'preserve' : savedScroll ? 'restore' : 'bottom';
+    const scrollMode = highlightMessageId ? 'preserve' : 'bottom';
     if (navigationEntry || !updateChatPane({ scroll: scrollMode, scrollSnapshot: savedScroll })) {
       renderApp({ scroll: scrollMode, scrollSnapshot: savedScroll });
     }
     else updateSidebar();
+    if (scrollMode === 'bottom' && cached?.messages?.length) stabilizeBottomScroll();
     try {
       const [data, appearance] = await Promise.all([
         api(`/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`),
@@ -8268,10 +8280,11 @@
     const wasNearBottom = snapshot && snapshot.bottom < 80;
     if (options.settle) messages.classList.add('chat-settling');
     messages.innerHTML = renderMessagesList();
-    if (options.scroll === 'bottom' || (options.scroll === 'auto' && wasNearBottom)) scrollMessagesToBottom();
+    const pinToBottom = options.scroll === 'bottom' || (options.scroll === 'auto' && wasNearBottom);
+    if (pinToBottom) scrollMessagesToBottom();
     else if (options.scroll === 'restore') restoreMessagesScroll(snapshot);
     else restoreMessagesScroll(snapshot, options.anchor === 'bottom' ? { anchor: 'bottom' } : {});
-    if (options.settle) stabilizeBottomScroll({ reveal: true });
+    if (options.scroll === 'bottom') stabilizeBottomScroll({ reveal: Boolean(options.settle) });
     return true;
   }
 

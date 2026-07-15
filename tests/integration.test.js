@@ -115,6 +115,10 @@ async function sendMessage(client, peerId, body) {
 test('mobile viewport and story editing controls stay inside their gesture boundaries', () => {
   const clientSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
   const styleSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+  const htmlSource = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  assert.match(htmlSource, /maximum-scale=1, user-scalable=no/);
+  assert.match(styleSource, /html \{[\s\S]*?overscroll-behavior: none;[\s\S]*?touch-action: manipulation;/);
+  assert.match(styleSource, /#app \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
   assert.match(clientSource, /class="story-size-control story-text-size-control"/);
@@ -144,6 +148,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="publish-story-only"/);
   assert.match(clientSource, /conversationCache: new Map\(\)/);
   assert.match(clientSource, /conversationScroll: new Map\(\)/);
+  assert.equal((clientSource.match(/const scrollMode = highlightMessageId \? 'preserve' : 'bottom';/g) || []).length, 2);
+  assert.match(clientSource, /if \(scrollMode === 'bottom' && cached\?\.messages\?\.length\) stabilizeBottomScroll\(\);/);
+  assert.match(clientSource, /resizeObserver = new ResizeObserver\(settle\)/);
   assert.match(clientSource, /function updateChatPane/);
   assert.match(clientSource, /function promoteNavigationPreview/);
   assert.match(clientSource, /function clearTabTransitionAnimation/);
@@ -256,7 +263,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(styleSource, /\.route-page-preview/);
   assert.match(styleSource, /\.route-page-preview::after/);
   assert.doesNotMatch(styleSource, /will-change: transform, filter/);
-  assert.match(styleSource, /overscroll-behavior-x: none/);
+  assert.match(styleSource, /overscroll-behavior: none/);
   assert.match(clientSource, /history\.scrollRestoration = 'manual'/);
   assert.match(styleSource, /\.camera-capture-page/);
   assert.match(styleSource, /cameraCaptureIn/);
