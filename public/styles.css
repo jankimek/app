@@ -26,6 +26,7 @@ html {
   width: 100%;
   height: var(--app-height);
   overflow: hidden;
+  overscroll-behavior-x: none;
   background: var(--bg);
 }
 
@@ -43,6 +44,7 @@ body {
   height: var(--app-height);
   min-height: var(--app-height);
   overflow: hidden;
+  overscroll-behavior-x: none;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -7883,8 +7885,18 @@ html.keyboard-open .bottom-tabs {
   overflow: hidden;
   pointer-events: none;
   background: #030407;
-  will-change: transform, filter;
+  will-change: transform;
   overflow-anchor: none;
+}
+
+.route-page-preview::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  pointer-events: none;
+  background: #030407;
+  opacity: var(--route-backdrop-opacity, 0);
 }
 
 .navigation-edge-zone {
@@ -7909,6 +7921,10 @@ html.keyboard-open .bottom-tabs {
   animation: routeBackdropForward 290ms cubic-bezier(.22,.76,.2,1) both;
 }
 
+.route-preview-forward::after {
+  animation: routeBackdropDimForward 290ms cubic-bezier(.22,.76,.2,1) both;
+}
+
 .route-page-entering {
   animation: routePageForwardDesktop 270ms cubic-bezier(.2,.8,.2,1) both;
 }
@@ -7921,9 +7937,17 @@ html.keyboard-open .bottom-tabs {
   animation: routeBackdropBackDesktop 260ms cubic-bezier(.28,.74,.22,1) both;
 }
 
+.route-preview-back.route-page-revealing::after {
+  animation: routeBackdropDimBack 260ms cubic-bezier(.28,.74,.22,1) both;
+}
+
 .route-preview-swipe {
   transform: translateX(-18%);
-  filter: brightness(.78);
+  --route-backdrop-opacity: .22;
+}
+
+.route-preview-swipe.route-swipe-settling::after {
+  transition: opacity 240ms cubic-bezier(.24,.78,.22,1);
 }
 
 .social-user-list.social-list-slide {
@@ -7957,13 +7981,23 @@ html.keyboard-open .bottom-tabs {
 }
 
 @keyframes routeBackdropForward {
-  from { filter: brightness(1); transform: translateX(0); }
-  to { filter: brightness(.8); transform: translateX(-4%); }
+  from { transform: translateX(0); }
+  to { transform: translateX(-4%); }
 }
 
 @keyframes routeBackdropBackDesktop {
-  from { filter: brightness(.82); transform: translateX(-4%); }
-  to { filter: brightness(1); transform: translateX(0); }
+  from { transform: translateX(-4%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes routeBackdropDimForward {
+  from { opacity: 0; }
+  to { opacity: .2; }
+}
+
+@keyframes routeBackdropDimBack {
+  from { opacity: .22; }
+  to { opacity: 0; }
 }
 
 @keyframes socialListFromRight {
@@ -7992,9 +8026,9 @@ html.keyboard-open .bottom-tabs {
     z-index: 12;
     top: calc(66px + env(safe-area-inset-top));
     bottom: max(8px, env(safe-area-inset-bottom));
-    left: 0;
+    left: max(16px, env(safe-area-inset-left));
     display: block;
-    width: 24px;
+    width: 32px;
     touch-action: pan-y;
     background: transparent;
   }
@@ -8015,6 +8049,10 @@ html.keyboard-open .bottom-tabs {
     animation-name: routeBackdropBackMobile;
   }
 
+  .route-preview-back.route-page-revealing::after {
+    animation-name: routeBackdropDimBack;
+  }
+
   @keyframes routePageForwardMobile {
     from { transform: translateX(100%); }
     to { transform: translateX(0); }
@@ -8026,8 +8064,8 @@ html.keyboard-open .bottom-tabs {
   }
 
   @keyframes routeBackdropBackMobile {
-    from { filter: brightness(.78); transform: translateX(-18%); }
-    to { filter: brightness(1); transform: translateX(0); }
+    from { transform: translateX(-18%); }
+    to { transform: translateX(0); }
   }
 }
 

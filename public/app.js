@@ -1,6 +1,8 @@
 (function () {
   const app = document.getElementById('app');
 
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
   let stableViewportHeight = 0;
 
   function focusedEditable() {
@@ -45,9 +47,10 @@
     tabTransition: false,
     tabDirection: 'right',
     navigationStack: [],
+    forwardNavigationEntries: new Map(),
     routeForward: null,
     navigationBusy: false,
-    suppressNextPopstate: false,
+    pendingHistoryBack: null,
     socialTransition: null,
     contacts: [],
     chats: [],
@@ -295,6 +298,10 @@
 
   function pushNavigationEntry(entry, url = location.href) {
     if (!entry) return;
+    const nextDepth = state.navigationStack.length + 1;
+    for (const depth of [...state.forwardNavigationEntries.keys()]) {
+      if (depth >= nextDepth) state.forwardNavigationEntries.delete(depth);
+    }
     state.navigationStack.push(entry);
     state.routeForward = entry;
     history.pushState({
@@ -302,6 +309,32 @@
       navDepth: state.navigationStack.length,
       view: captureNavigationView()
     }, '', url);
+  }
+
+  function syncCurrentNavigationHistory() {
+    const current = history.state;
+    if (!state.routeForward || !current?.appManaged || current.navDepth !== state.navigationStack.length) return;
+    history.replaceState({
+      ...current,
+      view: captureNavigationView()
+    }, '', location.href);
+  }
+
+  function restoreForwardNavigationEntry(targetDepth) {
+    if (targetDepth !== state.navigationStack.length + 1) return null;
+    const entry = state.forwardNavigationEntries.get(targetDepth);
+    if (!entry) return null;
+    // Refresh this retained source page before reusing it for another back.
+    Object.assign(entry, captureNavigationEntry(entry.kind));
+    state.navigationStack.push(entry);
+    state.routeForward = entry;
+    return entry;
+  }
+
+  function cancelForwardNavigationAnimation(surface = currentAppShell()) {
+    if (!state.routeForward) return;
+    state.routeForward = null;
+    surface?.classList.remove('route-page-current', 'route-page-entering');
   }
 
   function restorePreviewScroll(root, entry) {
@@ -463,6 +496,58 @@
     element?.addEventListener(eventName, onEnd);
   }
 
+  function deferNavigationHandoff(callback) {
+    requestAnimationFrame(() => requestAnimationFrame(callback));
+  }
+
+  function canUseAppHistoryBack() {
+    const current = history.state;
+    return Boolean(
+      current?.appManaged &&
+      Number.isInteger(current.navDepth) &&
+      current.navDepth === state.navigationStack.length
+    );
+  }
+
+  function requestNavigationBack() {
+    if (state.navigationBusy) return false;
+    const entry = state.navigationStack[state.navigationStack.length - 1];
+    if (!entry) return false;
+
+    // A retained page should only be promoted after the browser has moved to
+    // its matching history record. Previously the UI animated first and then
+    // called history.back(), which allowed mobile edge navigation to undo it.
+    if (!canUseAppHistoryBack()) return animateNavigationBack({ skipHistory: true });
+    state.pendingHistoryBack = { entry, source: 'button' };
+    state.navigationBusy = 'awaiting-history';
+    history.back();
+    return true;
+  }
+
+  function beginSwipeNavigationBack(entry, preview) {
+    const pending = {
+      entry,
+      preview,
+      source: 'swipe',
+      historyArrived: false,
+      visualFinished: false,
+      settling: false
+    };
+    state.pendingHistoryBack = pending;
+    state.navigationBusy = 'awaiting-history';
+    if (canUseAppHistoryBack()) history.back();
+    else pending.historyArrived = true;
+    return pending;
+  }
+
+  function settleSwipeNavigationBack(pending) {
+    if (!pending || pending.source !== 'swipe' || pending.settling || !pending.historyArrived || !pending.visualFinished) return;
+    pending.settling = true;
+    deferNavigationHandoff(() => {
+      finishNavigationBack(pending.entry, { preview: pending.preview }).catch((error) => alert(error.message));
+    });
+  }
+
   async function restoreNavigationEntry(entry, options = {}) {
     if (!entry) return false;
     rememberActiveConversation();
@@ -496,13 +581,13 @@
     if (!entry || state.navigationBusy === 'finishing') return;
     state.navigationBusy = 'finishing';
     try {
-      if (state.navigationStack[state.navigationStack.length - 1] === entry) state.navigationStack.pop();
-      await restoreNavigationEntry(entry, { preview: options.preview });
-      if (!options.skipHistory && history.length > 1) {
-        state.suppressNextPopstate = true;
-        history.back();
+      if (state.navigationStack[state.navigationStack.length - 1] === entry) {
+        state.forwardNavigationEntries.set(state.navigationStack.length, entry);
+        state.navigationStack.pop();
       }
+      await restoreNavigationEntry(entry, { preview: options.preview });
     } finally {
+      if (state.pendingHistoryBack?.entry === entry) state.pendingHistoryBack = null;
       state.navigationBusy = false;
     }
   }
@@ -514,11 +599,20 @@
     if (!entry || !current) return false;
     rememberActiveConversation();
     state.navigationBusy = true;
+    cancelForwardNavigationAnimation(current);
     const preview = installNavigationPreview(entry, 'back');
+    if (options.instant) {
+      deferNavigationHandoff(() => {
+        finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
+      });
+      return true;
+    }
     current.classList.add('route-page-exiting');
     preview?.classList.add('route-page-revealing');
-    afterVisualMotion(current, 'animationend', 320, () => {
-      finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
+    afterVisualMotion(current, 'animationend', 280, () => {
+      deferNavigationHandoff(() => {
+        finishNavigationBack(entry, { ...options, preview }).catch((error) => alert(error.message));
+      });
     });
     return true;
   }
@@ -1137,6 +1231,7 @@
       <input id="story-input" type="file" accept="image/*,video/*" hidden>
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
+    syncCurrentNavigationHistory();
     if (forwardEntry && forwardLiveShell) {
       const preview = document.createElement('div');
       preview.className = 'route-page-preview route-preview-forward';
@@ -6775,10 +6870,23 @@
   async function restoreNavigationView(view) {
     const returnScroll = state.profileReturnScroll;
     const profileUsername = view?.publicProfileUsername || null;
+    const peer = view?.activePeerId ? userById(view.activePeerId) : null;
+    const group = view?.activeGroupId ? state.groups.find((item) => item.id === view.activeGroupId) : null;
+    const conversationType = peer ? 'peer' : group ? 'group' : null;
+    const conversationId = peer?.id || group?.id || null;
+    const cachedConversation = conversationType && conversationId
+      ? state.conversationCache.get(conversationCacheKey(conversationType, conversationId))
+      : null;
     state.tab = ['chats', 'search', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'search';
     state.lastTab = ['chats', 'search', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
     state.profileSocialView = view?.profileSocialView || null;
-    state.chatProfileOpen = Boolean(view?.chatProfileOpen && hasActiveConversation());
+    state.activePeer = peer;
+    state.activeGroup = group;
+    state.messages = cachedConversation?.messages || [];
+    state.chatAppearance = cachedConversation?.appearance || defaultChatAppearance();
+    state.hasOlderMessages = Boolean(cachedConversation?.hasMore);
+    state.chatLoading = Boolean(conversationId && !cachedConversation);
+    state.chatProfileOpen = Boolean(view?.chatProfileOpen && conversationId);
     state.chatProfileSocialView = view?.chatProfileSocialView || null;
     state.searchProfileOpen = Boolean(view?.searchProfileOpen && profileUsername);
     state.searchProfileSocialView = view?.searchProfileSocialView || null;
@@ -6786,6 +6894,14 @@
     state.tabTransition = false;
     renderApp({ scrollSnapshot: state.searchProfileOpen ? null : returnScroll });
     if (!state.searchProfileOpen) state.profileReturnScroll = null;
+    if (conversationId && !cachedConversation) {
+      if (peer) await openChat(peer.id, null, { pushNavigation: false });
+      else if (group) await openGroup(group.id, null, { pushNavigation: false });
+      if (view?.chatProfileOpen) {
+        state.chatProfileOpen = true;
+        renderApp();
+      }
+    }
   }
 
   function openSocialView(scope, nextView) {
@@ -6805,7 +6921,7 @@
 
   function navigationBackOr(fallback) {
     if (state.navigationBusy) return;
-    if (!animateNavigationBack()) fallback?.();
+    if (!requestNavigationBack()) fallback?.();
   }
 
   async function openSearchProfile(username, options = {}) {
@@ -7802,6 +7918,7 @@
         state.chatLoading = false;
         state.conversationCache.clear();
         state.navigationStack = [];
+        state.forwardNavigationEntries.clear();
         state.routeForward = null;
         state.navigationBusy = false;
         state.chatProfileOpen = false;
@@ -7893,6 +8010,7 @@
         state.conversationCache.clear();
         state.conversationScroll.clear();
         state.navigationStack = [];
+        state.forwardNavigationEntries.clear();
         state.routeForward = null;
         state.navigationBusy = false;
         state.tab = 'chats';
@@ -9372,8 +9490,13 @@
     const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer;
     const backEntry = state.navigationStack[state.navigationStack.length - 1];
-    if (state.me && backEntry && !state.navigationBusy && !gestureBlocked && event.clientX < 38 && !event.target.closest('input,textarea,[contenteditable="true"]')) {
+    // The physical edge belongs to iOS/Safari. Starting the app gesture just
+    // inside it prevents the native history swipe from cancelling our preview.
+    const appSwipeStartsAt = 16;
+    const isAppBackSwipe = event.clientX >= appSwipeStartsAt && event.clientX < appSwipeStartsAt + 32;
+    if (state.me && backEntry && !state.navigationBusy && !gestureBlocked && isAppBackSwipe && !event.target.closest('input,textarea,[contenteditable="true"]')) {
       const surface = currentAppShell();
+      cancelForwardNavigationAnimation(surface);
       state.edgeSwipe = {
         startX: event.clientX,
         startY: event.clientY,
@@ -9382,7 +9505,7 @@
         lastAt: performance.now(),
         velocity: 0,
         surface,
-        preview: installNavigationPreview(backEntry, 'swipe'),
+        preview: null,
         entry: backEntry,
         width: surface?.getBoundingClientRect().width || window.innerWidth,
         liveScroll: captureLiveScroll(surface)
@@ -9791,7 +9914,13 @@
       const dy = event.clientY - state.edgeSwipe.startY;
       if (dx > 0 && Math.abs(dx) > Math.abs(dy)) {
         event.preventDefault();
-        if (Math.abs(dx) > 12) state.edgeSwipe.moved = true;
+        if (Math.abs(dx) > 12) {
+          state.edgeSwipe.moved = true;
+          if (!state.edgeSwipe.preview) {
+            state.edgeSwipe.preview = installNavigationPreview(state.edgeSwipe.entry, 'swipe');
+            state.edgeSwipe.surface?.setPointerCapture?.(event.pointerId);
+          }
+        }
         const moveAt = performance.now();
         state.edgeSwipe.velocity = Math.max(0, (event.clientX - state.edgeSwipe.lastX) / Math.max(1, moveAt - state.edgeSwipe.lastAt));
         state.edgeSwipe.lastX = event.clientX;
@@ -9807,7 +9936,7 @@
           const progress = clamp(amount / state.edgeSwipe.width, 0, 1);
           state.edgeSwipe.preview.style.transition = 'none';
           state.edgeSwipe.preview.style.transform = `translateX(${(-18 + progress * 18).toFixed(2)}%)`;
-          state.edgeSwipe.preview.style.filter = `brightness(${0.78 + progress * 0.22})`;
+          state.edgeSwipe.preview.style.setProperty('--route-backdrop-opacity', `${(0.22 * (1 - progress)).toFixed(3)}`);
         }
       }
     }
@@ -9924,19 +10053,23 @@
       const commitDistance = Math.min(56, swipe.width * 0.16);
       const commit = Math.abs(dx) > Math.abs(dy) && (dx > commitDistance || (dx > 24 && velocity > 0.42));
       if (surface) surface.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), box-shadow 240ms ease';
-      if (swipe.preview) swipe.preview.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1), filter 240ms ease';
+      if (swipe.preview) {
+        swipe.preview.classList.add('route-swipe-settling');
+        swipe.preview.style.transition = 'transform 240ms cubic-bezier(.24,.78,.22,1)';
+      }
       if (commit) {
-        state.navigationBusy = true;
+        const pending = beginSwipeNavigationBack(swipe.entry, swipe.preview);
         if (surface) {
           surface.style.transform = `translateX(${swipe.width}px)`;
           surface.style.boxShadow = '-18px 0 38px rgba(0,0,0,.2)';
         }
         if (swipe.preview) {
           swipe.preview.style.transform = 'translateX(0)';
-          swipe.preview.style.filter = 'brightness(1)';
+          swipe.preview.style.setProperty('--route-backdrop-opacity', '0');
         }
-        afterVisualMotion(surface, 'transitionend', 300, () => {
-          finishNavigationBack(swipe.entry, { preview: swipe.preview }).catch((error) => alert(error.message));
+        afterVisualMotion(surface, 'transitionend', 260, () => {
+          pending.visualFinished = true;
+          settleSwipeNavigationBack(pending);
         });
       } else {
         restoreLiveScroll(swipe.liveScroll);
@@ -9946,7 +10079,7 @@
         }
         if (swipe.preview) {
           swipe.preview.style.transform = 'translateX(-18%)';
-          swipe.preview.style.filter = 'brightness(.78)';
+          swipe.preview.style.setProperty('--route-backdrop-opacity', '.22');
         }
         setTimeout(() => {
           restoreLiveScroll(swipe.liveScroll);
@@ -10086,17 +10219,38 @@
 
   window.addEventListener('popstate', (event) => {
     (async () => {
-      if (state.suppressNextPopstate) {
-        state.suppressNextPopstate = false;
-        return;
-      }
       if (!state.me) {
         await init();
         return;
       }
-      if (state.navigationStack.length) {
-        animateNavigationBack({ skipHistory: true });
+      const currentDepth = state.navigationStack.length;
+      const targetDepth = Number.isInteger(event.state?.navDepth) ? event.state.navDepth : 0;
+      const isOneStepBack = currentDepth > 0 && targetDepth === currentDepth - 1;
+      if (isOneStepBack) {
+        const entry = state.navigationStack[currentDepth - 1];
+        const pending = state.pendingHistoryBack;
+        if (pending?.entry === entry && pending.source === 'swipe') {
+          pending.historyArrived = true;
+          settleSwipeNavigationBack(pending);
+          return;
+        }
+        const requestedByApp = pending?.entry === entry;
+        if (requestedByApp) state.pendingHistoryBack = null;
+        if (state.navigationBusy === 'awaiting-history') state.navigationBusy = false;
+        // The browser already animates an OS edge swipe. Replaying the app
+        // slide after its popstate creates the visible end-of-gesture hitch.
+        animateNavigationBack({ skipHistory: true, instant: !requestedByApp });
         return;
+      }
+      const isOneStepForward = targetDepth === currentDepth + 1;
+      if (isOneStepForward && event.state?.view) {
+        restoreForwardNavigationEntry(targetDepth);
+        await restoreNavigationView(event.state.view);
+        return;
+      }
+      if (state.pendingHistoryBack) {
+        state.pendingHistoryBack = null;
+        if (state.navigationBusy === 'awaiting-history') state.navigationBusy = false;
       }
       if (event.state?.view) {
         await restoreNavigationView(event.state.view);

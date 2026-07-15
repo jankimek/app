@@ -129,7 +129,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function resizeStoryTextInput/);
   assert.match(clientSource, /function centerStoryActiveChoice/);
   assert.match(clientSource, /const continuingTextGesture = storyTextPointers\.size > 0/);
-  assert.match(clientSource, /state\.me && backEntry && !state\.navigationBusy && !gestureBlocked && event\.clientX < 38/);
+  assert.match(clientSource, /const appSwipeStartsAt = 16/);
+  assert.match(clientSource, /event\.clientX >= appSwipeStartsAt && event\.clientX < appSwipeStartsAt \+ 32/);
   assert.match(clientSource, /function renderMessageFocus/);
   assert.match(clientSource, /function capturePersistentScroll/);
   assert.match(clientSource, /state\.tabSwipe = \{/);
@@ -148,6 +149,14 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /restoreLiveScrollAfterMove\(liveScroll\)/);
   assert.match(clientSource, /preview\.usesLiveShell = Boolean\(liveShell\)/);
   assert.match(clientSource, /if \(state\.navigationBusy\) return;/);
+  assert.match(clientSource, /function requestNavigationBack/);
+  assert.match(clientSource, /function beginSwipeNavigationBack/);
+  assert.match(clientSource, /function restoreForwardNavigationEntry/);
+  assert.match(clientSource, /cancelForwardNavigationAnimation\(current\)/);
+  assert.match(clientSource, /function deferNavigationHandoff/);
+  assert.match(clientSource, /const isOneStepBack = currentDepth > 0 && targetDepth === currentDepth - 1/);
+  assert.match(clientSource, /instant: !requestedByApp/);
+  assert.match(clientSource, /const isOneStepForward = targetDepth === currentDepth \+ 1/);
   assert.match(clientSource, /function renderCameraCapture/);
   assert.match(clientSource, /navigator\.mediaDevices\?\.getUserMedia/);
   assert.match(clientSource, /openCameraCapture\('story'/);
@@ -224,8 +233,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function animateNavigationBack/);
   assert.match(clientSource, /liveShell,/);
   assert.match(clientSource, /function stashNavigationPreview/);
-  assert.match(clientSource, /installNavigationPreview\(backEntry, 'swipe'\)/);
+  assert.match(clientSource, /state\.edgeSwipe\.preview = installNavigationPreview\(state\.edgeSwipe\.entry, 'swipe'\)/);
   assert.match(styleSource, /\.route-page-preview/);
+  assert.match(styleSource, /\.route-page-preview::after/);
+  assert.doesNotMatch(styleSource, /will-change: transform, filter/);
+  assert.match(styleSource, /overscroll-behavior-x: none/);
+  assert.match(clientSource, /history\.scrollRestoration = 'manual'/);
   assert.match(styleSource, /\.camera-capture-page/);
   assert.match(styleSource, /cameraCaptureIn/);
   assert.match(styleSource, /\.messages\.chat-settling/);
