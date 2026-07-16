@@ -4,6 +4,8 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -22,6 +24,16 @@ const DISPLAY_NAME_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 const NOTE_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const EMAIL_VERIFICATION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const GOOGLE_WEATHER_API_KEY = String(process.env.GOOGLE_WEATHER_API_KEY || '').trim();
+const OPENVERSE_API_BASE = String(process.env.OPENVERSE_API_BASE || 'https://api.openverse.org').trim().replace(/\/+$/, '');
+const OPENVERSE_BEARER_TOKEN = String(process.env.OPENVERSE_BEARER_TOKEN || '').trim();
+const OPENVERSE_ALLOW_HTTP = String(process.env.OPENVERSE_ALLOW_HTTP || '') === '1';
+const OPENVERSE_MEDIA_HOSTS = new Set(String(process.env.OPENVERSE_MEDIA_HOSTS || '')
+  .split(',')
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean));
+const MAX_CATALOG_GIF_BYTES = Math.max(1, Number(process.env.MAX_CATALOG_GIF_BYTES) || 12 * 1024 * 1024);
+const OPENVERSE_CACHE_TTL_MS = 10 * 60 * 1000;
+const OPENVERSE_CACHE_MAX_ENTRIES = Math.max(40, Number(process.env.OPENVERSE_CACHE_MAX_ENTRIES) || 400);
 const MODERATOR_USERNAMES = String(process.env.MODERATOR_USERNAMES || '')
   .split(',')
   .map((value) => normalizeUsername(value))
@@ -81,6 +93,9 @@ if (!followsFileExists) {
 }
 
 const socketsByUser = new Map();
+const openverseDetailCache = new Map();
+const openverseQueryCache = new Map();
+const openverseGifImports = new Map();
 
 function readJson(fileName, fallback) {
   try {
@@ -377,7 +392,32 @@ function publicGif(gif, viewerId) {
     reviewedAt: gif.reviewedAt || null,
     submittedByMe: gif.submitterId === viewerId,
     submitter: isModerator(viewerId) ? storyActor(db.users[gif.submitterId]) : null,
-    file: publicFile(db.files[gif.fileId])
+    file: publicFile(db.files[gif.fileId]),
+    provider: gif.provider || 'local',
+    creator: gif.creator || '',
+    sourceUrl: gif.sourceUrl || '',
+    license: gif.license || '',
+    licenseUrl: gif.licenseUrl || '',
+    attribution: gif.attribution || ''
+  };
+}
+
+function publicMusicSelection(music, audioUrl) {
+  if (!music) return null;
+  return {
+    catalogId: music.catalogId || '',
+    provider: music.provider || 'Openverse',
+    title: music.title || '',
+    artist: music.artist || '',
+    artworkUrl: music.artworkUrl || '',
+    sourceUrl: music.sourceUrl || '',
+    license: music.license || '',
+    licenseUrl: music.licenseUrl || '',
+    attribution: music.attribution || '',
+    trackDuration: Number(music.trackDuration || 0),
+    start: Number(music.start || 0),
+    clipDuration: Number(music.clipDuration || 0),
+    audioUrl
   };
 }
 
@@ -803,6 +843,9 @@ function postActor(user, viewerId = null) {
 function publicPostComment(comment, viewerId, post = null) {
   if (!comment || comment.deletedAt) return null;
   const likes = Array.isArray(comment.likes) ? comment.likes.filter((userId) => db.users[userId]) : [];
+  const parent = comment.replyTo
+    ? (post?.comments || []).find((item) => item.id === comment.replyTo && !item.deletedAt)
+    : null;
   return {
     id: comment.id,
     text: comment.text || '',
@@ -812,10 +855,16 @@ function publicPostComment(comment, viewerId, post = null) {
     likeCount: likes.length,
     likedByMe: Boolean(viewerId && likes.includes(viewerId)),
     likedByCreator: Boolean(post?.ownerId && likes.includes(post.ownerId)),
+    replyTo: parent?.id || null,
+    replyPreview: parent ? {
+      id: parent.id,
+      text: parent.text || '',
+      user: postActor(db.users[parent.userId], viewerId)
+    } : null,
     pinned: Boolean(comment.pinnedAt),
     pinnedAt: comment.pinnedAt || null,
     canDelete: Boolean(viewerId && (comment.userId === viewerId || post?.ownerId === viewerId)),
-    canPin: Boolean(viewerId && post?.ownerId === viewerId)
+    canPin: Boolean(viewerId && post?.ownerId === viewerId && !parent)
   };
 }
 
@@ -884,6 +933,7 @@ function publicPost(post, viewerId = null) {
     crop: firstEdits.crop || {},
     adjustments: firstEdits.adjustments || {},
     filter: firstEdits.filter || 'normal',
+    music: publicMusicSelection(post.music, post.music ? `/api/posts/${post.id}/music` : ''),
     allowReposts: postRepostsAllowed(post),
     allowComments: post.allowComments !== false,
     hideLikeCounts: Boolean(post.hideLikeCounts),
@@ -999,6 +1049,7 @@ function publicSharedPost(post, viewerId = null) {
     crop: value.crop,
     adjustments: value.adjustments,
     filter: value.filter,
+    music: value.music || null,
     allowComments: value.allowComments,
     hideLikeCounts: value.hideLikeCounts,
     createdAt: value.createdAt,
@@ -1070,14 +1121,23 @@ function canViewNote(note, viewerId) {
 
 function publicNote(note, viewerId) {
   if (!note) return null;
+  const music = publicMusicSelection(note.music, note.music ? `/api/notes/${note.id}/music` : '');
   return {
     id: note.id,
     ownerId: note.ownerId,
     user: postActor(db.users[note.ownerId], viewerId),
     text: note.text || '',
-    audio: publicFile(db.files[note.audioFileId]),
-    audioTitle: note.audioTitle || '',
-    audioArtist: note.audioArtist || '',
+    audio: publicFile(db.files[note.audioFileId]) || (music ? {
+      id: `catalog-${music.catalogId}`,
+      name: `${music.title || 'Music'}.mp3`,
+      mime: 'audio/mpeg',
+      size: null,
+      url: music.audioUrl,
+      external: true
+    } : null),
+    music,
+    audioTitle: music?.title || note.audioTitle || '',
+    audioArtist: music?.artist || note.audioArtist || '',
     audioDuration: note.audioDuration ?? null,
     audioStart: note.audioStart || 0,
     createdAt: note.createdAt,
@@ -1645,6 +1705,9 @@ function decorateMessage(message, viewerId = null) {
   const attachment = message.attachment?.id ? publicFile(db.files[message.attachment.id]) : null;
   const reactionEntries = Object.entries(message.reactions || {});
   const sharedPost = message.deletedAt ? null : sharedPostForMessage(message, viewerId);
+  const gif = message.kind === 'gif' && attachment
+    ? Object.values(db.gifs).find((item) => item.fileId === attachment.id)
+    : null;
   return {
     id: message.id,
     chatId: message.chatId,
@@ -1657,6 +1720,14 @@ function decorateMessage(message, viewerId = null) {
     replyTo: message.replyTo || null,
     replyPreview: messagePreview(reply, viewerId),
     attachment: message.deletedAt ? null : attachment,
+    mediaCredit: message.deletedAt || !gif ? null : {
+      provider: gif.provider || 'local',
+      creator: gif.creator || '',
+      sourceUrl: gif.sourceUrl || '',
+      license: gif.license || '',
+      licenseUrl: gif.licenseUrl || '',
+      attribution: gif.attribution || ''
+    },
     sharedPostId: sharedPost?.id || null,
     sharedPost,
     stickerId: message.deletedAt ? null : (message.stickerId || null),
@@ -2051,6 +2122,333 @@ async function saveUpload({ dataUrl, name, lastModified }, ownerId, scope) {
   return record;
 }
 
+async function deleteStoredFile(fileId, expectedScope = '') {
+  const file = db.files[fileId];
+  if (!file || (expectedScope && file.scope !== expectedScope)) return false;
+  if (file.diskPath) await fsp.unlink(file.diskPath).catch((error) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+  delete db.files[fileId];
+  await saveFiles();
+  return true;
+}
+
+function cleanOpenverseId(value) {
+  const idValue = cleanText(value || '', 80).toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(idValue) ? idValue : '';
+}
+
+function safeCatalogLink(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'https:' || (OPENVERSE_ALLOW_HTTP && parsed.protocol === 'http:') ? parsed.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function catalogMediaUrlAllowed(value, kind) {
+  const link = safeCatalogLink(value);
+  if (!link) return false;
+  const hostname = new URL(link).hostname.toLowerCase();
+  if (OPENVERSE_MEDIA_HOSTS.has(hostname)) return true;
+  if (kind === 'gif') return hostname === 'upload.wikimedia.org';
+  if (kind === 'audio') return hostname === 'storage.jamendo.com' || hostname.endsWith('.storage.jamendo.com');
+  return false;
+}
+
+function openverseRequestHeaders() {
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': 'NewAround/1.0 (open media catalog; contact: newcomearound@gmail.com)'
+  };
+  if (OPENVERSE_BEARER_TOKEN) headers.Authorization = `Bearer ${OPENVERSE_BEARER_TOKEN}`;
+  return headers;
+}
+
+function catalogCacheGet(cache, key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry.value;
+}
+
+function catalogCacheSet(cache, key, value) {
+  const now = Date.now();
+  for (const [entryKey, entry] of cache) {
+    if (entry.expiresAt <= now) cache.delete(entryKey);
+  }
+  cache.delete(key);
+  cache.set(key, { value, expiresAt: now + OPENVERSE_CACHE_TTL_MS });
+  while (cache.size > OPENVERSE_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value);
+  return value;
+}
+
+async function openverseJson(resource, params = null) {
+  const url = new URL(`${OPENVERSE_API_BASE}/v1/${String(resource || '').replace(/^\/+/, '')}`);
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
+    });
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(url, { headers: openverseRequestHeaders(), signal: controller.signal });
+    if (!response.ok) {
+      const status = response.status === 429 ? 429 : response.status === 404 ? 404 : 502;
+      const message = response.status === 429
+        ? 'Music and GIF search is busy. Try again in a moment.'
+        : response.status === 404
+          ? 'That catalog item is no longer available.'
+          : 'The open media catalog is temporarily unavailable.';
+      throw Object.assign(new Error(message), {
+        status,
+        retryAfter: response.headers.get('retry-after') || ''
+      });
+    }
+    return await response.json();
+  } catch (error) {
+    if (error.status) throw error;
+    throw Object.assign(new Error('The open media catalog is temporarily unavailable.'), { status: 502 });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function openverseAudioDuration(value) {
+  const milliseconds = Number(value || 0);
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? Math.round(milliseconds / 100) / 10 : 0;
+}
+
+function normalizeOpenverseGif(raw) {
+  const catalogId = cleanOpenverseId(raw?.id);
+  const mediaUrl = safeCatalogLink(raw?.url);
+  if (!catalogId || String(raw?.filetype || '').toLowerCase() !== 'gif' || raw?.mature === true || !catalogMediaUrlAllowed(mediaUrl, 'gif')) return null;
+  return {
+    id: `openverse:${catalogId}`,
+    catalogId,
+    provider: 'Openverse',
+    title: cleanText(raw.title || 'Animated GIF', 100),
+    creator: cleanText(raw.creator || 'Unknown creator', 120),
+    mediaUrl,
+    sourceUrl: safeCatalogLink(raw.foreign_landing_url),
+    license: cleanText(raw.license || '', 30).toUpperCase(),
+    licenseUrl: safeCatalogLink(raw.license_url),
+    attribution: cleanText(raw.attribution || '', 500),
+    tags: Array.isArray(raw.tags) ? raw.tags.map((tag) => cleanText(tag?.name || tag, 40)).filter(Boolean).slice(0, 20) : []
+  };
+}
+
+function normalizeOpenverseMusic(raw) {
+  const catalogId = cleanOpenverseId(raw?.id);
+  const mediaUrl = safeCatalogLink(raw?.url);
+  const licenseKey = cleanText(raw?.license || '', 30).toLowerCase();
+  if (!catalogId || raw?.mature === true || !['by', 'cc0', 'pdm'].includes(licenseKey) || !catalogMediaUrlAllowed(mediaUrl, 'audio')) return null;
+  const trackDuration = openverseAudioDuration(raw.duration);
+  if (!trackDuration) return null;
+  return {
+    catalogId,
+    provider: 'Openverse',
+    title: cleanText(raw.title || 'Untitled track', 100),
+    artist: cleanText(raw.creator || 'Unknown artist', 100),
+    artworkUrl: `${OPENVERSE_API_BASE}/v1/audio/${catalogId}/thumb/`,
+    sourceUrl: safeCatalogLink(raw.foreign_landing_url),
+    license: licenseKey.toUpperCase(),
+    licenseUrl: safeCatalogLink(raw.license_url),
+    attribution: cleanText(raw.attribution || '', 500),
+    trackDuration,
+    url: mediaUrl
+  };
+}
+
+async function resolveOpenverseMedia(kind, rawId) {
+  const catalogId = cleanOpenverseId(rawId);
+  if (!catalogId) throw Object.assign(new Error(`Choose a valid ${kind === 'gif' ? 'GIF' : 'track'} from search.`), { status: 400 });
+  const cacheKey = `${kind}:${catalogId}`;
+  const cached = catalogCacheGet(openverseDetailCache, cacheKey);
+  if (cached) return cached;
+  const raw = await openverseJson(`${kind === 'gif' ? 'images' : 'audio'}/${catalogId}/`);
+  const value = kind === 'gif' ? normalizeOpenverseGif(raw) : normalizeOpenverseMusic(raw);
+  if (!value) throw Object.assign(new Error(`That ${kind === 'gif' ? 'GIF' : 'track'} is not available for this feature.`), { status: 400 });
+  return catalogCacheSet(openverseDetailCache, cacheKey, value);
+}
+
+async function fetchCatalogMedia(rawUrl, kind, options = {}, redirects = 0) {
+  if (!catalogMediaUrlAllowed(rawUrl, kind)) throw Object.assign(new Error('The selected media host is not allowed.'), { status: 400 });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(rawUrl, { ...options, redirect: 'manual', signal: controller.signal });
+    if (response.status >= 300 && response.status < 400 && response.headers.get('location') && redirects < 3) {
+      const nextUrl = new URL(response.headers.get('location'), rawUrl).toString();
+      return fetchCatalogMedia(nextUrl, kind, options, redirects + 1);
+    }
+    return response;
+  } catch (error) {
+    throw Object.assign(new Error('The selected media could not be loaded.'), { status: 502, cause: error });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function responseBufferWithin(response, maximum) {
+  const announced = Number(response.headers.get('content-length') || 0);
+  if (announced > maximum) throw Object.assign(new Error('That GIF is too large to send.'), { status: 413 });
+  const chunks = [];
+  let size = 0;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    response.body?.cancel?.().catch(() => {});
+  }, 30000);
+  timer.unref?.();
+  try {
+    for await (const chunk of response.body || []) {
+      const value = Buffer.from(chunk);
+      size += value.length;
+      if (size > maximum) throw Object.assign(new Error('That GIF is too large to send.'), { status: 413 });
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (timedOut) throw Object.assign(new Error('That GIF took too long to download.'), { status: 504 });
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function importOpenverseGif(catalogId, userId) {
+  const cleanId = cleanOpenverseId(catalogId);
+  if (!cleanId) throw Object.assign(new Error('Choose a valid GIF from search.'), { status: 400 });
+  const existing = Object.values(db.gifs).find((gif) => {
+    const file = db.files[gif.fileId];
+    return gif.provider === 'openverse' && gif.externalId === cleanId && gif.status === 'approved' &&
+      file?.mime === 'image/gif' && file.diskPath && fs.existsSync(file.diskPath);
+  });
+  if (existing) return existing;
+  if (openverseGifImports.has(cleanId)) return openverseGifImports.get(cleanId);
+  const pending = (async () => {
+    const source = await resolveOpenverseMedia('gif', cleanId);
+    const response = await fetchCatalogMedia(source.mediaUrl, 'gif', { headers: { Accept: 'image/gif' } });
+    if (!response.ok || !String(response.headers.get('content-type') || '').toLowerCase().includes('image/gif')) {
+      throw Object.assign(new Error('That GIF could not be imported.'), { status: 502 });
+    }
+    const buffer = await responseBufferWithin(response, MAX_CATALOG_GIF_BYTES);
+    if (!/^GIF8[79]a/.test(buffer.subarray(0, 6).toString('ascii'))) throw Object.assign(new Error('That catalog result is not a valid GIF.'), { status: 400 });
+    const file = await saveUpload({
+      dataUrl: `data:image/gif;base64,${buffer.toString('base64')}`,
+      name: `${safeFileName(source.title || 'openverse-gif').replace(/\.gif$/i, '')}.gif`,
+      lastModified: null
+    }, userId, 'gif');
+    const gif = {
+      id: id('gif'),
+      title: source.title,
+      tags: source.tags,
+      fileId: file.id,
+      submitterId: userId,
+      status: 'approved',
+      provider: 'openverse',
+      externalId: source.catalogId,
+      creator: source.creator,
+      sourceUrl: source.sourceUrl,
+      license: source.license,
+      licenseUrl: source.licenseUrl,
+      attribution: source.attribution,
+      createdAt: nowIso(),
+      reviewedAt: nowIso(),
+      reviewedBy: 'openverse'
+    };
+    db.gifs[gif.id] = gif;
+    try {
+      await saveGifs();
+      return gif;
+    } catch (error) {
+      delete db.gifs[gif.id];
+      delete db.files[file.id];
+      await fsp.unlink(file.diskPath).catch(() => {});
+      await saveFiles().catch(() => {});
+      throw error;
+    }
+  })();
+  openverseGifImports.set(cleanId, pending);
+  try {
+    return await pending;
+  } finally {
+    if (openverseGifImports.get(cleanId) === pending) openverseGifImports.delete(cleanId);
+  }
+}
+
+async function resolveMessageGif(body, userId) {
+  let gif = null;
+  if (body.gifCatalogId) gif = await importOpenverseGif(body.gifCatalogId, userId);
+  else if (body.gifId) gif = db.gifs[cleanText(body.gifId || '', 120)];
+  const file = gif?.fileId ? db.files[gif.fileId] : null;
+  if (!gif || gif.status !== 'approved' || !file || !['image/gif', 'image/webp'].includes(file.mime) || !file.diskPath || !fs.existsSync(file.diskPath)) {
+    throw Object.assign(new Error('GIF not found.'), { status: 404 });
+  }
+  return { gif, file };
+}
+
+function cleanMusicSelection(source, rawSelection) {
+  const start = boundedNumber(rawSelection?.start, 0, Math.max(0, source.trackDuration - 1), 0);
+  const remaining = Math.max(1, source.trackDuration - start);
+  const clipDuration = boundedNumber(rawSelection?.clipDuration ?? rawSelection?.duration, 1, Math.min(30, remaining), Math.min(30, remaining));
+  return { ...source, start, clipDuration };
+}
+
+async function streamCatalogAudio(req, res, rawUrl) {
+  const headers = { Accept: 'audio/*', 'Accept-Encoding': 'identity' };
+  const requestedRange = String(req.headers.range || '');
+  if (requestedRange && !/^bytes=(?:\d+-\d*|-\d+)$/.test(requestedRange)) {
+    res.writeHead(416, { 'Content-Range': 'bytes */*', 'Cache-Control': 'no-store' });
+    return res.end();
+  }
+  if (requestedRange) headers.Range = requestedRange;
+  const response = await fetchCatalogMedia(rawUrl, 'audio', { headers });
+  if (response.status === 416) {
+    const contentRange = response.headers.get('content-range') || 'bytes */*';
+    res.writeHead(416, { 'Content-Range': contentRange, 'Cache-Control': 'no-store' });
+    response.body?.cancel?.().catch(() => {});
+    return res.end();
+  }
+  if (![200, 206].includes(response.status) || !response.body) throw Object.assign(new Error('That track is temporarily unavailable.'), { status: 502 });
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.startsWith('audio/')) {
+    response.body.cancel?.().catch(() => {});
+    throw Object.assign(new Error('That catalog item is not an audio track.'), { status: 502 });
+  }
+  const responseHeaders = {
+    'Content-Type': contentType,
+    'Cache-Control': 'private, max-age=3600',
+    'X-Content-Type-Options': 'nosniff'
+  };
+  if (response.headers.get('accept-ranges')) responseHeaders['Accept-Ranges'] = response.headers.get('accept-ranges');
+  for (const name of ['content-length', 'content-range']) {
+    const value = response.headers.get(name);
+    if (value) responseHeaders[name.replace(/(^|-)(\w)/g, (_, prefix, char) => `${prefix}${char.toUpperCase()}`)] = value;
+  }
+  res.writeHead(response.status, responseHeaders);
+  const cancelUpstream = () => response.body.cancel?.().catch(() => {});
+  const bodyTimer = setTimeout(cancelUpstream, 2 * 60 * 1000);
+  bodyTimer.unref?.();
+  res.once('close', cancelUpstream);
+  try {
+    await pipeline(Readable.fromWeb(response.body), res);
+  } catch (error) {
+    if (!res.destroyed) res.destroy(error);
+  } finally {
+    clearTimeout(bodyTimer);
+    res.off('close', cancelUpstream);
+  }
+}
+
 async function cloneStoredFile(file, ownerId, scope) {
   if (!file?.diskPath || !fs.existsSync(file.diskPath)) return null;
   const ext = path.extname(file.originalName || '') || extensionForMime(file.mime);
@@ -2161,6 +2559,85 @@ function verifyTotp(secret, code) {
 }
 
 async function handleApi(req, res, pathname, query) {
+  if (req.method === 'GET' && pathname === '/api/media/gifs') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const term = cleanText(query.get('q') || 'happy animated', 80) || 'happy animated';
+    const queryKey = `gifs:${term.toLowerCase()}`;
+    const data = catalogCacheGet(openverseQueryCache, queryKey) || catalogCacheSet(openverseQueryCache, queryKey, await openverseJson('images/', {
+        q: term,
+        source: 'wikimedia',
+        extension: 'gif',
+        mature: 'false',
+        page_size: 18
+      }));
+    const gifs = (data.results || []).map(normalizeOpenverseGif).filter(Boolean).map((gif) => {
+      catalogCacheSet(openverseDetailCache, `gif:${gif.catalogId}`, gif);
+      return {
+        id: gif.id,
+        catalogId: gif.catalogId,
+        title: gif.title,
+        tags: gif.tags,
+        provider: gif.provider,
+        creator: gif.creator,
+        sourceUrl: gif.sourceUrl,
+        license: gif.license,
+        licenseUrl: gif.licenseUrl,
+        attribution: gif.attribution,
+        file: { url: gif.mediaUrl, mime: 'image/gif', external: true }
+      };
+    });
+    return sendJson(res, 200, { gifs, provider: 'Openverse', query: term });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/media/music') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const term = cleanText(query.get('q') || 'instrumental', 80) || 'instrumental';
+    const queryKey = `music:${term.toLowerCase()}`;
+    const data = catalogCacheGet(openverseQueryCache, queryKey) || catalogCacheSet(openverseQueryCache, queryKey, await openverseJson('audio/', {
+        q: term,
+        source: 'jamendo',
+        category: 'music',
+        license: 'by,cc0,pdm',
+        mature: 'false',
+        page_size: 20
+      }));
+    const tracks = (data.results || []).map(normalizeOpenverseMusic).filter(Boolean).map((track) => {
+      catalogCacheSet(openverseDetailCache, `audio:${track.catalogId}`, track);
+      return publicMusicSelection({ ...track, start: 0, clipDuration: Math.min(30, track.trackDuration) }, `/api/media/music/${track.catalogId}/preview`);
+    });
+    return sendJson(res, 200, { tracks, provider: 'Openverse', query: term });
+  }
+
+  const musicPreviewMatch = /^\/api\/media\/music\/([^/]+)\/preview$/.exec(pathname);
+  if (req.method === 'GET' && musicPreviewMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const track = await resolveOpenverseMedia('audio', decodeURIComponent(musicPreviewMatch[1]));
+    return streamCatalogAudio(req, res, track.url);
+  }
+
+  const postMusicMatch = /^\/api\/posts\/([^/]+)\/music$/.exec(pathname);
+  if (req.method === 'GET' && postMusicMatch) {
+    const viewer = sessionFromRequest(req)?.user || null;
+    const post = db.posts[decodeURIComponent(postMusicMatch[1])];
+    if (!post || post.deletedAt || !post.music || !canViewPost(post, viewer?.id || null)) return sendError(res, 404, 'Track not found.');
+    const track = await resolveOpenverseMedia('audio', post.music.catalogId);
+    return streamCatalogAudio(req, res, track.url);
+  }
+
+  const noteMusicMatch = /^\/api\/notes\/([^/]+)\/music$/.exec(pathname);
+  if (req.method === 'GET' && noteMusicMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const noteId = decodeURIComponent(noteMusicMatch[1]);
+    const note = Object.values(db.notes).find((item) => item.id === noteId);
+    if (!note || !note.music || !canViewNote(note, user.id)) return sendError(res, 404, 'Track not found.');
+    const track = await resolveOpenverseMedia('audio', note.music.catalogId);
+    return streamCatalogAudio(req, res, track.url);
+  }
+
   if (req.method === 'POST' && pathname === '/api/auth/register') {
     const body = await readJsonBody(req);
     const username = String(body.username || '').trim();
@@ -2633,15 +3110,25 @@ async function handleApi(req, res, pathname, query) {
     let personTags = cleanPersonTags(body.personTags || body.taggedPeople || body.taggedUsers || body.tags, user.id);
     const inlineHashtags = description.match(/#[\p{L}\p{N}_]+/gu) || [];
     const suppliedHashtags = body.hashtags ?? ((typeof body.tags === 'string' || (Array.isArray(body.tags) && body.tags.every((tag) => typeof tag === 'string'))) ? body.tags : '');
+    let music = null;
+    if (body.music?.catalogId) {
+      const mediaCount = files.length || (upload?.dataUrl ? 1 : 0);
+      const mediaMime = String(files[0]?.mime || mimeFromDataUrl(upload?.dataUrl || '')).toLowerCase();
+      if (mediaCount !== 1 || !mediaMime.startsWith('video/')) {
+        return sendError(res, 400, 'Music can only be added to a single video clip.');
+      }
+      const source = await resolveOpenverseMedia('audio', body.music.catalogId);
+      music = cleanMusicSelection(source, body.music);
+    }
     const usesInlineUpload = !files.length;
     if (usesInlineUpload) files = [await saveUpload(upload, user.id, 'post')];
     const previousFileScopes = files.map((file) => file.scope);
-    if (!usesInlineUpload) files.forEach((file) => { file.scope = 'post'; });
     const mediaFileIds = files.map((file) => file.id);
     personTags = personTags.filter((tag) => Number(tag.mediaIndex || 0) < mediaFileIds.length);
     const mediaEdits = cleanPostMediaEdits(body, mediaFileIds);
     const rawAltTexts = Array.isArray(body.altTexts) ? body.altTexts : [];
     const altTexts = mediaFileIds.map((_, index) => cleanText(rawAltTexts[index] ?? (index === 0 ? body.altText : ''), 500));
+    if (!usesInlineUpload) files.forEach((file) => { file.scope = 'post'; });
     const post = {
       id: id('post'),
       ownerId: user.id,
@@ -2655,6 +3142,7 @@ async function handleApi(req, res, pathname, query) {
       personTags,
       edits: mediaEdits[0],
       mediaEdits,
+      music,
       allowReposts: body.allowReposts !== false,
       allowComments: body.allowComments !== false,
       hideLikeCounts: Boolean(body.hideLikeCounts),
@@ -2770,17 +3258,39 @@ async function handleApi(req, res, pathname, query) {
     const body = await readJsonBody(req);
     const text = cleanText(body.text || '', 1000);
     if (!text) return sendError(res, 400, 'Write a comment first.');
-    const comment = { id: id('comment'), userId: user.id, text, likes: [], pinnedAt: null, createdAt: nowIso(), deletedAt: null };
     if (!Array.isArray(post.comments)) post.comments = [];
+    const parent = body.replyTo
+      ? post.comments.find((item) => item.id === cleanText(body.replyTo, 120) && !item.deletedAt)
+      : null;
+    const comment = {
+      id: id('comment'),
+      userId: user.id,
+      text,
+      replyTo: parent?.id || null,
+      likes: [],
+      pinnedAt: null,
+      createdAt: nowIso(),
+      deletedAt: null
+    };
     post.comments.push(comment);
     post.comments = post.comments.slice(-500);
     const mentionNotes = notifyMentions(user, text, 'in a post comment');
-    let notification = null;
-    if (post.ownerId !== user.id && !mentionNotes.some(({ target }) => target.id === post.ownerId)) {
-      notification = addNotification(post.ownerId, 'post_comment', user.id, null, `${user.username} commented on your post.`, { postId: post.id, commentId: comment.id });
+    const notifiedUserIds = new Set(mentionNotes.map(({ target }) => target.id));
+    const notifications = [];
+    if (parent && parent.userId !== user.id && !notifiedUserIds.has(parent.userId)) {
+      const note = addNotification(parent.userId, 'post_comment_reply', user.id, null, `${user.username} replied to your comment.`, {
+        postId: post.id,
+        commentId: comment.id
+      });
+      if (note) notifications.push({ targetId: parent.userId, note });
+      notifiedUserIds.add(parent.userId);
+    }
+    if (post.ownerId !== user.id && !notifiedUserIds.has(post.ownerId)) {
+      const note = addNotification(post.ownerId, 'post_comment', user.id, null, `${user.username} commented on your post.`, { postId: post.id, commentId: comment.id });
+      if (note) notifications.push({ targetId: post.ownerId, note });
     }
     await Promise.all([savePosts(), saveNotifications()]);
-    if (notification) pushToUser(post.ownerId, { type: 'notification:new', notification: publicNotification(notification, post.ownerId) });
+    notifications.forEach(({ targetId, note }) => pushToUser(targetId, { type: 'notification:new', notification: publicNotification(note, targetId) }));
     return sendJson(res, 201, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id, post) });
   }
 
@@ -2811,6 +3321,7 @@ async function handleApi(req, res, pathname, query) {
       }
     } else {
       if (post.ownerId !== user.id) return sendError(res, 403, 'Only the post owner can pin comments.');
+      if (comment.replyTo) return sendError(res, 409, 'Only top-level comments can be pinned.');
       if (comment.pinnedAt) comment.pinnedAt = null;
       else {
         const pinnedCount = (post.comments || []).filter((item) => !item.deletedAt && item.pinnedAt).length;
@@ -2878,13 +3389,19 @@ async function handleApi(req, res, pathname, query) {
     if (Array.from(textValue).length > 60) return sendError(res, 400, 'Notes can be at most 60 characters.');
     const text = Array.from(textValue).slice(0, 60).join('');
     const audioUpload = body.audio?.dataUrl ? body.audio : null;
+    if (audioUpload && body.music?.catalogId) return sendError(res, 400, 'Choose either uploaded audio or catalog music for a note, not both.');
+    let music = null;
+    if (body.music?.catalogId) {
+      const source = await resolveOpenverseMedia('audio', body.music.catalogId);
+      music = cleanMusicSelection(source, body.music);
+    }
     const durationRaw = body.audioDuration ?? body.audio?.durationSeconds ?? body.audio?.duration;
-    const audioDuration = durationRaw === undefined || durationRaw === null || durationRaw === '' ? null : Number(durationRaw);
-    const audioStart = boundedNumber(body.audioStart ?? body.audio?.start, 0, 60 * 60, 0);
+    const audioDuration = music?.clipDuration ?? (durationRaw === undefined || durationRaw === null || durationRaw === '' ? null : Number(durationRaw));
+    const audioStart = music?.start ?? boundedNumber(body.audioStart ?? body.audio?.start, 0, 60 * 60, 0);
     if (audioDuration !== null && (!Number.isFinite(audioDuration) || audioDuration < 0 || audioDuration > 30)) {
       return sendError(res, 400, 'Note audio snippets can be at most 30 seconds.');
     }
-    if (!text && !audioUpload && !body.audioTitle) return sendError(res, 400, 'Write a note or choose an audio snippet.');
+    if (!text && !audioUpload && !music) return sendError(res, 400, 'Write a note or choose an audio snippet.');
     let audioFile = null;
     if (audioUpload) {
       if (!mimeFromDataUrl(audioUpload.dataUrl).startsWith('audio/')) return sendError(res, 400, 'Note audio must be an audio file.');
@@ -2896,24 +3413,43 @@ async function handleApi(req, res, pathname, query) {
       ownerId: user.id,
       text,
       audioFileId: audioFile?.id || null,
-      audioTitle: cleanText(body.audioTitle || body.audio?.title || '', 100),
-      audioArtist: cleanText(body.audioArtist || body.audio?.artist || '', 100),
+      music,
+      audioTitle: music?.title || cleanText(body.audioTitle || body.audio?.title || '', 100),
+      audioArtist: music?.artist || cleanText(body.audioArtist || body.audio?.artist || '', 100),
       audioDuration,
       audioStart,
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + NOTE_LIFETIME_MS).toISOString(),
       deletedAt: null
     };
+    const previousNote = db.notes[user.id] || null;
     db.notes[user.id] = note;
-    await saveNotes();
+    try {
+      await saveNotes();
+    } catch (error) {
+      if (previousNote) db.notes[user.id] = previousNote;
+      else delete db.notes[user.id];
+      if (audioFile) await deleteStoredFile(audioFile.id, 'note-audio').catch(() => {});
+      throw error;
+    }
+    if (previousNote?.audioFileId && previousNote.audioFileId !== audioFile?.id) {
+      await deleteStoredFile(previousNote.audioFileId, 'note-audio').catch(() => {});
+    }
     return sendJson(res, 201, { note: publicNote(note, user.id) });
   }
 
   if (req.method === 'DELETE' && pathname === '/api/me/note') {
     const user = await requireAuth(req, res);
     if (!user) return;
-    if (db.notes[user.id]) delete db.notes[user.id];
-    await saveNotes();
+    const previousNote = db.notes[user.id] || null;
+    if (previousNote) delete db.notes[user.id];
+    try {
+      await saveNotes();
+    } catch (error) {
+      if (previousNote) db.notes[user.id] = previousNote;
+      throw error;
+    }
+    if (previousNote?.audioFileId) await deleteStoredFile(previousNote.audioFileId, 'note-audio').catch(() => {});
     return sendJson(res, 200, { ok: true });
   }
 
@@ -2949,6 +3485,7 @@ async function handleApi(req, res, pathname, query) {
     const term = cleanText(query.get('q') || '', 80).toLowerCase();
     const gifs = Object.values(db.gifs)
       .filter((gif) => gif.status === status)
+      .filter((gif) => gif.provider !== 'openverse')
       .filter((gif) => !term || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(term))
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       .slice(0, 80)
@@ -3959,10 +4496,8 @@ async function handleApi(req, res, pathname, query) {
       sharedPost = validation.post;
     }
     let file = null;
-    if (kind === 'gif' && body.gifId) {
-      const gif = db.gifs[cleanText(body.gifId || '', 120)];
-      if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
-      file = db.files[gif.fileId];
+    if (kind === 'gif' && (body.gifCatalogId || body.gifId)) {
+      ({ file } = await resolveMessageGif(body, user.id));
     } else if (kind === 'gif') {
       return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
     } else if (kind !== 'post' && body.file?.dataUrl) {
@@ -4039,7 +4574,7 @@ async function handleApi(req, res, pathname, query) {
           : `${escapeHtml(message.text || '')}${message.attachment ? `<br><a href="${escapeHtml(message.attachment.downloadUrl)}">${escapeHtml(message.attachment.name)}</a>` : ''}`;
         return `<article><small>${escapeHtml(`${new Date(message.createdAt).toLocaleString()} | ${sender?.username || message.senderId} | ${message.kind}`)}</small><p>${content}</p></article>`;
       }).join('\n');
-      const html = `<!doctype html><meta charset="utf-8"><title>Group chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#4fd2c2}</style><h1>${escapeHtml(group.name)}</h1>${rows}`;
+      const html = `<!doctype html><meta charset="utf-8"><title>Group chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#397db4}</style><h1>${escapeHtml(group.name)}</h1>${rows}`;
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': `attachment; filename="group-${safeName}-${created}.html"` });
       return res.end(html);
     }
@@ -4129,7 +4664,7 @@ async function handleApi(req, res, pathname, query) {
           : `${escapeHtml(message.text || '')}${message.attachment ? `<br><a href="${escapeHtml(message.attachment.downloadUrl)}">${escapeHtml(message.attachment.name)}</a>` : ''}`;
         return `<article><small>${escapeHtml(meta)}</small><p>${content}</p></article>`;
       }).join('\n');
-      const html = `<!doctype html><meta charset="utf-8"><title>Chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#4fd2c2}</style><h1>Chat with ${escapeHtml(peer.username)}</h1>${rows}`;
+      const html = `<!doctype html><meta charset="utf-8"><title>Chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#397db4}</style><h1>Chat with ${escapeHtml(peer.username)}</h1>${rows}`;
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Disposition': `attachment; filename="${baseName}.html"`
@@ -4209,10 +4744,8 @@ async function handleApi(req, res, pathname, query) {
     }
 
     let file = null;
-    if (kind === 'gif' && body.gifId) {
-      const gif = db.gifs[cleanText(body.gifId || '', 120)];
-      if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
-      file = db.files[gif.fileId];
+    if (kind === 'gif' && (body.gifCatalogId || body.gifId)) {
+      ({ file } = await resolveMessageGif(body, user.id));
     } else if (kind === 'gif') {
       return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
     } else if (kind !== 'post' && body.file?.dataUrl) {

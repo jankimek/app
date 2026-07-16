@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -170,6 +171,20 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /\(!hasActiveConversation\(\) \|\| state\.clipViewer\) && \(isAppBackSwipe \|\| isClipViewerBackSwipe\)/);
   assert.match(clientSource, /if \(!swipe\.moved\) \{[\s\S]*?state\.edgeSwipe = null;[\s\S]*?return;/);
   assert.match(clientSource, /function renderMessageFocus/);
+  assert.match(clientSource, /class="message-reaction-bar" data-stop-close/);
+  assert.match(clientSource, /class="message-action-menu" data-stop-close/);
+  assert.match(clientSource, /class="message-focus-picker" data-stop-close/);
+  assert.match(clientSource, /aria-label="Message actions" tabindex="-1"/);
+  assert.match(clientSource, /classList\.add\('ready'\)/);
+  assert.match(clientSource, /element\.setAttribute\('data-stop-close', ''\)/);
+  assert.match(styleSource, /\.message-focus-actions \{[\s\S]*?height: auto;[\s\S]*?flex-direction: column;[\s\S]*?align-items: center;/);
+  assert.match(styleSource, /\.message-focus-overlay\.ready \.message-reaction-bar/);
+  assert.match(styleSource, /\.keyboard-open \.chat-footer \.chat-media-tray:not\(\.gifs-tray\)/);
+  assert.match(clientSource, /data-music-segment-start/);
+  assert.match(clientSource, /function updateMusicSegmentStart/);
+  assert.match(clientSource, /class="post-preview-music"/);
+  assert.match(clientSource, /data-post-preview-progress type="range"/);
+  assert.match(clientSource, /function syncPostPreviewMusic/);
   assert.match(clientSource, /function capturePersistentScroll/);
   assert.match(clientSource, /state\.tabSwipe = \{/);
   assert.match(styleSource, /background-attachment: fixed/);
@@ -403,6 +418,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="toggle-post-comment-like"/);
   assert.match(clientSource, /data-action="toggle-post-comment-pin"/);
   assert.match(clientSource, /data-action="delete-post-comment"/);
+  assert.match(clientSource, /data-action="reply-post-comment"/);
+  assert.match(clientSource, /data-action="toggle-post-comment-replies"/);
+  assert.match(clientSource, /data-action="clear-post-comment-reply"/);
   assert.match(clientSource, /Liked by creator/);
   assert.match(clientSource, /data-action="follow-user"[^>]*>Follow<\/button>/);
   assert.doesNotMatch(clientSource, /class="clip-follow" data-action="send-request"/);
@@ -430,8 +448,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
 
   const postComposerSource = sourceSection(clientSource, 'function renderPostComposerMedia(', 'function renderNoteRail');
   assert.match(postComposerSource, /const stage = clamp\(Number\(composer\.stage \|\| 1\), 1, 3\)/);
-  assert.match(postComposerSource, /Step \$\{stage\} of 3/);
-  assert.match(postComposerSource, /stage === 1 \? 'Crop' : stage === 2 \? 'Look' : 'Share'/);
+  assert.match(postComposerSource, /stage === 1 \? 'New post' : stage === 2 \? 'Edit' : 'Share'/);
+  assert.match(postComposerSource, /Crop and arrange/);
   for (const control of ['zoom', 'x', 'y']) assert.match(postComposerSource, new RegExp(`data-post-crop="${control}"`));
   assert.match(postComposerSource, /data-action="rotate-post-media"/);
   for (const filter of ['normal', 'vivid', 'warm', 'cool', 'mono', 'fade', 'noir']) assert.match(postComposerSource, new RegExp(`['"]${filter}['"]`));
@@ -449,7 +467,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(postComposerSource, /\['mixed','Mixed'\]/);
   assert.match(postComposerSource, /\['portrait34','3:4'\]/);
   assert.match(clientSource, /pendingTagPoint = \{[\s\S]{0,300}?x: Math\.round\([\s\S]{0,300}?y: Math\.round\(/);
-  assert.match(postComposerSource, /<video src="\$\{esc\(composer\.previewUrl\)\}"[\s\S]{0,180}?playsinline controls preload="metadata"/);
+  assert.match(postComposerSource, /<video src="\$\{esc\(composer\.previewUrl\)\}"[\s\S]{0,220}?playsinline preload="metadata"/);
+  assert.doesNotMatch(postComposerSource, /playsinline controls preload="metadata"/);
+  assert.match(postComposerSource, /class="post-preview-controls"/);
   const filterRailSource = sourceSection(postComposerSource, 'class="post-filter-rail"', 'class="post-adjust-tabs"');
   assert.doesNotMatch(filterRailSource, /<video/);
   assert.match(filterRailSource, /data-video-poster/);
@@ -520,7 +540,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(noteBehaviorSource, /duration > 30\.15/);
   assert.match(noteBehaviorSource, /setTimeout\(\(\) => stopNoteRecording\(\), 30000\)/);
   assert.match(noteBehaviorSource, /function playNote\(noteId\)/);
-  assert.match(noteBehaviorSource, /if \(selected\.paused\) selected\.play\(\)/);
+  assert.match(noteBehaviorSource, /selected\.play\(\)\.catch\(\(\) => \{\}\)/);
+  assert.match(noteBehaviorSource, /selected\.currentTime >= end/);
   assert.match(serverSource, /Array\.from\(textValue\)\.length > 60/);
   assert.match(serverSource, /audioDuration > 30/);
 
@@ -897,6 +918,16 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   assert.equal(pinnedComment.status, 200);
   assert.equal(pinnedComment.data.comment.pinned, true);
 
+  const commentReply = await alice.request(`/api/posts/${post.id}/comments`, {
+    method: 'POST',
+    body: { text: '@social_bob Thanks for the feedback.', replyTo: comment.data.comment.id }
+  });
+  assert.equal(commentReply.status, 201);
+  assert.equal(commentReply.data.comment.replyTo, comment.data.comment.id);
+  assert.equal(commentReply.data.comment.replyPreview.user.id, bobUser.id);
+  assert.match(commentReply.data.comment.replyPreview.text, /stable comment/i);
+  assert.equal((await alice.request(`/api/posts/${post.id}/comments/${commentReply.data.comment.id}/pin`, { method: 'POST' })).status, 409);
+
   const ownerModeratedComment = await charlie.request(`/api/posts/${post.id}/comments`, {
     method: 'POST',
     body: { text: 'The post owner can moderate this.' }
@@ -906,7 +937,10 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   assert.equal((await bob.request(`/api/posts/${post.id}/comments/${ownerModeratedComment.data.comment.id}`, { method: 'DELETE' })).status, 403);
   const ownerDeletedComment = await alice.request(`/api/posts/${post.id}/comments/${ownerModeratedComment.data.comment.id}`, { method: 'DELETE' });
   assert.equal(ownerDeletedComment.status, 200);
-  assert.equal(ownerDeletedComment.data.post.commentCount, 1);
+  assert.equal(ownerDeletedComment.data.post.commentCount, 2);
+  const replyDeletedByAuthor = await alice.request(`/api/posts/${post.id}/comments/${commentReply.data.comment.id}`, { method: 'DELETE' });
+  assert.equal(replyDeletedByAuthor.status, 200);
+  assert.equal(replyDeletedByAuthor.data.post.commentCount, 1);
   const selfDeletedComment = await bob.request(`/api/posts/${post.id}/comments/${comment.data.comment.id}`, { method: 'DELETE' });
   assert.equal(selfDeletedComment.status, 200);
   assert.equal(selfDeletedComment.data.post.commentCount, 0);
@@ -2038,4 +2072,326 @@ test('group invitations, history, admin controls, rich messages, and leaving', a
   assert.equal((await dora.request(`/api/groups/${group.id}/export?format=json`)).status, 200);
   assert.equal((await dora.request(`/api/groups/${group.id}/leave`, { method: 'POST' })).status, 200);
   assert.ok(!(await dora.request('/api/groups')).data.groups.some((item) => item.id === group.id));
+});
+
+test('open media search imports GIFs and applies canonical music sections safely', async (t) => {
+  const gifCatalogId = '11111111-1111-4111-8111-111111111111';
+  const musicCatalogId = '22222222-2222-4222-8222-222222222222';
+  const filteredMusicId = '33333333-3333-4333-8333-333333333333';
+  const unsafeGifId = '44444444-4444-4444-8444-444444444444';
+  const gifBytes = Buffer.from(GIF_DATA.split(',')[1], 'base64');
+  const audioBytes = Buffer.from('ID3-openverse-mock-audio-bytes', 'utf8');
+  const catalogRequests = [];
+  let gifDownloads = 0;
+  let catalogBaseUrl = '';
+
+  const gifRecord = () => ({
+    id: gifCatalogId,
+    title: 'Canonical celebration',
+    creator: 'GIF Artist',
+    filetype: 'gif',
+    mature: false,
+    url: `${catalogBaseUrl}/media/celebration.gif`,
+    foreign_landing_url: `${catalogBaseUrl}/works/celebration`,
+    license: 'by',
+    license_url: 'https://creativecommons.org/licenses/by/4.0/',
+    attribution: 'Canonical celebration by GIF Artist, CC BY 4.0',
+    tags: [{ name: 'celebrate' }, { name: 'party' }]
+  });
+  const musicRecord = (overrides = {}) => ({
+    id: musicCatalogId,
+    title: 'Canonical Night Drive',
+    creator: 'Catalog Artist',
+    mature: false,
+    url: `${catalogBaseUrl}/media/night-drive.mp3`,
+    foreign_landing_url: `${catalogBaseUrl}/works/night-drive`,
+    license: 'by',
+    license_url: 'https://creativecommons.org/licenses/by/4.0/',
+    attribution: 'Canonical Night Drive by Catalog Artist, CC BY 4.0',
+    duration: 90000,
+    ...overrides
+  });
+  const catalogServer = http.createServer((req, res) => {
+    const target = new URL(req.url, 'http://catalog.test');
+    catalogRequests.push({ pathname: target.pathname, search: target.search, range: req.headers.range || '' });
+    const json = (status, value) => {
+      const body = Buffer.from(JSON.stringify(value));
+      res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': body.length });
+      res.end(body);
+    };
+    if (target.pathname === '/v1/images/') {
+      return json(200, {
+        results: [
+          gifRecord(),
+          { ...gifRecord(), id: '55555555-5555-4555-8555-555555555555', filetype: 'png' },
+          { ...gifRecord(), id: '66666666-6666-4666-8666-666666666666', mature: true }
+        ]
+      });
+    }
+    if (target.pathname === `/v1/images/${gifCatalogId}/`) return json(200, gifRecord());
+    if (target.pathname === `/v1/images/${unsafeGifId}/`) {
+      return json(200, { ...gifRecord(), id: unsafeGifId, url: 'http://169.254.169.254/latest/meta-data/' });
+    }
+    if (target.pathname === '/v1/audio/') {
+      return json(200, {
+        results: [
+          musicRecord(),
+          musicRecord({ id: filteredMusicId, title: 'Filtered commercial track', license: 'by-nc' })
+        ]
+      });
+    }
+    if (target.pathname === `/v1/audio/${musicCatalogId}/`) return json(200, musicRecord());
+    if (target.pathname === `/v1/audio/${musicCatalogId}/thumb/`) {
+      res.writeHead(200, { 'Content-Type': 'image/png' });
+      return res.end(Buffer.from(PNG_DATA.split(',')[1], 'base64'));
+    }
+    if (target.pathname === '/media/celebration.gif') {
+      gifDownloads += 1;
+      res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': gifBytes.length });
+      return res.end(gifBytes);
+    }
+    if (target.pathname === '/media/night-drive.mp3') {
+      const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range || ''));
+      if (range) {
+        const start = Math.min(Number(range[1]), audioBytes.length - 1);
+        const requestedEnd = range[2] ? Number(range[2]) : audioBytes.length - 1;
+        const end = Math.min(Math.max(start, requestedEnd), audioBytes.length - 1);
+        const chunk = audioBytes.subarray(start, end + 1);
+        res.writeHead(206, {
+          'Content-Type': 'audio/mpeg',
+          'Accept-Ranges': 'bytes',
+          'Content-Range': `bytes ${start}-${end}/${audioBytes.length}`,
+          'Content-Length': chunk.length
+        });
+        return res.end(chunk);
+      }
+      res.writeHead(200, {
+        'Content-Type': 'audio/mpeg',
+        'Accept-Ranges': 'bytes',
+        'Content-Length': audioBytes.length
+      });
+      return res.end(audioBytes);
+    }
+    return json(404, { error: 'mock catalog route not found' });
+  });
+  await new Promise((resolve, reject) => {
+    catalogServer.once('error', reject);
+    catalogServer.listen(0, '127.0.0.1', resolve);
+  });
+  const catalogAddress = catalogServer.address();
+  catalogBaseUrl = `http://127.0.0.1:${catalogAddress.port}`;
+
+  const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-app-open-media-test-'));
+  const dataDir = path.join(runtime, 'data');
+  const uploadDir = path.join(runtime, 'uploads');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const port = 39000 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DATA_DIR: dataDir,
+      UPLOAD_DIR: uploadDir,
+      OPENVERSE_API_BASE: catalogBaseUrl,
+      OPENVERSE_ALLOW_HTTP: '1',
+      OPENVERSE_MEDIA_HOSTS: '127.0.0.1'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let serverError = '';
+  child.stderr.on('data', (chunk) => { serverError += chunk.toString('utf8'); });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill();
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      child.once('exit', resolve);
+      setTimeout(resolve, 1500);
+    });
+    await new Promise((resolve) => catalogServer.close(resolve));
+    fs.rmSync(runtime, { recursive: true, force: true });
+  });
+
+  await waitForServer(baseUrl, child);
+  const anonymous = new ApiClient(baseUrl);
+  assert.equal((await anonymous.request('/api/media/gifs?q=party')).status, 401);
+  assert.equal((await anonymous.request('/api/media/music?q=night')).status, 401);
+
+  const alice = new ApiClient(baseUrl);
+  const bob = new ApiClient(baseUrl);
+  const charlie = new ApiClient(baseUrl);
+  const aliceUser = await register(alice, 'catalog_alice');
+  const bobUser = await register(bob, 'catalog_bob');
+  const charlieUser = await register(charlie, 'catalog_charlie');
+  const contactRequest = await alice.request(`/api/contacts/${bobUser.username}`, { method: 'POST' });
+  assert.equal(contactRequest.status, 201);
+  assert.equal((await bob.request(`/api/requests/${contactRequest.data.request.id}/accept`, { method: 'POST' })).status, 200);
+
+  const gifSearch = await alice.request('/api/media/gifs?q=celebrate');
+  assert.equal(gifSearch.status, 200);
+  assert.equal(gifSearch.data.provider, 'Openverse');
+  assert.equal(gifSearch.data.gifs.length, 1);
+  assert.equal(gifSearch.data.gifs[0].catalogId, gifCatalogId);
+  assert.equal(gifSearch.data.gifs[0].creator, 'GIF Artist');
+  assert.ok(catalogRequests.some((item) => item.pathname === '/v1/images/' && /(?:^|&)q=celebrate(?:&|$)/.test(item.search.slice(1))));
+  assert.ok(catalogRequests.some((item) => item.pathname === '/v1/images/' && /(?:^|&)source=wikimedia(?:&|$)/.test(item.search.slice(1))));
+  const gifSearchCalls = catalogRequests.filter((item) => item.pathname === '/v1/images/').length;
+  assert.equal((await alice.request('/api/media/gifs?q=celebrate')).status, 200);
+  assert.equal(catalogRequests.filter((item) => item.pathname === '/v1/images/').length, gifSearchCalls);
+
+  const musicSearch = await alice.request('/api/media/music?q=night');
+  assert.equal(musicSearch.status, 200);
+  assert.equal(musicSearch.data.provider, 'Openverse');
+  assert.equal(musicSearch.data.tracks.length, 1);
+  assert.equal(musicSearch.data.tracks[0].catalogId, musicCatalogId);
+  assert.equal(musicSearch.data.tracks[0].title, 'Canonical Night Drive');
+  assert.equal(musicSearch.data.tracks[0].artist, 'Catalog Artist');
+  assert.equal(musicSearch.data.tracks[0].trackDuration, 90);
+  assert.ok(catalogRequests.some((item) => item.pathname === '/v1/audio/' && /(?:^|&)source=jamendo(?:&|$)/.test(item.search.slice(1))));
+  assert.ok(catalogRequests.some((item) => item.pathname === '/v1/audio/' && /(?:^|&)license=by%2Ccc0%2Cpdm(?:&|$)/.test(item.search.slice(1))));
+  const musicSearchCalls = catalogRequests.filter((item) => item.pathname === '/v1/audio/').length;
+  assert.equal((await alice.request('/api/media/music?q=night')).status, 200);
+  assert.equal(catalogRequests.filter((item) => item.pathname === '/v1/audio/').length, musicSearchCalls);
+
+  const unsafeGif = await sendMessage(alice, bobUser.id, { kind: 'gif', gifCatalogId: unsafeGifId });
+  assert.equal(unsafeGif.status, 400);
+  assert.match(unsafeGif.data.error, /not available/i);
+
+  const [gifMessage, duplicateGif] = await Promise.all([
+    sendMessage(alice, bobUser.id, {
+      kind: 'gif',
+      gifCatalogId,
+      title: 'Spoofed GIF title',
+      creator: 'Spoofed creator'
+    }),
+    sendMessage(alice, bobUser.id, { kind: 'gif', gifCatalogId })
+  ]);
+  assert.equal(gifMessage.status, 201);
+  assert.equal(duplicateGif.status, 201);
+  assert.equal(gifMessage.data.message.kind, 'gif');
+  assert.match(gifMessage.data.message.attachment.url, /^\/api\/files\//);
+  assert.equal(gifMessage.data.message.mediaCredit.provider, 'openverse');
+  assert.equal(gifMessage.data.message.mediaCredit.creator, 'GIF Artist');
+  assert.equal(gifMessage.data.message.mediaCredit.license, 'BY');
+  assert.equal(gifDownloads, 1);
+  assert.ok(!(await alice.request('/api/gifs')).data.gifs.some((gif) => gif.provider === 'openverse'));
+  const receivedMessages = await bob.request(`/api/chats/${aliceUser.id}/messages?limit=20`);
+  assert.ok(receivedMessages.data.messages.some((message) => message.id === gifMessage.data.message.id && message.mediaCredit?.creator === 'GIF Artist'));
+
+  const note = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: {
+      text: 'Night drive',
+      music: {
+        catalogId: musicCatalogId,
+        title: 'Spoofed title',
+        artist: 'Spoofed artist',
+        start: 12,
+        clipDuration: 15
+      },
+      audioTitle: 'Spoofed title',
+      audioArtist: 'Spoofed artist'
+    }
+  });
+  assert.equal(note.status, 201);
+  assert.equal(note.data.note.music.title, 'Canonical Night Drive');
+  assert.equal(note.data.note.music.artist, 'Catalog Artist');
+  assert.equal(note.data.note.music.start, 12);
+  assert.equal(note.data.note.music.clipDuration, 15);
+  assert.equal(note.data.note.audioTitle, 'Canonical Night Drive');
+  assert.equal(note.data.note.audioArtist, 'Catalog Artist');
+  assert.equal((await charlie.request(`/api/notes/${note.data.note.id}/music`, { headers: { Range: 'bytes=0-3' } })).status, 404);
+  assert.equal((await charlie.request(`/api/follows/${aliceUser.id}`, { method: 'POST' })).status, 200);
+  const noteAudio = await charlie.request(`/api/notes/${note.data.note.id}/music`, { headers: { Range: 'bytes=0-3' } });
+  assert.equal(noteAudio.status, 206);
+  assert.equal(noteAudio.headers.get('content-range'), `bytes 0-3/${audioBytes.length}`);
+  assert.deepEqual(noteAudio.data, audioBytes.subarray(0, 4));
+
+  const post = await alice.request('/api/posts', {
+    method: 'POST',
+    body: {
+      file: { name: 'night-drive.mp4', type: 'video/mp4', dataUrl: VIDEO_DATA },
+      description: 'Canonical catalog metadata test',
+      music: {
+        catalogId: musicCatalogId,
+        title: 'Spoofed title',
+        artist: 'Spoofed artist',
+        start: 25,
+        clipDuration: 30
+      }
+    }
+  });
+  assert.equal(post.status, 201);
+  assert.equal(post.data.post.music.title, 'Canonical Night Drive');
+  assert.equal(post.data.post.music.artist, 'Catalog Artist');
+  assert.equal(post.data.post.music.start, 25);
+  assert.equal(post.data.post.music.clipDuration, 30);
+  const postAudio = await bob.request(`/api/posts/${post.data.post.id}/music`, { headers: { Range: 'bytes=4-8' } });
+  assert.equal(postAudio.status, 206);
+  assert.equal(postAudio.headers.get('content-range'), `bytes 4-8/${audioBytes.length}`);
+  assert.deepEqual(postAudio.data, audioBytes.subarray(4, 9));
+  const publicPostAudio = await anonymous.request(`/api/posts/${post.data.post.id}/music`, { headers: { Range: 'bytes=0-2' } });
+  assert.equal(publicPostAudio.status, 206);
+  assert.deepEqual(publicPostAudio.data, audioBytes.subarray(0, 3));
+  assert.equal((await alice.request(`/api/posts/${post.data.post.id}/music`, { headers: { Range: 'bytes=0-1,4-5' } })).status, 416);
+
+  const imageWithMusic = await alice.request('/api/posts', {
+    method: 'POST',
+    body: {
+      file: { name: 'still.png', type: 'image/png', dataUrl: PNG_DATA },
+      music: { catalogId: musicCatalogId, start: 0, clipDuration: 15 }
+    }
+  });
+  assert.equal(imageWithMusic.status, 400);
+  assert.match(imageWithMusic.data.error, /single video clip/i);
+
+  const contradictoryNote = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: {
+      text: 'Choose one source',
+      audio: { name: 'local.wav', type: 'audio/wav', dataUrl: AUDIO_DATA, duration: 1 },
+      music: { catalogId: musicCatalogId, start: 0, clipDuration: 15 }
+    }
+  });
+  assert.equal(contradictoryNote.status, 400);
+  assert.match(contradictoryNote.data.error, /either uploaded audio or catalog music/i);
+
+  const localNoteOne = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: {
+      text: 'Local one',
+      audio: { name: 'local-one.wav', type: 'audio/wav', dataUrl: AUDIO_DATA, duration: 1 },
+      audioDuration: 1,
+      audioTitle: 'Local one',
+      audioArtist: 'Original audio'
+    }
+  });
+  assert.equal(localNoteOne.status, 201);
+  let fileRecords = JSON.parse(fs.readFileSync(path.join(dataDir, 'files.json'), 'utf8'));
+  const firstLocalFile = Object.values(fileRecords).find((file) => file.scope === 'note-audio');
+  assert.ok(firstLocalFile?.diskPath && fs.existsSync(firstLocalFile.diskPath));
+
+  const localNoteTwo = await alice.request('/api/me/note', {
+    method: 'POST',
+    body: {
+      text: 'Local two',
+      audio: { name: 'local-two.wav', type: 'audio/wav', dataUrl: AUDIO_DATA, duration: 1 },
+      audioDuration: 1,
+      audioTitle: 'Local two',
+      audioArtist: 'Original audio'
+    }
+  });
+  assert.equal(localNoteTwo.status, 201);
+  fileRecords = JSON.parse(fs.readFileSync(path.join(dataDir, 'files.json'), 'utf8'));
+  const localFilesAfterReplace = Object.values(fileRecords).filter((file) => file.scope === 'note-audio');
+  assert.equal(localFilesAfterReplace.length, 1);
+  assert.notEqual(localFilesAfterReplace[0].id, firstLocalFile.id);
+  assert.equal(fs.existsSync(firstLocalFile.diskPath), false);
+  assert.equal((await alice.request('/api/me/note', { method: 'DELETE' })).status, 200);
+  fileRecords = JSON.parse(fs.readFileSync(path.join(dataDir, 'files.json'), 'utf8'));
+  assert.equal(Object.values(fileRecords).filter((file) => file.scope === 'note-audio').length, 0);
+  assert.equal(fs.existsSync(localFilesAfterReplace[0].diskPath), false);
+  assert.equal(serverError, '');
 });

@@ -160,6 +160,7 @@
     notes: [],
     postComposer: null,
     postPublishing: false,
+    musicPicker: null,
     profileMediaTab: 'posts',
     searchProfileMediaTab: 'posts',
     profilePosts: new Map(),
@@ -183,6 +184,11 @@
     lastMessageTap: null,
     storyPublishing: false,
     gifPool: [],
+    chatGifResults: [],
+    chatGifLoading: false,
+    chatGifProvider: '',
+    chatGifError: '',
+    sendingGifId: null,
     pendingGifs: [],
     gifLoading: false,
     overlayClosing: false,
@@ -1658,6 +1664,7 @@
       <div id="highlight-composer-slot">${renderHighlightComposer()}</div>
       <div id="post-composer-slot">${renderPostComposer()}</div>
       <div id="note-composer-slot">${renderNoteComposer()}</div>
+      <div id="music-picker-slot">${renderMusicPicker()}</div>
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
       <div id="chat-customization-slot">${renderChatCustomization()}</div>
       <div id="sticker-creator-slot">${renderStickerCreator()}</div>
@@ -1733,7 +1740,9 @@
   }
 
   function updateMessageFocusSlot() {
-    return updateSlot('message-focus-slot', renderMessageFocus());
+    const updated = updateSlot('message-focus-slot', renderMessageFocus());
+    syncMessageFocusAccessibility();
+    return updated;
   }
 
   function updateProfileModalSlots() {
@@ -1789,11 +1798,30 @@
 
   function updatePostComposerSlot() {
     unloadPostComposerVideos();
-    return updateSlot('post-composer-slot', renderPostComposer());
+    const updated = updateSlot('post-composer-slot', renderPostComposer());
+    if (updated) requestAnimationFrame(attachPostComposerPreview);
+    return updated;
   }
 
   function updateNoteComposerSlot() {
+    document.getElementById('note-composer-audio')?.pause?.();
     return updateSlot('note-composer-slot', renderNoteComposer());
+  }
+
+  function updateMusicPickerSlot() {
+    const currentInput = document.getElementById('music-search');
+    const preserveSearchFocus = document.activeElement === currentInput;
+    const selectionStart = currentInput?.selectionStart || 0;
+    document.querySelector('#music-picker-slot audio')?.pause?.();
+    const updated = updateSlot('music-picker-slot', renderMusicPicker());
+    syncMusicPickerAccessibility();
+    if (updated && preserveSearchFocus && state.musicPicker && !state.musicPicker.selected) {
+      const nextInput = document.getElementById('music-search');
+      nextInput?.focus({ preventScroll: true });
+      const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
+      nextInput?.setSelectionRange?.(cursor, cursor);
+    }
+    return updated;
   }
 
   function updateMediaViewerSlot() {
@@ -2241,11 +2269,13 @@
           ? `<button class="clip-follow" data-action="add-contact" data-username="${esc(author.username)}" aria-label="Request to follow ${esc(author.username)}">Follow</button>`
           : `<button class="clip-follow" data-action="follow-user" data-user-id="${esc(author.id)}" aria-label="Follow ${esc(author.username)}">Follow</button>`;
     const caption = String(post.description || post.caption || '');
+    const music = post.music || null;
     return `
       <article class="clip-card" data-post-id="${esc(post.id)}" data-media-index="${mediaIndex}">
         <div class="clip-stage">
           <div class="clip-viewport ${letterbox ? 'letterbox' : ''}">
-            <video class="clip-video" data-clip-video src="${esc(media.url)}" style="object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline webkit-playsinline loop ${state.clipMuted ? 'muted' : ''} preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" tabindex="0" aria-label="${esc(item.altText || `Clip by ${author.username}. Tap to pause or play.`)}"></video>
+            <video class="clip-video" data-clip-video src="${esc(media.url)}" style="object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline webkit-playsinline loop ${state.clipMuted || music ? 'muted' : ''} preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" tabindex="0" aria-label="${esc(item.altText || `Clip by ${author.username}. Tap to pause or play.`)}"></video>
+            ${music?.audioUrl ? `<audio class="clip-music" src="${esc(music.audioUrl)}" preload="metadata" data-start="${Number(music.start || 0)}" data-end="${Number(music.start || 0) + Number(music.clipDuration || 30)}"></audio>` : ''}
             <div class="clip-shade" aria-hidden="true"></div>
             <span class="clip-play-indicator" aria-hidden="true">${icon('play')}</span>
             <span class="clip-like-burst" aria-hidden="true">${icon('heart')}</span>
@@ -2255,7 +2285,7 @@
                 ${followControl}
               </div>
               ${caption ? `<p>${renderMentionText(caption)}</p>` : ''}
-              <small class="clip-audio-line">${icon('volume')} Original audio · ${esc(author.username)}</small>
+              <small class="clip-audio-line">${icon('music')} ${music ? `${esc(music.title)} · ${esc(music.artist)}` : `Original audio · ${esc(author.username)}`}</small>
             </div>
             <span class="clip-progress" aria-hidden="true"><i></i></span>
           </div>
@@ -2266,7 +2296,7 @@
             <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
             <button class="clip-save-action ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
             <button data-action="post-options" data-post-id="${esc(post.id)}" aria-label="More options">${icon('more')}</button>
-            <button class="clip-audio-cover" data-action="view-user-profile" data-username="${esc(author.username)}" aria-label="View ${esc(author.username)}">${author.avatar?.url ? `<img src="${esc(author.avatar.url)}" alt="">` : esc(initials(author))}</button>
+            <button class="clip-audio-cover" data-action="view-user-profile" data-username="${esc(author.username)}" aria-label="View ${esc(author.username)}">${music?.artworkUrl ? `<img src="${esc(music.artworkUrl)}" alt="${esc(music.title)} artwork">` : author.avatar?.url ? `<img src="${esc(author.avatar.url)}" alt="">` : esc(initials(author))}</button>
           </aside>
         </div>
       </article>
@@ -2336,6 +2366,43 @@
   let clipPlaybackObserver = null;
   let clipTapTimer = null;
 
+  function syncClipMusic(video) {
+    const audio = video?.closest('.clip-card')?.querySelector('.clip-music');
+    if (!audio) return;
+    const start = Math.max(0, Number(audio.dataset.start || 0));
+    const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+    const sectionLength = Math.max(1, end - start);
+    const targetTime = start + (Math.max(0, Number(video.currentTime || 0)) % sectionLength);
+    audio.muted = state.clipMuted;
+    if (video.paused || state.clipMuted) {
+      audio.pause();
+      return;
+    }
+    const synchronize = () => {
+      if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end || Math.abs(audio.currentTime - targetTime) > .45) {
+        try { audio.currentTime = targetTime; } catch {}
+      }
+      if (audio.paused) {
+        audio.play().catch(() => {
+          audio.pause();
+          if (!state.clipMuted) {
+            state.clipMuted = true;
+            localStorage.setItem('clipMuted', '1');
+            syncClipSoundUi();
+          }
+        });
+      }
+    };
+    if (audio.readyState >= 1) synchronize();
+    else if (!audio._clipMetadataBound) {
+      audio._clipMetadataBound = true;
+      audio.addEventListener('loadedmetadata', () => {
+        audio._clipMetadataBound = false;
+        syncClipMusic(video);
+      }, { once: true });
+    }
+  }
+
   function syncClipPlaybackUi(video) {
     const card = video?.closest('.clip-card');
     if (!card) return;
@@ -2344,6 +2411,7 @@
     const progress = Number.isFinite(video.duration) && video.duration > 0 ? clamp(video.currentTime / video.duration, 0, 1) : 0;
     const line = card.querySelector('.clip-progress i');
     if (line) line.style.transform = `scaleX(${progress})`;
+    syncClipMusic(video);
   }
 
   function syncClipSoundUi() {
@@ -2358,7 +2426,10 @@
     state.clipMuted = !state.clipMuted;
     localStorage.setItem('clipMuted', state.clipMuted ? '1' : '0');
     const root = currentAppShell()?.querySelector('.clips-feed');
-    root?.querySelectorAll('.clip-video').forEach((video) => { video.muted = state.clipMuted; });
+    root?.querySelectorAll('.clip-video').forEach((video) => {
+      video.muted = Boolean(video.closest('.clip-card')?.querySelector('.clip-music')) || state.clipMuted;
+      syncClipMusic(video);
+    });
     syncClipSoundUi();
     const active = root?.querySelector('.clip-card.is-playing .clip-video') || root?.querySelector('.clip-video');
     active?.play?.().catch(() => {});
@@ -2367,8 +2438,11 @@
   function toggleClipPlayback(surface) {
     const video = surface?.matches?.('.clip-video') ? surface : surface?.querySelector?.('.clip-video');
     if (!video) return;
-    if (video.paused) video.play().catch(() => {});
-    else video.pause();
+    if (video.paused) video.play().then(() => syncClipMusic(video)).catch(() => {});
+    else {
+      video.pause();
+      video.closest('.clip-card')?.querySelector('.clip-music')?.pause?.();
+    }
     syncClipPlaybackUi(video);
   }
 
@@ -2380,11 +2454,36 @@
     if (!videos.length) return;
     const sourceTime = Number(state.clipViewer?.sourceTime || 0);
     videos.forEach((video) => {
-      video.muted = state.clipMuted;
+      video.muted = Boolean(video.closest('.clip-card')?.querySelector('.clip-music')) || state.clipMuted;
+      const audio = video.closest('.clip-card')?.querySelector('.clip-music');
+      if (audio && !audio._clipBoundaryBound) {
+        audio._clipBoundaryBound = true;
+        const clampAudioSection = () => {
+          const start = Math.max(0, Number(audio.dataset.start || 0));
+          const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+          if (audio.currentTime >= end || audio.ended) {
+            audio.pause();
+            try { audio.currentTime = start; } catch {}
+            if (!video.paused && !state.clipMuted) syncClipMusic(video);
+          }
+        };
+        audio.addEventListener('timeupdate', clampAudioSection);
+        audio.addEventListener('ended', clampAudioSection);
+        audio.addEventListener('error', () => {
+          if (!state.clipMuted) {
+            state.clipMuted = true;
+            localStorage.setItem('clipMuted', '1');
+            syncClipSoundUi();
+          }
+        });
+      }
       if (!video._clipPlaybackBound) {
         video._clipPlaybackBound = true;
         video.addEventListener('play', () => syncClipPlaybackUi(video));
-        video.addEventListener('pause', () => syncClipPlaybackUi(video));
+        video.addEventListener('pause', () => {
+          video.closest('.clip-card')?.querySelector('.clip-music')?.pause?.();
+          syncClipPlaybackUi(video);
+        });
         video.addEventListener('timeupdate', () => syncClipPlaybackUi(video));
         video.addEventListener('loadedmetadata', () => syncClipPlaybackUi(video));
       }
@@ -2408,8 +2507,11 @@
       entries.forEach((entry) => {
         const video = entry.target;
         if (entry.isIntersecting && entry.intersectionRatio >= 0.72) {
-          videos.filter((item) => item !== video).forEach((item) => item.pause());
-          video.muted = state.clipMuted;
+          videos.filter((item) => item !== video).forEach((item) => {
+            item.pause();
+            item.closest('.clip-card')?.querySelector('.clip-music')?.pause?.();
+          });
+          video.muted = Boolean(video.closest('.clip-card')?.querySelector('.clip-music')) || state.clipMuted;
           video.play().catch(() => {
             video.muted = true;
             state.clipMuted = true;
@@ -2506,21 +2608,122 @@
     });
   }
 
+  function syncPostPreviewUi(video) {
+    const controls = video?.closest('.post-composer-media')?.querySelector('.post-preview-controls');
+    if (!controls || !video) return;
+    const play = controls.querySelector('[data-action="toggle-post-preview-play"]');
+    const progress = controls.querySelector('[data-post-preview-progress]');
+    const ratio = Number.isFinite(video.duration) && video.duration > 0 ? clamp(video.currentTime / video.duration, 0, 1) : 0;
+    if (progress) {
+      progress.value = String(Math.round(ratio * 1000));
+      progress.setAttribute('aria-valuetext', `${Math.round(ratio * 100)}% played`);
+    }
+    if (play) {
+      play.innerHTML = icon(video.paused ? 'play' : 'pause');
+      play.setAttribute('aria-label', video.paused ? 'Play preview' : 'Pause preview');
+      play.setAttribute('aria-pressed', video.paused ? 'false' : 'true');
+    }
+  }
+
+  function syncPostPreviewMusic(video) {
+    const audio = video?.closest('.post-composer-media')?.querySelector('.post-preview-music');
+    if (!audio || !state.postComposer?.music) return;
+    const start = Math.max(0, Number(audio.dataset.start || 0));
+    const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+    const sectionLength = Math.max(1, end - start);
+    const muted = Boolean(state.postComposer.previewMuted);
+    audio.muted = muted;
+    if (video.paused || muted) {
+      audio.pause();
+      return;
+    }
+    const synchronize = () => {
+      const target = start + (Math.max(0, Number(video.currentTime || 0)) % sectionLength);
+      if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end || Math.abs(audio.currentTime - target) > .35) {
+        try { audio.currentTime = target; } catch {}
+      }
+      if (audio.paused) {
+        audio.play().catch(() => {
+          audio.pause();
+          if (state.postComposer) state.postComposer.previewMuted = true;
+          syncPostPreviewUi(video);
+        });
+      }
+    };
+    if (audio.readyState >= 1) synchronize();
+    else audio.addEventListener('loadedmetadata', synchronize, { once: true });
+  }
+
+  function attachPostComposerPreview() {
+    const media = document.querySelector('#post-composer-slot .post-composer-media');
+    const video = media?.querySelector('video');
+    if (!video || video._postPreviewBound) return;
+    video._postPreviewBound = true;
+    const audio = media.querySelector('.post-preview-music');
+    const sync = () => {
+      syncPostPreviewUi(video);
+      syncPostPreviewMusic(video);
+    };
+    video.addEventListener('loadedmetadata', sync);
+    video.addEventListener('play', sync);
+    video.addEventListener('pause', () => {
+      audio?.pause();
+      syncPostPreviewUi(video);
+    });
+    video.addEventListener('timeupdate', sync);
+    video.addEventListener('ended', () => {
+      audio?.pause();
+      syncPostPreviewUi(video);
+    });
+    audio?.addEventListener('timeupdate', () => {
+      const start = Math.max(0, Number(audio.dataset.start || 0));
+      const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+      if (audio.currentTime >= end) {
+        audio.pause();
+        try { audio.currentTime = start + (Math.max(0, Number(video.currentTime || 0)) % Math.max(1, end - start)); } catch {}
+        if (!video.paused && !state.postComposer?.previewMuted) syncPostPreviewMusic(video);
+      }
+    });
+    audio?.addEventListener('ended', () => { if (!video.paused && !state.postComposer?.previewMuted) syncPostPreviewMusic(video); });
+    syncPostPreviewUi(video);
+  }
+
   function renderPostComposerMedia(composer, taggable = false) {
     syncPostComposerAliases(composer);
     const style = postComposerMediaStyle(composer);
     const cropGesture = !taggable && Number(composer.stage || 1) === 1;
     const media = composer.isVideo
-      ? `<video src="${esc(composer.previewUrl)}" ${composer.posterUrl ? `poster="${esc(composer.posterUrl)}"` : ''} style="${esc(style)}" muted playsinline controls preload="metadata"></video>`
+      ? `<video src="${esc(composer.previewUrl)}" ${composer.posterUrl ? `poster="${esc(composer.posterUrl)}"` : ''} style="${esc(style)}" ${composer.music || composer.previewMuted !== false ? 'muted' : ''} playsinline webkit-playsinline preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback"></video>`
       : `<img src="${esc(composer.previewUrl)}" style="${esc(style)}" alt="Post preview">`;
     return `
       <div class="post-composer-media aspect-${esc(composer.crop.aspect || 'portrait')} ${taggable ? 'taggable' : ''}" style="--post-aspect:${postComposerAspectRatio(composer)}" ${taggable ? 'data-action="pick-post-tag-position"' : cropGesture ? 'data-post-crop-surface' : ''}>
         ${media}
+        ${composer.isVideo && composer.music?.audioUrl ? `<audio class="post-preview-music" src="${esc(composer.music.audioUrl)}" preload="metadata" data-start="${Number(composer.music.start || 0)}" data-end="${Number(composer.music.start || 0) + Number(composer.music.clipDuration || 30)}"></audio>` : ''}
         ${cropGesture ? `<span class="post-crop-gesture-layer ${composer.isVideo ? 'is-video' : ''}" aria-hidden="true"></span>` : ''}
+        ${composer.isVideo ? `<div class="post-preview-controls"><button data-action="toggle-post-preview-play" aria-label="Play preview" aria-pressed="false">${icon('play')}</button><input class="post-preview-progress" data-post-preview-progress type="range" min="0" max="1000" value="0" aria-label="Preview playback position" aria-valuetext="0% played"><button data-action="toggle-post-preview-sound" aria-label="${composer.previewMuted === false ? 'Mute preview' : 'Turn preview sound on'}" aria-pressed="${composer.previewMuted === false ? 'true' : 'false'}">${icon(composer.previewMuted === false ? 'volume' : 'mute')}</button></div>` : ''}
         ${composer.items?.length > 1 ? `<span class="post-composer-count">${Number(composer.activeIndex || 0) + 1}/${composer.items.length}</span>` : ''}
         ${(composer.personTags || []).map((tag, index) => ({ tag, index })).filter(({ tag }) => Number(tag.mediaIndex || 0) === Number(composer.activeIndex || 0)).map(({ tag, index }) => `<button class="post-tag-draft" style="left:${tag.x}%;top:${tag.y}%" data-action="remove-post-tag" data-tag-index="${index}">@${esc(tag.username)}</button>`).join('')}
         ${composer.pendingTagPoint && Number(composer.pendingTagPoint.mediaIndex || 0) === Number(composer.activeIndex || 0) ? `<span class="post-tag-target" style="left:${composer.pendingTagPoint.x}%;top:${composer.pendingTagPoint.y}%"></span>` : ''}
       </div>
+    `;
+  }
+
+  function renderPostMusicControl(composer, compact = false) {
+    if (!composer.isVideo || composer.items?.length !== 1) return '';
+    const music = composer.music || null;
+    return `
+      <section class="post-music-control ${compact ? 'compact' : ''}">
+        ${music ? `
+          <span class="music-artwork">${music.artworkUrl ? `<img src="${esc(music.artworkUrl)}" alt="">` : icon('music')}</span>
+          <span><strong>${esc(music.title)}</strong><small>${esc(music.artist)} · ${esc(formatClipTime(music.start || 0))}–${esc(formatClipTime(Number(music.start || 0) + Number(music.clipDuration || 30)))}</small></span>
+          <button data-action="open-post-music" aria-label="Change music">${icon('edit')}</button>
+          <button data-action="remove-post-music" aria-label="Remove music">${icon('x')}</button>
+        ` : `
+          <span class="post-music-icon">${icon('music')}</span>
+          <span><strong>Add music</strong><small>Search tracks and choose the section</small></span>
+          <button data-action="open-post-music" aria-label="Add music">${icon('plus')}</button>
+        `}
+      </section>
     `;
   }
 
@@ -2562,19 +2765,16 @@
         <section class="post-composer-page ${state.postPublishing ? 'is-publishing' : ''}" role="dialog" aria-modal="true" aria-label="Create post" aria-busy="${state.postPublishing}">
           <header class="post-composer-head">
             <button data-action="${state.postPublishing || stage === 1 ? 'close-post-composer' : 'post-composer-back'}" aria-label="${state.postPublishing ? 'Cancel upload' : stage === 1 ? 'Close' : 'Back'}">${state.postPublishing || stage === 1 ? icon('x') : icon('back')}</button>
-            <span><strong>${stage === 1 ? 'Crop' : stage === 2 ? 'Look' : 'Share'}</strong><small>Step ${stage} of 3</small></span>
+            <span><strong>${stage === 1 ? 'New post' : stage === 2 ? 'Edit' : 'Share'}</strong><small>${stage === 1 ? 'Crop and arrange' : stage === 2 ? 'Style and add music' : 'Finish your post'}</small></span>
             ${stage < 3 ? `<button class="post-next" data-action="post-composer-next">Next</button>` : `<button class="post-next" data-action="publish-post" ${state.postPublishing || composer.sizeError ? 'disabled' : ''}>${state.postPublishing ? 'Sharing…' : composer.sizeError ? 'Too large' : 'Share'}</button>`}
           </header>
-          <div class="post-stage-meta">
-            <div class="post-stage-dots">${[1, 2, 3].map((step) => `<i class="${step <= stage ? 'active' : ''}"></i>`).join('')}</div>
-            ${composer.sizeError ? `<p class="post-media-warning" role="alert">${esc(composer.sizeError)}</p>` : ''}
-          </div>
+          ${composer.sizeError ? `<div class="post-stage-meta"><p class="post-media-warning" role="alert">${esc(composer.sizeError)}</p></div>` : ''}
           ${stage === 1 ? `
             <div class="post-editor-body">
               ${renderPostComposerMedia(composer)}
               ${renderPostMediaRail(composer)}
               <div class="post-crop-controls">
-                <p class="post-crop-hint">${composer.isVideo ? 'Drag to choose the video framing. Playback uses your browser\'s native controls.' : 'Drag to reposition. Pinch or use the slider to zoom.'}</p>
+                <p class="post-crop-hint">${composer.isVideo ? 'Drag to choose the framing. Use the controls on the preview to play or mute it.' : 'Drag to reposition. Pinch or use the slider to zoom.'}</p>
                 <div class="post-aspect-row">
                   ${[['mixed','Mixed'],['original','Original'],['square','1:1'],['portrait','4:5'],['portrait34','3:4'],['landscape','1.91:1']].map(([value,label]) => `<button class="${composer.crop.aspect === value ? 'active' : ''}" data-action="set-post-aspect" data-aspect="${value}">${label}</button>`).join('')}
                 </div>
@@ -2595,6 +2795,7 @@
                 ${['brightness','contrast','saturation','warmth'].map((name) => `<button class="${adjustment === name ? 'active' : ''}" data-action="select-post-adjustment" data-adjustment="${name}">${name}</button>`).join('')}
               </div>
               <label class="post-adjust-slider"><span>${adjustment}</span><input type="range" min="${adjustment === 'warmth' ? -50 : adjustment === 'saturation' ? 0 : 60}" max="${adjustment === 'warmth' ? 50 : adjustment === 'saturation' ? 200 : 140}" value="${composer.adjustments[adjustment]}" data-post-adjust="${adjustment}"><output>${composer.adjustments[adjustment]}</output></label>
+              ${renderPostMusicControl(composer)}
             </div>
           ` : `
             <div class="post-details-layout">
@@ -2611,6 +2812,7 @@
                 ` : ''}
               </div>
               <div class="post-details-fields">
+                ${renderPostMusicControl(composer, true)}
                 <label>Title <input id="post-title" maxlength="100" value="${esc(composer.title)}" placeholder="Give this post a title"></label>
                 <label>Caption <textarea id="post-description" maxlength="2200" placeholder="Write a caption…">${esc(composer.description)}</textarea></label>
                 <label>Tags <input id="post-hashtags" maxlength="300" value="${esc(composer.hashtags)}" placeholder="#travel #summer"></label>
@@ -2661,6 +2863,8 @@
   function renderNoteComposer() {
     const composer = state.noteComposer;
     if (!composer) return '';
+    const selectedMusic = composer.music || null;
+    const hasAudio = Boolean(composer.audio || selectedMusic);
     return `
       <div class="center-overlay note-composer-overlay" data-action="close-note-composer">
         <section class="center-modal note-composer" data-stop-close>
@@ -2671,19 +2875,103 @@
           </div>
           <label class="note-text-field"><textarea id="note-text" maxlength="60" placeholder="Share a thought…">${esc(composer.text || '')}</textarea><output>${String(composer.text || '').length}/60</output></label>
           <section class="note-audio-editor">
-            <div><strong>${icon('music')} Audio snippet</strong><small>Optional · up to 30 seconds</small></div>
-            ${composer.audio ? `<audio src="${esc(composer.audio.dataUrl)}" controls preload="metadata"></audio>` : ''}
+            <div><strong>${icon('music')} Add music</strong><small>Optional · choose a section up to 30 seconds</small></div>
+            ${selectedMusic ? `
+              <div class="note-selected-music">
+                <span class="music-artwork">${selectedMusic.artworkUrl ? `<img src="${esc(selectedMusic.artworkUrl)}" alt="">` : icon('music')}</span>
+                <span><strong>${esc(selectedMusic.title)}</strong><small>${esc(selectedMusic.artist)} · ${esc(formatClipTime(selectedMusic.start || 0))}–${esc(formatClipTime(Number(selectedMusic.start || 0) + Number(selectedMusic.clipDuration || 30)))}</small></span>
+                <button data-action="open-note-music" aria-label="Change music">${icon('edit')}</button>
+                <button data-action="remove-note-music" aria-label="Remove music">${icon('x')}</button>
+              </div>
+            ` : composer.audio ? `
+              <div class="note-selected-music local-audio">
+                <span class="music-artwork">${icon('mic')}</span>
+                <span><strong>${esc(composer.audioTitle || 'Original audio')}</strong><small>${esc(composer.audioArtist || 'From your device')}</small></span>
+                <button data-action="toggle-note-local-preview" aria-label="Play original audio" aria-pressed="false">${icon('play')}</button>
+                <button data-action="remove-note-audio" aria-label="Remove audio">${icon('x')}</button>
+              </div>
+              <audio id="note-composer-audio" src="${esc(composer.audio.dataUrl)}" preload="metadata"></audio>
+            ` : ''}
             <div class="note-audio-actions">
-              <button class="secondary" data-action="choose-note-audio">Choose audio</button>
+              <button class="secondary" data-action="open-note-music">${icon('music')} Music</button>
+              <button class="secondary" data-action="choose-note-audio">${icon('file')} Device</button>
               <button class="secondary ${state.noteRecording ? 'recording' : ''}" data-action="${state.noteRecording ? 'stop-note-recording' : 'start-note-recording'}">${icon('mic')} ${state.noteRecording ? 'Stop recording' : 'Record'}</button>
             </div>
-            <label>Track title <input id="note-audio-title" maxlength="80" value="${esc(composer.audioTitle || '')}" placeholder="Song or clip title"></label>
-            <label>Creator <input id="note-audio-artist" maxlength="80" value="${esc(composer.audioArtist || '')}" placeholder="Artist or creator"></label>
           </section>
           <div class="note-composer-footer">
             ${composer.hasExisting ? '<button class="danger-text" data-action="delete-note">Delete note</button>' : ''}
-            <button class="primary note-share" data-action="share-note" ${!String(composer.text || '').trim() && !composer.audio ? 'disabled' : ''}>Share note</button>
+            <button class="primary note-share" data-action="share-note" ${!String(composer.text || '').trim() && !hasAudio ? 'disabled' : ''}>Share note</button>
           </div>
+        </section>
+      </div>
+    `;
+  }
+
+  function musicWaveformBars(trackId) {
+    const seed = Array.from(String(trackId || 'music')).reduce((total, char) => (total * 33 + char.charCodeAt(0)) % 9973, 17);
+    return Array.from({ length: 52 }, (_, index) => {
+      const height = 20 + ((seed * (index + 7) * 19 + index * index * 11) % 78);
+      return `<i style="--music-peak:${height}%"></i>`;
+    }).join('');
+  }
+
+  function renderMusicPicker() {
+    const picker = state.musicPicker;
+    if (!picker) return '';
+    const track = picker.selected || null;
+    const clipDuration = track ? Math.min(Number(picker.clipDuration || 30), Number(track.trackDuration || 30)) : 30;
+    const maxStart = track ? Math.max(0, Number(track.trackDuration || 0) - clipDuration) : 0;
+    const start = track ? clamp(Number(picker.start || 0), 0, maxStart) : 0;
+    const durationChoices = track ? ([15, 30].filter((seconds) => seconds <= Number(track.trackDuration || 0)) || []) : [];
+    if (track && !durationChoices.length) durationChoices.push(Math.max(1, Math.floor(Number(track.trackDuration || clipDuration))));
+    return `
+      <div class="music-picker-overlay" data-action="close-music-picker">
+        <section class="music-picker-sheet" data-stop-close role="dialog" aria-modal="true" aria-label="Add music">
+          <header class="music-picker-head">
+            <button data-action="${track ? 'music-picker-back' : 'close-music-picker'}" aria-label="${track ? 'Back to music search' : 'Close music'}">${icon(track ? 'back' : 'x')}</button>
+            <span><strong>${track ? 'Choose a section' : 'Add music'}</strong>${track ? '<small>Drag the waveform or use the start slider</small>' : '<small>Openly licensed tracks</small>'}</span>
+            ${track ? '<button class="music-picker-done" data-action="apply-music-selection">Done</button>' : '<span></span>'}
+          </header>
+          ${track ? `
+            <div class="music-segment-editor">
+              <div class="music-segment-track">
+                <span class="music-artwork large">${track.artworkUrl ? `<img src="${esc(track.artworkUrl)}" alt="">` : icon('music')}</span>
+                <span><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></span>
+                <button class="music-preview-toggle" data-action="toggle-music-segment-preview" aria-label="Play selected section" aria-pressed="false">${icon('play')}</button>
+              </div>
+              <audio id="music-picker-audio" src="${esc(track.audioUrl)}" preload="metadata" data-start="${start}" data-end="${start + clipDuration}"></audio>
+              <div class="music-segment-summary"><strong>${esc(formatClipTime(start))}–${esc(formatClipTime(start + clipDuration))}</strong><span>${Math.round(clipDuration)} seconds</span></div>
+              <div class="music-waveform-window" style="--music-position:${maxStart ? start / maxStart : 0}">
+                <div class="music-waveform-bars">${musicWaveformBars(track.catalogId)}</div>
+                <span class="music-window-edge start"></span><span class="music-window-edge end"></span>
+                <input class="music-waveform-range" data-music-segment-start type="range" min="0" max="${maxStart}" step="0.1" value="${start}" aria-label="Choose the start of the selected music section">
+              </div>
+              <label class="music-segment-slider"><span>Start</span><input id="music-segment-start" data-music-segment-start type="range" min="0" max="${maxStart}" step="0.1" value="${start}"><output>${esc(formatClipTime(start))}</output></label>
+              <div class="music-duration-options" role="group" aria-label="Section length">
+                ${durationChoices.map((seconds) => `<button class="${Math.round(clipDuration) === seconds ? 'active' : ''}" data-action="set-music-duration" data-duration="${seconds}">${seconds}s</button>`).join('')}
+              </div>
+              <p class="music-license-copy">${esc(track.attribution || `${track.title} by ${track.artist}`)} ${track.licenseUrl ? `<a href="${esc(track.licenseUrl)}" target="_blank" rel="noopener noreferrer">License</a>` : ''}</p>
+            </div>
+          ` : `
+            <div class="music-search-view">
+              <label class="music-search-field">${icon('search')}<input id="music-search" value="${esc(picker.query || '')}" placeholder="Search music" autocomplete="off" enterkeyhint="search"><button data-action="clear-music-search" aria-label="Clear search" ${picker.query ? '' : 'hidden'}>${icon('x')}</button></label>
+              <div class="music-category-rail">
+                ${['For you', 'Pop', 'Electronic', 'Hip hop', 'Acoustic', 'Cinematic'].map((label) => `<button data-action="music-category" data-query="${esc(label === 'For you' ? 'instrumental' : label)}">${esc(label)}</button>`).join('')}
+              </div>
+              <div class="music-results" aria-live="polite">
+                ${picker.loading ? `<div class="music-results-loading"><i></i><span>Finding tracks…</span></div>` : picker.tracks?.length ? picker.tracks.map((item) => `
+                  <article class="music-result-row">
+                    <button class="music-result-main" data-action="select-music-track" data-track-id="${esc(item.catalogId)}">
+                      <span class="music-artwork">${item.artworkUrl ? `<img src="${esc(item.artworkUrl)}" alt="" loading="lazy">` : icon('music')}</span>
+                      <span><strong>${esc(item.title)}</strong><small>${esc(item.artist)} · ${esc(formatClipTime(item.trackDuration || 0))}</small></span>
+                    </button>
+                    <button class="music-result-play" data-action="preview-music-track" data-track-id="${esc(item.catalogId)}" aria-label="Preview ${esc(item.title)}">${icon('play')}</button>
+                  </article>
+                `).join('') : picker.error ? `<div class="music-results-empty is-error"><p>${esc(picker.error)}</p><button data-action="retry-music-search">Try again</button></div>` : '<div class="music-results-empty">No matching tracks. Try another title, artist, or mood.</div>'}
+              </div>
+              <footer class="music-provider-credit"><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Search powered by Openverse</a><span>CC BY, CC0 and public-domain music</span></footer>
+            </div>
+          `}
         </section>
       </div>
     `;
@@ -3294,7 +3582,7 @@
   }
 
   function stickerTextColors() {
-    return ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
+    return ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#6c63ff', '#9f7cff'];
   }
 
   function renderStickerCreatorChoices(editor) {
@@ -3424,7 +3712,7 @@
         <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         <filter id="neon" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="7" result="a"/><feFlood flood-color="#ff5fb8"/><feComposite in2="a" operator="in"/><feGaussianBlur stdDeviation="12" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="a"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         <filter id="sparkle" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        <linearGradient id="rainbow"><stop stop-color="#ff304f"/><stop offset=".2" stop-color="#ff8a00"/><stop offset=".4" stop-color="#ffd166"/><stop offset=".6" stop-color="#4fd2c2"/><stop offset=".8" stop-color="#00a8ff"/><stop offset="1" stop-color="#9f7cff"/></linearGradient>
+        <linearGradient id="rainbow"><stop stop-color="#ff304f"/><stop offset=".2" stop-color="#ff8a00"/><stop offset=".4" stop-color="#ffd166"/><stop offset=".6" stop-color="#2f8b83"/><stop offset=".8" stop-color="#285f88"/><stop offset="1" stop-color="#9f7cff"/></linearGradient>
         <linearGradient id="shimmer"><stop stop-color="#9ca3af"/><stop offset=".42" stop-color="#ffffff"/><stop offset=".58" stop-color="#dbeafe"/><stop offset="1" stop-color="#9ca3af"><animate attributeName="offset" values=".7;1;.7" dur="1.5s" repeatCount="indefinite"/></stop></linearGradient>
       </defs>
       <style>
@@ -3440,7 +3728,7 @@
   }
 
   function storyTextToolPanel(editor) {
-    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#6c63ff', '#9f7cff'];
     const panel = ['font', 'color', 'animation', 'effect'].includes(editor.textPanel) ? editor.textPanel : 'font';
     const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
     let choices = '';
@@ -3499,7 +3787,7 @@
       ['midnight', 'Midnight', '#0b1020', '#111827'],
       ['dusk', 'Dusk', '#54205f', '#f05a7e'],
       ['ocean', 'Ocean', '#063970', '#0fa3b1'],
-      ['aurora', 'Aurora', '#064e3b', '#38bdf8'],
+      ['aurora', 'Aurora', '#064e3b', '#397db4'],
       ['sunset', 'Sunset', '#9f1239', '#f59e0b'],
       ['violet', 'Violet', '#312e81', '#a855f7'],
       ['graphite', 'Graphite', '#111111', '#4b5563'],
@@ -3845,7 +4133,7 @@
   }
 
   function storyDrawToolPanel(editor) {
-    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff'];
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#6c63ff'];
     return `
       <div class="story-swatch-row story-draw-colors" aria-label="Drawing color">
         <button class="story-draw-sampler" data-action="story-draw-eyedropper" aria-label="Sample a color">${icon('eyedropper')}</button>
@@ -5422,15 +5710,15 @@
     if (!message) return '';
     const mine = message.senderId === state.me.id;
     return `
-      <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus">
-        <section class="message-focus-stage ${mine ? 'mine' : 'theirs'}" data-stop-close>
+      <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus" role="dialog" aria-modal="true" aria-label="Message actions" tabindex="-1">
+        <section class="message-focus-stage ${mine ? 'mine' : 'theirs'}">
           <div class="message-focus-actions">
-        <div class="message-reaction-bar">
+        <div class="message-reaction-bar" data-stop-close>
           ${messageReactionOptions().map((emoji) => `<button data-action="react-message" data-message-id="${esc(message.id)}" data-emoji="${esc(emoji)}" class="${(message.reactions || []).some((reaction) => reaction.emoji === emoji && (reaction.userIds || []).includes(state.me.id)) ? 'active' : ''}">${esc(emoji)}</button>`).join('')}
           <button data-action="message-more" data-message-id="${esc(message.id)}" aria-label="More">${icon('plus')}</button>
         </div>
         <div class="message-focus-host"></div>
-        <div class="message-action-menu">
+        <div class="message-action-menu" data-stop-close>
           <button data-action="focus-reply" data-message-id="${esc(message.id)}">${icon('back')}<span>Reply</span></button>
           <button data-action="message-focus-mode" data-mode="sticker">${icon('sticker')}<span>Sticker</span></button>
           <button data-action="message-focus-mode" data-mode="forward">${icon('forward')}<span>Forward</span></button>
@@ -5446,7 +5734,7 @@
 
   function renderMessageFocusPicker(mode, message) {
     if (mode === 'forward') return `
-      <section class="message-focus-picker">
+      <section class="message-focus-picker" data-stop-close>
         <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Forward to</strong></header>
         <div class="message-focus-list">
           ${state.chats.length ? state.chats.map((chat) => `
@@ -5464,7 +5752,7 @@
       </section>
     `;
     if (mode === 'sticker') return `
-      <section class="message-focus-picker sticker-picker">
+      <section class="message-focus-picker sticker-picker" data-stop-close>
         <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Add a sticker</strong></header>
         <div class="message-focus-stickers">
           ${availableChatStickers().map((sticker) => `<button data-action="attach-message-sticker" data-message-id="${esc(message.id)}" data-sticker-id="${esc(sticker.id)}"><img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}"></button>`).join('')}
@@ -5544,7 +5832,8 @@
     if (message.kind === 'post') return renderSharedPostMessage(message);
     const attachment = message.attachment;
     if (message.kind === 'gif' && attachment) {
-      return `<img class="chat-gif" src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name || 'GIF')}" data-type="${esc(attachment.mime || 'image/gif')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
+      const credit = message.mediaCredit;
+      return `<img class="chat-gif" src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name || 'GIF')}" data-type="${esc(attachment.mime || 'image/gif')}">${credit?.creator ? `<a class="chat-gif-credit" href="${esc(credit.sourceUrl || credit.licenseUrl || '#')}" ${credit.sourceUrl || credit.licenseUrl ? 'target="_blank" rel="noopener noreferrer"' : ''}>${esc(credit.creator)} · ${esc(credit.license || credit.provider || 'Openverse')}</a>` : ''}${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
     }
     if (message.kind === 'image' && attachment) {
       return `<img class="media-image" src="${esc(attachment.url)}" alt="${esc(attachment.name)}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name)}" data-type="${esc(attachment.mime || 'image/*')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
@@ -5593,12 +5882,12 @@
 
   function chatStickerPresets() {
     return [
-      { id: 'preset_wave', name: 'Wave', dataUrl: presetStickerSvg('&#x1F44B;', 'wave', '#00a8ff', '#6c63ff'), animated: true, preset: true },
+      { id: 'preset_wave', name: 'Wave', dataUrl: presetStickerSvg('&#x1F44B;', 'wave', '#285f88', '#6c63ff'), animated: true, preset: true },
       { id: 'preset_heart', name: 'Heart', dataUrl: presetStickerSvg('&#x2764;', 'pop', '#ff304f', '#ff4fa3'), animated: true, preset: true },
       { id: 'preset_fire', name: 'Fire', dataUrl: presetStickerSvg('&#x1F525;', 'float', '#ff8a00', '#ff304f'), animated: true, preset: true },
-      { id: 'preset_lol', name: 'LOL', dataUrl: presetStickerSvg('LOL', 'pop', '#4fd2c2', '#00a8ff'), animated: true, preset: true },
+      { id: 'preset_lol', name: 'LOL', dataUrl: presetStickerSvg('LOL', 'pop', '#2f8b83', '#285f88'), animated: true, preset: true },
       { id: 'preset_wow', name: 'WOW', dataUrl: presetStickerSvg('WOW', 'flicker', '#9f7cff', '#ff4fa3'), animated: true, preset: true },
-      { id: 'preset_hi', name: 'HI', dataUrl: presetStickerSvg('HI', 'float', '#23836f', '#4fd2c2'), animated: true, preset: true }
+      { id: 'preset_hi', name: 'HI', dataUrl: presetStickerSvg('HI', 'float', '#23836f', '#2f8b83'), animated: true, preset: true }
     ];
   }
 
@@ -5686,7 +5975,9 @@
   function renderStickerPanel() {
     const tab = state.chatTrayTab === 'gifs' ? 'gifs' : 'stickers';
     const gifQuery = state.chatGifQuery.trim().toLowerCase();
-    const gifs = state.gifPool.filter((gif) => !gifQuery || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery));
+    const localGifs = state.gifPool.filter((gif) => !gifQuery || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery));
+    const catalogGifs = state.chatGifResults || [];
+    const gifs = [...localGifs, ...catalogGifs];
     return `
       <section class="sticker-panel chat-media-tray ${tab === 'stickers' ? 'stickers-tray' : 'gifs-tray'}">
         <header class="chat-tray-head">
@@ -5717,14 +6008,17 @@
           </div>
         ` : `
           <div class="chat-gif-search">
-            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIFs" autocomplete="off">
+            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIFs" aria-label="Search GIFs" autocomplete="off">
             <button data-action="chat-gif-upload" aria-label="Upload GIF">${icon('plus')}</button>
             <input id="chat-gif-input" type="file" accept="image/gif,image/webp" hidden>
           </div>
           <div class="chat-gif-grid">
-            ${state.gifPool.map((gif) => `<button data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}" ${gifQuery && !`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery) ? 'hidden' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}"></button>`).join('')}
-            <p class="chat-gif-empty" ${gifs.length ? 'hidden' : ''}>No approved GIFs found. Use + to send one from your device.</p>
+            ${localGifs.map((gif) => `<button data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"></button>`).join('')}
+            ${catalogGifs.map((gif) => `<button class="catalog-gif ${state.sendingGifId === gif.id ? 'sending' : ''}" data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${gif.creator || ''}`.toLowerCase())}" aria-label="Send ${esc(gif.title)} by ${esc(gif.creator || 'unknown creator')}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"><small>${state.sendingGifId === gif.id ? 'Sending…' : esc(gif.creator || gif.license || 'Openverse')}</small></button>`).join('')}
+            ${state.chatGifLoading ? '<div class="chat-gif-loading"><i></i><span>Searching GIFs…</span></div>' : ''}
+            ${state.chatGifError ? `<p class="chat-gif-empty is-error">${esc(state.chatGifError)} <button data-action="retry-chat-gif-search">Try again</button></p>` : `<p class="chat-gif-empty" ${gifs.length || state.chatGifLoading ? 'hidden' : ''}>No matching GIFs. Try another word or upload your own.</p>`}
           </div>
+          <footer class="chat-gif-provider"><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Openverse</a><span>Creator and license stay attached when sent</span></footer>
         `}
       </section>
     `;
@@ -5851,11 +6145,34 @@
     const comments = (post.comments || []).filter((comment) => comment?.user && String(comment.text || '').trim());
     const posting = Boolean(sheet.commentPosting);
     const creator = postAuthor(post);
-    const rows = comments.map((comment, index) => {
+    const commentById = new Map(comments.map((comment) => [comment.id, comment]));
+    const rootIdFor = (comment) => {
+      let current = comment;
+      const visited = new Set();
+      while (current?.replyTo && commentById.has(current.replyTo) && !visited.has(current.replyTo)) {
+        visited.add(current.id);
+        current = commentById.get(current.replyTo);
+      }
+      return current?.id || comment.id;
+    };
+    const roots = comments.filter((comment) => !comment.replyTo || !commentById.has(comment.replyTo));
+    const repliesByRoot = new Map(roots.map((comment) => [comment.id, []]));
+    comments.forEach((comment) => {
+      const rootId = rootIdFor(comment);
+      if (rootId === comment.id) return;
+      if (!repliesByRoot.has(rootId)) repliesByRoot.set(rootId, []);
+      repliesByRoot.get(rootId).push(comment);
+    });
+    const expandedCommentIds = new Set(sheet.expandedCommentIds || []);
+    const replyComment = commentById.get(sheet.replyToCommentId) || null;
+    if (replyComment) expandedCommentIds.add(rootIdFor(replyComment));
+    let commentOrder = 0;
+    const renderCommentRow = (comment, isReply = false) => {
       const username = comment.user.username || 'user';
       const likeLabel = comment.likeCount === 1 ? '1 like' : `${comment.likeCount || 0} likes`;
+      const order = commentOrder++;
       return `
-        <article class="story-comment-row post-comment-row ${comment.pinned ? 'is-pinned' : ''} ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(index, 12)}">
+        <article class="story-comment-row post-comment-row ${isReply ? 'reply' : ''} ${comment.pinned ? 'is-pinned' : ''} ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(order, 12)}">
           <button class="story-comment-avatar" data-action="view-user-profile" data-username="${esc(username)}" aria-label="View ${esc(username)}'s profile">${avatarHtml(comment.user)}</button>
           <div class="story-comment-content">
             <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(username)}">${esc(username)}</button> <span>${renderMentionText(comment.text || '')}</span></p>
@@ -5863,6 +6180,7 @@
               <time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(compactRelativeTime(comment.createdAt))}</time>
               <span class="story-comment-like-count ${comment.likeCount ? '' : 'is-empty'}" data-post-comment-like-count="${esc(comment.id)}">${esc(likeLabel)}</span>
               ${comment.pinned ? `<span class="post-comment-pinned">${icon('pin')} Pinned</span>` : ''}
+              <button data-action="reply-post-comment" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}" ${posting ? 'disabled' : ''}>Reply</button>
               ${comment.canPin ? `<button data-action="toggle-post-comment-pin" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}">${comment.pinned ? 'Unpin' : 'Pin'}</button>` : ''}
               ${comment.canDelete ? `<button class="post-comment-delete" data-action="delete-post-comment" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}">Delete</button>` : ''}
             </div>
@@ -5870,6 +6188,23 @@
           </div>
           <button class="story-comment-like post-comment-like ${comment.likedByMe ? 'active' : ''}" data-action="toggle-post-comment-like" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}" aria-label="${comment.likedByMe ? 'Unlike' : 'Like'} comment" aria-pressed="${comment.likedByMe ? 'true' : 'false'}">${icon('heart')}</button>
         </article>
+      `;
+    };
+    const commentThreads = roots.map((comment) => {
+      const replies = repliesByRoot.get(comment.id) || [];
+      const expanded = expandedCommentIds.has(comment.id);
+      return `
+        <section class="story-comment-thread post-comment-thread" data-thread-id="${esc(comment.id)}">
+          ${renderCommentRow(comment)}
+          ${replies.length ? `
+            <button class="story-comment-replies-toggle" data-action="toggle-post-comment-replies" data-comment-id="${esc(comment.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
+              <i aria-hidden="true"></i><span>${expanded ? 'Hide replies' : `View ${replies.length === 1 ? '1 reply' : `all ${replies.length} replies`}`}</span>
+            </button>
+            <div class="story-comment-replies ${expanded ? 'expanded' : ''}">
+              ${expanded ? replies.map((reply) => renderCommentRow(reply, true)).join('') : ''}
+            </div>
+          ` : ''}
+        </section>
       `;
     }).join('');
     const quickReactions = ['❤️', '🙌', '🔥', '👏', '😂', '😍'];
@@ -5880,7 +6215,7 @@
         <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close comments">${icon('x')}</button>
       </header>
       <div class="story-comment-list post-comment-list" role="feed" aria-label="Post comments">
-        ${rows || `
+        ${commentThreads || `
           <div class="story-comments-empty">
             <span>${icon('comment')}</span>
             <strong>No comments yet</strong>
@@ -5892,6 +6227,7 @@
         <div class="post-comments-disabled">${icon('comment')}<span><strong>Comments are off</strong><small>The author has limited replies on this post.</small></span></div>
       ` : `
         <form class="story-comment-composer post-comment-composer" data-form="post-comment" data-post-id="${esc(post.id)}" aria-busy="${posting}">
+          ${replyComment ? `<div class="comment-replying"><span>Replying to <strong>${esc(replyComment.user?.username || 'user')}</strong></span><button type="button" data-action="clear-post-comment-reply" aria-label="Cancel reply" ${posting ? 'disabled' : ''}>${icon('x')}</button></div>` : ''}
           <div class="story-comment-quick-reactions" aria-label="Quick reactions">
             ${quickReactions.map((emoji) => `<button type="button" data-action="add-post-comment-emoji" data-emoji="${emoji}" ${posting ? 'disabled' : ''}>${emoji}</button>`).join('')}
           </div>
@@ -7240,6 +7576,7 @@
       newItems.forEach((item) => Object.assign(item.crop, { aspect: 'original', aspectRatio }));
     }
     composer.items.push(...newItems);
+    composer.music = null;
     composer.activeIndex = composer.items.length - newItems.length;
     syncPostComposerAliases(composer);
     updatePostComposerSlot();
@@ -7267,6 +7604,8 @@
       description: '',
       hashtags: '',
       location: '',
+      music: null,
+      previewMuted: true,
       allowReposts: state.me?.allowReposts !== false,
       allowComments: true,
       hideLikeCounts: false,
@@ -7283,6 +7622,7 @@
   function closePostComposer() {
     const composer = state.postComposer;
     state.postComposer = null;
+    if (state.musicPicker?.context === 'post') state.musicPicker = null;
     state.postPublishing = false;
     state.postCropDrag = null;
     state.postCropGesture = null;
@@ -7321,7 +7661,12 @@
       allowReposts: composer.allowReposts,
       allowComments: composer.allowComments,
       hideLikeCounts: composer.hideLikeCounts,
-      personTags: composer.personTags.map(({ userId, mediaIndex, x, y }) => ({ userId, mediaIndex, x, y }))
+      personTags: composer.personTags.map(({ userId, mediaIndex, x, y }) => ({ userId, mediaIndex, x, y })),
+      music: composer.music ? {
+        catalogId: composer.music.catalogId,
+        start: Number(composer.music.start || 0),
+        clipDuration: Number(composer.music.clipDuration || 30)
+      } : null
     };
     const controller = new AbortController();
     composer.uploadController = controller;
@@ -7358,6 +7703,7 @@
           location: publishDetails.location,
           altTexts: publishItems.map((item) => item.altText),
           personTags: publishDetails.personTags,
+          music: publishDetails.music,
           allowReposts: publishDetails.allowReposts,
           allowComments: publishDetails.allowComments,
           hideLikeCounts: publishDetails.hideLikeCounts,
@@ -7572,6 +7918,7 @@
     const sheet = state.actionSheet?.type === 'post-comments' && state.actionSheet.postId === postId
       ? state.actionSheet
       : null;
+    const replyToCommentId = sheet?.replyToCommentId || null;
     if (sheet?.commentPosting) return;
     if (sheet) {
       sheet.commentDraft = clean;
@@ -7581,7 +7928,10 @@
     }
     let data;
     try {
-      data = await api(`/api/posts/${encodeURIComponent(postId)}/comments`, { method: 'POST', body: { text: clean } });
+      data = await api(`/api/posts/${encodeURIComponent(postId)}/comments`, {
+        method: 'POST',
+        body: { text: clean, replyTo: replyToCommentId }
+      });
     } catch (error) {
       if (sheet && state.actionSheet === sheet) {
         sheet.commentPosting = false;
@@ -7593,11 +7943,24 @@
     replacePost(data.post);
     syncPostEngagement(data.post);
     if (sheet && state.actionSheet === sheet) {
+      const expandedCommentIds = new Set(sheet.expandedCommentIds || []);
+      if (data.comment?.replyTo) {
+        const byId = new Map((data.post.comments || []).map((comment) => [comment.id, comment]));
+        let rootId = data.comment.replyTo;
+        const visited = new Set();
+        while (byId.get(rootId)?.replyTo && !visited.has(rootId)) {
+          visited.add(rootId);
+          rootId = byId.get(rootId).replyTo;
+        }
+        expandedCommentIds.add(rootId);
+      }
       state.actionSheet = {
         ...sheet,
         commentDraft: '',
         commentPosting: false,
-        newCommentId: data.comment?.id || null
+        newCommentId: data.comment?.id || null,
+        replyToCommentId: null,
+        expandedCommentIds: [...expandedCommentIds]
       };
       updateActionSheetSlot();
       requestAnimationFrame(() => {
@@ -7630,11 +7993,53 @@
     input.setSelectionRange?.(caret, caret);
   }
 
+  function togglePostCommentReplies(commentId) {
+    if (state.actionSheet?.type !== 'post-comments') return;
+    const expanded = new Set(state.actionSheet.expandedCommentIds || []);
+    if (expanded.has(commentId)) expanded.delete(commentId);
+    else expanded.add(commentId);
+    state.actionSheet.expandedCommentIds = [...expanded];
+    updatePostCommentsSheet();
+  }
+
+  function beginPostCommentReply(postId, commentId) {
+    if (state.actionSheet?.type !== 'post-comments' || state.actionSheet.postId !== postId || state.actionSheet.commentPosting) return;
+    const post = postById(postId);
+    const comment = post?.comments?.find((item) => item.id === commentId);
+    if (!comment) return;
+    state.actionSheet.replyToCommentId = comment.id;
+    state.actionSheet.commentDraft = `@${comment.user?.username || ''} `;
+    const expanded = new Set(state.actionSheet.expandedCommentIds || []);
+    const byId = new Map((post.comments || []).map((item) => [item.id, item]));
+    let rootId = comment.id;
+    const visited = new Set();
+    while (byId.get(rootId)?.replyTo && !visited.has(rootId)) {
+      visited.add(rootId);
+      rootId = byId.get(rootId).replyTo;
+    }
+    expanded.add(rootId);
+    state.actionSheet.expandedCommentIds = [...expanded];
+    updatePostCommentsSheet({ useStateDraft: true, focus: true, commentId });
+  }
+
+  function clearPostCommentReply() {
+    if (state.actionSheet?.type !== 'post-comments' || state.actionSheet.commentPosting) return;
+    const post = postById(state.actionSheet.postId);
+    const comment = post?.comments?.find((item) => item.id === state.actionSheet.replyToCommentId);
+    const currentDraft = document.getElementById('post-comment-input')?.value || state.actionSheet.commentDraft || '';
+    const prefix = comment ? `@${comment.user?.username || ''} ` : '';
+    state.actionSheet.replyToCommentId = null;
+    state.actionSheet.commentDraft = prefix && currentDraft.startsWith(prefix) ? currentDraft.slice(prefix.length) : currentDraft;
+    updatePostCommentsSheet({ useStateDraft: true, focus: true });
+  }
+
   function updatePostCommentsSheet(options = {}) {
     if (state.actionSheet?.type !== 'post-comments') return;
     const list = document.querySelector('.post-comment-list');
     const scrollTop = list?.scrollTop || 0;
-    const draft = document.getElementById('post-comment-input')?.value ?? state.actionSheet.commentDraft ?? '';
+    const draft = options.useStateDraft
+      ? state.actionSheet.commentDraft || ''
+      : document.getElementById('post-comment-input')?.value ?? state.actionSheet.commentDraft ?? '';
     state.actionSheet.commentDraft = draft;
     state.actionSheet.refreshing = true;
     updateActionSheetSlot();
@@ -7651,6 +8056,11 @@
           button?.classList.add('heart-pop');
           setTimeout(() => button?.classList.remove('heart-pop'), 520);
         }
+      }
+      if (options.focus) {
+        const input = document.getElementById('post-comment-input');
+        input?.focus({ preventScroll: true });
+        input?.setSelectionRange?.(input.value.length, input.value.length);
       }
     });
   }
@@ -7730,6 +8140,7 @@
     state.noteComposer = {
       text: current?.text || '',
       audio: null,
+      music: current?.music ? { ...current.music } : null,
       audioTitle: current?.audioTitle || '',
       audioArtist: current?.audioArtist || '',
       hasExisting: Boolean(current)
@@ -7760,6 +8171,9 @@
       lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null,
       duration
     };
+    state.noteComposer.music = null;
+    state.noteComposer.audioTitle = String(file.name || 'Original audio').replace(/\.[^.]+$/, '').slice(0, 80) || 'Original audio';
+    state.noteComposer.audioArtist = 'Original audio';
     updateNoteComposerSlot();
   }
 
@@ -7777,6 +8191,9 @@
       const dataUrl = await blobToDataUrl(blob);
       if (state.noteComposer) {
         state.noteComposer.audio = { name: 'recorded-note.webm', type: blob.type || 'audio/webm', dataUrl, duration: Math.min(30, (Date.now() - recording.startedAt) / 1000) };
+        state.noteComposer.music = null;
+        state.noteComposer.audioTitle = 'Recorded audio';
+        state.noteComposer.audioArtist = state.me?.username || 'Original audio';
       }
       if (state.noteRecording === recording) state.noteRecording = null;
       updateNoteComposerSlot();
@@ -7796,10 +8213,25 @@
   async function shareNote() {
     if (!state.noteComposer) return;
     const text = (document.getElementById('note-text')?.value || state.noteComposer.text || '').trim().slice(0, 60);
-    const audioTitle = (document.getElementById('note-audio-title')?.value || state.noteComposer.audioTitle || '').trim().slice(0, 80);
-    const audioArtist = (document.getElementById('note-audio-artist')?.value || state.noteComposer.audioArtist || '').trim().slice(0, 80);
-    if (!text && !state.noteComposer.audio) throw new Error('Write a note or add audio first.');
-    await api('/api/me/note', { method: 'POST', body: { text, audio: state.noteComposer.audio, audioTitle, audioArtist } });
+    const audioTitle = (state.noteComposer.music?.title || state.noteComposer.audioTitle || '').trim().slice(0, 80);
+    const audioArtist = (state.noteComposer.music?.artist || state.noteComposer.audioArtist || '').trim().slice(0, 80);
+    if (!text && !state.noteComposer.audio && !state.noteComposer.music) throw new Error('Write a note or add audio first.');
+    await api('/api/me/note', {
+      method: 'POST',
+      body: {
+        text,
+        audio: state.noteComposer.audio,
+        music: state.noteComposer.music ? {
+          catalogId: state.noteComposer.music.catalogId,
+          start: Number(state.noteComposer.music.start || 0),
+          clipDuration: Number(state.noteComposer.music.clipDuration || 30)
+        } : null,
+        audioTitle,
+        audioArtist,
+        audioStart: Number(state.noteComposer.music?.start || 0),
+        audioDuration: Number(state.noteComposer.music?.clipDuration || state.noteComposer.audio?.duration || 0) || null
+      }
+    });
     state.noteComposer = null;
     updateNoteComposerSlot();
     await loadNotes({ render: true });
@@ -7814,12 +8246,30 @@
 
   function playNote(noteId) {
     const selected = document.getElementById(`note-audio-${noteId}`);
+    const note = state.notes.find((item) => item.id === noteId);
     document.querySelectorAll('.note-rail audio').forEach((audio) => {
       if (audio !== selected) audio.pause();
     });
     if (!selected) return;
-    if (selected.paused) selected.play().catch(() => {});
-    else selected.pause();
+    if (!selected.paused) {
+      selected.pause();
+      return;
+    }
+    const start = Math.max(0, Number(note?.audioStart || note?.music?.start || 0));
+    const duration = Math.max(0, Number(note?.audioDuration || note?.music?.clipDuration || 0));
+    const end = duration ? start + duration : Infinity;
+    const begin = () => {
+      if (!Number.isFinite(selected.currentTime) || selected.currentTime < start || selected.currentTime >= end) selected.currentTime = start;
+      selected.play().catch(() => {});
+    };
+    selected.ontimeupdate = () => {
+      if (selected.currentTime >= end) {
+        selected.pause();
+        selected.currentTime = start;
+      }
+    };
+    if (selected.readyState >= 1) begin();
+    else selected.addEventListener('loadedmetadata', begin, { once: true });
   }
 
   async function loadContactsAndChats() {
@@ -7847,6 +8297,223 @@
     if (state.activeGroup) state.activeGroup = state.groups.find((group) => group.id === state.activeGroup.id) || state.activeGroup;
   }
 
+  let musicSearchTimer = null;
+  let musicSearchRequestId = 0;
+  let musicCatalogPreviewAudio = null;
+  let musicPickerReturnFocus = null;
+  let musicPickerWasOpen = false;
+
+  function syncMusicPickerAccessibility() {
+    const slot = document.getElementById('music-picker-slot');
+    const open = Boolean(state.musicPicker && slot?.querySelector('.music-picker-overlay'));
+    Array.from(app.children).forEach((child) => {
+      if (child !== slot) child.inert = open;
+    });
+    if (!open && musicPickerWasOpen) {
+      const returnTarget = musicPickerReturnFocus;
+      musicPickerReturnFocus = null;
+      if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
+    }
+    musicPickerWasOpen = open;
+  }
+
+  function stopMusicCatalogPreview() {
+    if (musicCatalogPreviewAudio) {
+      musicCatalogPreviewAudio.pause();
+      musicCatalogPreviewAudio.src = '';
+      musicCatalogPreviewAudio = null;
+    }
+    document.querySelectorAll('[data-action="preview-music-track"]').forEach((button) => { button.innerHTML = icon('play'); });
+  }
+
+  async function searchMusicCatalog(query = '') {
+    const picker = state.musicPicker;
+    if (!picker) return;
+    const requestId = ++musicSearchRequestId;
+    picker.query = String(query || '').slice(0, 80);
+    picker.loading = true;
+    picker.error = '';
+    updateMusicPickerSlot();
+    try {
+      const data = await api(`/api/media/music${picker.query.trim() ? `?q=${encodeURIComponent(picker.query.trim())}` : ''}`);
+      if (state.musicPicker !== picker || requestId !== musicSearchRequestId) return;
+      picker.tracks = data.tracks || [];
+      picker.provider = data.provider || 'Openverse';
+      picker.error = '';
+    } catch (error) {
+      if (state.musicPicker !== picker || requestId !== musicSearchRequestId) return;
+      picker.tracks = [];
+      picker.error = error.message;
+    } finally {
+      if (state.musicPicker === picker && requestId === musicSearchRequestId) {
+        picker.loading = false;
+        updateMusicPickerSlot();
+        requestAnimationFrame(() => document.getElementById('music-search')?.focus({ preventScroll: true }));
+      }
+    }
+  }
+
+  function openMusicPicker(context) {
+    const current = context === 'post' ? state.postComposer?.music : state.noteComposer?.music;
+    musicPickerReturnFocus = document.activeElement;
+    state.musicPicker = {
+      context: context === 'post' ? 'post' : 'note',
+      query: '',
+      tracks: [],
+      loading: !current,
+      provider: 'Openverse',
+      selected: current ? { ...current } : null,
+      start: Number(current?.start || 0),
+      clipDuration: Number(current?.clipDuration || 30)
+    };
+    updateMusicPickerSlot();
+    requestAnimationFrame(() => {
+      const dialog = document.querySelector('.music-picker-sheet');
+      const focusTarget = dialog?.querySelector(current ? 'button:not([disabled])' : '#music-search') || dialog;
+      focusTarget?.focus?.({ preventScroll: true });
+    });
+    if (!current) searchMusicCatalog().catch((error) => alert(error.message));
+  }
+
+  function closeMusicPicker() {
+    clearTimeout(musicSearchTimer);
+    musicSearchRequestId += 1;
+    stopMusicCatalogPreview();
+    document.getElementById('music-picker-audio')?.pause?.();
+    state.musicPicker = null;
+    updateMusicPickerSlot();
+  }
+
+  function musicPickerTrack(trackId) {
+    return state.musicPicker?.tracks?.find((track) => track.catalogId === trackId) || null;
+  }
+
+  function selectMusicTrack(trackId) {
+    const picker = state.musicPicker;
+    const track = musicPickerTrack(trackId);
+    if (!picker || !track) return;
+    stopMusicCatalogPreview();
+    picker.selected = { ...track };
+    picker.start = 0;
+    picker.clipDuration = Math.min(30, Number(track.trackDuration || 30));
+    updateMusicPickerSlot();
+  }
+
+  function previewMusicTrack(trackId, button) {
+    const track = musicPickerTrack(trackId);
+    if (!track?.audioUrl) return;
+    if (musicCatalogPreviewAudio?.dataset?.trackId === trackId && !musicCatalogPreviewAudio.paused) {
+      stopMusicCatalogPreview();
+      return;
+    }
+    stopMusicCatalogPreview();
+    const audio = new Audio(track.audioUrl);
+    audio.dataset.trackId = trackId;
+    audio.preload = 'metadata';
+    const stopAt = 12;
+    audio.ontimeupdate = () => { if (audio.currentTime >= stopAt) stopMusicCatalogPreview(); };
+    audio.onended = stopMusicCatalogPreview;
+    audio.onerror = stopMusicCatalogPreview;
+    musicCatalogPreviewAudio = audio;
+    if (button) button.innerHTML = icon('pause');
+    audio.play().catch(() => stopMusicCatalogPreview());
+  }
+
+  function toggleMusicSegmentPreview() {
+    const audio = document.getElementById('music-picker-audio');
+    const button = document.querySelector('[data-action="toggle-music-segment-preview"]');
+    if (!audio) return;
+    if (!audio.paused) {
+      audio.pause();
+      if (button) {
+        button.innerHTML = icon('play');
+        button.setAttribute('aria-label', 'Play selected section');
+        button.setAttribute('aria-pressed', 'false');
+      }
+      return;
+    }
+    const start = Math.max(0, Number(audio.dataset.start || 0));
+    const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+    if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end) audio.currentTime = start;
+    audio.ontimeupdate = () => {
+      const liveStart = Math.max(0, Number(audio.dataset.start || 0));
+      const liveEnd = Math.max(liveStart + 1, Number(audio.dataset.end || liveStart + 30));
+      if (audio.currentTime >= liveEnd) {
+        audio.pause();
+        audio.currentTime = liveStart;
+        if (button) {
+          button.innerHTML = icon('play');
+          button.setAttribute('aria-label', 'Play selected section');
+          button.setAttribute('aria-pressed', 'false');
+        }
+      }
+    };
+    audio.onended = () => {
+      if (button) {
+        button.innerHTML = icon('play');
+        button.setAttribute('aria-label', 'Play selected section');
+        button.setAttribute('aria-pressed', 'false');
+      }
+    };
+    audio.play().then(() => {
+      if (button) {
+        button.innerHTML = icon('pause');
+        button.setAttribute('aria-label', 'Pause selected section');
+        button.setAttribute('aria-pressed', 'true');
+      }
+    }).catch(() => {});
+  }
+
+  function updateMusicSegmentStart(value) {
+    if (!state.musicPicker?.selected) return;
+    const duration = Number(state.musicPicker.clipDuration || 30);
+    const maxStart = Math.max(0, Number(state.musicPicker.selected.trackDuration || 0) - duration);
+    const start = clamp(Number(value || 0), 0, maxStart);
+    state.musicPicker.start = start;
+    document.querySelectorAll('[data-music-segment-start]').forEach((input) => { input.value = String(start); });
+    const output = document.querySelector('.music-segment-slider output');
+    if (output) output.textContent = formatClipTime(start);
+    const summary = document.querySelector('.music-segment-summary strong');
+    if (summary) summary.textContent = `${formatClipTime(start)}–${formatClipTime(start + duration)}`;
+    const waveform = document.querySelector('.music-waveform-window');
+    if (waveform) waveform.style.setProperty('--music-position', String(maxStart ? start / maxStart : 0));
+    const audio = document.getElementById('music-picker-audio');
+    if (audio) {
+      audio.pause();
+      audio.dataset.start = String(start);
+      audio.dataset.end = String(start + duration);
+      try { audio.currentTime = start; } catch {}
+    }
+    const button = document.querySelector('[data-action="toggle-music-segment-preview"]');
+    if (button) {
+      button.innerHTML = icon('play');
+      button.setAttribute('aria-label', 'Play selected section');
+      button.setAttribute('aria-pressed', 'false');
+    }
+  }
+
+  function applyMusicSelection() {
+    const picker = state.musicPicker;
+    const track = picker?.selected;
+    if (!picker || !track) return;
+    const selection = {
+      ...track,
+      start: Number(picker.start || 0),
+      clipDuration: Number(picker.clipDuration || 30)
+    };
+    if (picker.context === 'post' && state.postComposer) state.postComposer.music = selection;
+    if (picker.context === 'note' && state.noteComposer) {
+      state.noteComposer.music = selection;
+      state.noteComposer.audio = null;
+      state.noteComposer.audioTitle = selection.title;
+      state.noteComposer.audioArtist = selection.artist;
+    }
+    const context = picker.context;
+    closeMusicPicker();
+    if (context === 'post') updatePostComposerSlot();
+    else updateNoteComposerSlot();
+  }
+
   async function loadGifPool(query = '') {
     state.gifLoading = true;
     try {
@@ -7858,6 +8525,40 @@
       state.pendingGifs = pending.gifs || [];
     } finally {
       state.gifLoading = false;
+    }
+  }
+
+  let chatGifSearchTimer = null;
+  let chatGifSearchRequestId = 0;
+
+  async function loadChatGifResults(query = '') {
+    const requestId = ++chatGifSearchRequestId;
+    const term = String(query || '').trim().slice(0, 80);
+    state.chatGifLoading = true;
+    state.chatGifError = '';
+    if (state.stickerPanel && state.chatTrayTab === 'gifs') updateChatFooter({ suppressFocus: true });
+    try {
+      const data = await api(`/api/media/gifs${term ? `?q=${encodeURIComponent(term)}` : ''}`);
+      if (requestId !== chatGifSearchRequestId || term !== state.chatGifQuery.trim()) return;
+      state.chatGifResults = data.gifs || [];
+      state.chatGifProvider = data.provider || 'Openverse';
+    } catch (error) {
+      if (requestId !== chatGifSearchRequestId) return;
+      state.chatGifResults = [];
+      state.chatGifProvider = '';
+      state.chatGifError = error.message || 'GIF search is temporarily unavailable.';
+    } finally {
+      if (requestId === chatGifSearchRequestId) {
+        state.chatGifLoading = false;
+        if (state.stickerPanel && state.chatTrayTab === 'gifs') {
+          updateChatFooter({ suppressFocus: true });
+          requestAnimationFrame(() => {
+            const input = document.getElementById('chat-gif-search');
+            input?.focus({ preventScroll: true });
+            input?.setSelectionRange?.(input.value.length, input.value.length);
+          });
+        }
+      }
     }
   }
 
@@ -8909,7 +9610,7 @@
       ctx.rotate((clamp(Number(editor.textRotation || 0), -180, 180) * Math.PI) / 180);
       if (editor.textEffect === 'rainbow') {
         const rainbow = ctx.createLinearGradient(-430, 0, 430, 0);
-        ['#ff304f', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#9f7cff'].forEach((color, index, colors) => rainbow.addColorStop(index / (colors.length - 1), color));
+        ['#ff304f', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#9f7cff'].forEach((color, index, colors) => rainbow.addColorStop(index / (colors.length - 1), color));
         ctx.fillStyle = rainbow;
       }
       if (editor.textEffect === 'shimmer') {
@@ -9659,7 +10360,8 @@
       replyTo: state.replyTo?.id || null,
       file: payload.file || null,
       stickerId: payload.stickerId || null,
-      gifId: payload.gifId || null
+      gifId: payload.gifId || null,
+      gifCatalogId: payload.gifCatalogId || null
     };
     state.replyTo = null;
     const data = await api(activeMessagesUrl(), {
@@ -10487,15 +11189,22 @@
   }
 
   async function sendGif(gifId) {
-    const gif = state.gifPool.find((item) => item.id === gifId);
-    if (!gif?.file?.url || !hasActiveConversation()) return;
-    await sendMessage({
-      kind: 'gif',
-      text: '',
-      gifId: gif.id
-    });
-    state.stickerPanel = false;
-    updateChatFooter();
+    const gif = [...state.gifPool, ...(state.chatGifResults || [])].find((item) => item.id === gifId);
+    if (!gif?.file?.url || !hasActiveConversation() || state.sendingGifId) return;
+    state.sendingGifId = gifId;
+    updateChatFooter({ suppressFocus: true });
+    try {
+      await sendMessage({
+        kind: 'gif',
+        text: '',
+        gifId: gif.catalogId ? null : gif.id,
+        gifCatalogId: gif.catalogId || null
+      });
+      state.stickerPanel = false;
+    } finally {
+      state.sendingGifId = null;
+      updateChatFooter();
+    }
   }
 
   async function downloadSticker(messageId) {
@@ -10673,6 +11382,8 @@
   let actionSheetWasOpen = false;
   let messageFocusCloseTimer = null;
   let focusedMessageDom = null;
+  let messageFocusReturnFocus = null;
+  let messageFocusWasOpen = false;
   let activeMessagePress = null;
   let settingsCloseTimer = null;
   let storyAdvanceTimer = null;
@@ -10685,7 +11396,7 @@
     if (options.pointerId !== undefined && options.pointerId !== press.pointerId) return null;
     clearTimeout(press.timer);
     press.element?.classList.remove('message-press-pending', 'message-press-held');
-    if (options.suppressClick && press.recognized) state.suppressClickUntil = Math.max(state.suppressClickUntil, Date.now() + 360);
+    if (options.suppressClick && press.recognized) state.suppressClickUntil = Math.max(state.suppressClickUntil, Date.now() + 90);
     activeMessagePress = null;
     return press;
   }
@@ -10760,6 +11471,20 @@
     actionSheetWasOpen = open;
   }
 
+  function syncMessageFocusAccessibility() {
+    const slot = document.getElementById('message-focus-slot');
+    const open = Boolean(state.messageFocus && slot?.querySelector('.message-focus-overlay'));
+    Array.from(app.children).forEach((child) => {
+      if (child !== slot) child.inert = open;
+    });
+    if (!open && messageFocusWasOpen) {
+      const returnTarget = messageFocusReturnFocus;
+      messageFocusReturnFocus = null;
+      if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
+    }
+    messageFocusWasOpen = open;
+  }
+
   function openActionSheet(sheet) {
     clearTimeout(overlayCloseTimer);
     if (!state.actionSheet) actionSheetReturnFocus = document.activeElement;
@@ -10782,6 +11507,7 @@
     if (!element) return;
     const sourceRect = element.getBoundingClientRect();
     clearTimeout(messageFocusCloseTimer);
+    messageFocusReturnFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : element;
     document.activeElement?.blur?.();
     state.messageFocusClosing = false;
     state.messageFocusNeedsRefresh = false;
@@ -10796,6 +11522,7 @@
     element.before(placeholder);
     host.append(element);
     element.classList.add('message-focus-original');
+    element.setAttribute('data-stop-close', '');
     element.style.transition = 'none';
     element.style.transform = '';
     focusedMessageDom = { element, placeholder };
@@ -10804,8 +11531,16 @@
     element.getBoundingClientRect();
     requestAnimationFrame(() => {
       if (focusedMessageDom?.element !== element) return;
-      element.style.transition = `transform ${navigationMotionDuration(280)}ms cubic-bezier(.2,.82,.2,1)`;
+      const forwardDuration = navigationMotionDuration(280);
+      element.style.transition = `transform ${forwardDuration}ms cubic-bezier(.2,.82,.2,1)`;
       element.style.transform = 'translate3d(0,0,0)';
+      afterVisualMotion(element, 'transitionend', forwardDuration + 50, () => {
+        if (focusedMessageDom?.element === element) {
+          const overlay = document.querySelector('.message-focus-overlay');
+          overlay?.classList.add('ready');
+          overlay?.focus?.({ preventScroll: true });
+        }
+      }, 'transform');
     });
   }
 
@@ -10817,6 +11552,7 @@
       const dom = focusedMessageDom;
       if (dom?.element) {
         dom.element.classList.remove('message-focus-original');
+        dom.element.removeAttribute('data-stop-close');
         dom.element.style.transition = '';
         dom.element.style.transform = '';
         if (dom.placeholder?.isConnected) dom.placeholder.replaceWith(dom.element);
@@ -10828,6 +11564,7 @@
       state.messageFocusNeedsRefresh = false;
       const slot = document.getElementById('message-focus-slot');
       if (slot) slot.innerHTML = '';
+      syncMessageFocusAccessibility();
       if (refresh) updateMessagesList({ scroll: 'preserve' });
       options.afterClose?.();
     };
@@ -11045,6 +11782,9 @@
     const input = current.querySelector('#composer-text');
     const hadFocus = document.activeElement === input;
     const selectionStart = input?.selectionStart || 0;
+    const gifInput = current.querySelector('#chat-gif-search');
+    const hadGifFocus = document.activeElement === gifInput;
+    const gifSelectionStart = gifInput?.selectionStart || 0;
     const template = document.createElement('template');
     template.innerHTML = renderChatPane().trim();
     const next = template.content.firstElementChild?.querySelector('footer');
@@ -11057,6 +11797,12 @@
         nextInput?.focus({ preventScroll: true });
         const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
         nextInput?.setSelectionRange?.(cursor, cursor);
+      }
+      if (hadGifFocus) {
+        const nextGifInput = document.getElementById('chat-gif-search');
+        nextGifInput?.focus({ preventScroll: true });
+        const cursor = Math.min(gifSelectionStart, nextGifInput?.value.length || 0);
+        nextGifInput?.setSelectionRange?.(cursor, cursor);
       }
     }, { anchor: 'bottom' });
     return true;
@@ -11201,6 +11947,7 @@
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-note-composer' && target.classList.contains('note-composer-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-music-picker' && target.classList.contains('music-picker-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-highlight-composer' && target.classList.contains('highlight-composer-overlay') && event.target.closest('[data-stop-close]')) return;
@@ -11405,6 +12152,32 @@
         updatePostComposerSlot();
       }
       if (action === 'publish-post') await publishPost();
+      if (action === 'toggle-post-preview-play') {
+        const video = target.closest('.post-composer-media')?.querySelector('video');
+        if (video) {
+          if (video.paused) await video.play().catch(() => {});
+          else video.pause();
+          syncPostPreviewUi(video);
+        }
+      }
+      if (action === 'toggle-post-preview-sound' && state.postComposer) {
+        state.postComposer.previewMuted = !state.postComposer.previewMuted;
+        const video = target.closest('.post-composer-media')?.querySelector('video');
+        const music = video?.closest('.post-composer-media')?.querySelector('.post-preview-music');
+        if (video) video.muted = Boolean(music) || state.postComposer.previewMuted;
+        if (music) {
+          music.muted = state.postComposer.previewMuted;
+          syncPostPreviewMusic(video);
+        }
+        target.innerHTML = icon(state.postComposer.previewMuted ? 'mute' : 'volume');
+        target.setAttribute('aria-label', state.postComposer.previewMuted ? 'Turn preview sound on' : 'Mute preview');
+        target.setAttribute('aria-pressed', state.postComposer.previewMuted ? 'false' : 'true');
+      }
+      if (action === 'open-post-music') openMusicPicker('post');
+      if (action === 'remove-post-music' && state.postComposer) {
+        state.postComposer.music = null;
+        updatePostComposerSlot();
+      }
       if (action === 'open-home-video') openPostClip(target.dataset.postId, Number(target.dataset.mediaIndex || 0), target);
       if (action === 'toggle-home-video-sound') toggleHomeVideoSound(target);
       if (action === 'close-clip-viewer') closeClipViewer();
@@ -11431,7 +12204,14 @@
         updateSidebar();
       }
       if (action === 'open-post-comments') {
-        openActionSheet({ type: 'post-comments', postId: target.dataset.postId, commentDraft: '', commentPosting: false });
+        openActionSheet({
+          type: 'post-comments',
+          postId: target.dataset.postId,
+          commentDraft: '',
+          commentPosting: false,
+          replyToCommentId: null,
+          expandedCommentIds: []
+        });
       }
       if (action === 'add-post-comment-emoji') {
         addPostCommentEmoji(target.dataset.emoji || '', target);
@@ -11444,6 +12224,15 @@
       }
       if (action === 'delete-post-comment') {
         if (confirm('Delete this comment?')) await deletePostComment(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'reply-post-comment') {
+        beginPostCommentReply(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'clear-post-comment-reply') {
+        clearPostCommentReply();
+      }
+      if (action === 'toggle-post-comment-replies') {
+        togglePostCommentReplies(target.dataset.commentId);
       }
       if (action === 'open-explore-post' || action === 'open-profile-post') {
         const post = postById(target.dataset.postId);
@@ -11494,11 +12283,62 @@
         updateNoteComposerSlot();
       }
       if (action === 'choose-note-audio') document.getElementById('note-audio-input')?.click();
+      if (action === 'open-note-music') openMusicPicker('note');
+      if (action === 'remove-note-music' && state.noteComposer) {
+        state.noteComposer.music = null;
+        updateNoteComposerSlot();
+      }
+      if (action === 'toggle-note-local-preview') {
+        const audio = document.getElementById('note-composer-audio');
+        if (!audio) return;
+        if (audio.paused) await audio.play().catch(() => {});
+        else audio.pause();
+        target.innerHTML = icon(audio.paused ? 'play' : 'pause');
+        target.setAttribute('aria-label', audio.paused ? 'Play original audio' : 'Pause original audio');
+        target.setAttribute('aria-pressed', audio.paused ? 'false' : 'true');
+        audio.onended = () => {
+          target.innerHTML = icon('play');
+          target.setAttribute('aria-label', 'Play original audio');
+          target.setAttribute('aria-pressed', 'false');
+        };
+      }
+      if (action === 'remove-note-audio' && state.noteComposer) {
+        state.noteComposer.audio = null;
+        state.noteComposer.audioTitle = '';
+        state.noteComposer.audioArtist = '';
+        updateNoteComposerSlot();
+      }
       if (action === 'start-note-recording') await startNoteRecording();
       if (action === 'stop-note-recording') stopNoteRecording();
       if (action === 'share-note') await shareNote();
       if (action === 'delete-note') await deleteNote();
       if (action === 'play-note') playNote(target.dataset.noteId);
+      if (action === 'close-music-picker') closeMusicPicker();
+      if (action === 'music-picker-back' && state.musicPicker) {
+        document.getElementById('music-picker-audio')?.pause?.();
+        state.musicPicker.selected = null;
+        updateMusicPickerSlot();
+        if (!state.musicPicker.tracks?.length) await searchMusicCatalog(state.musicPicker.query);
+      }
+      if (action === 'select-music-track') selectMusicTrack(target.dataset.trackId);
+      if (action === 'preview-music-track') previewMusicTrack(target.dataset.trackId, target);
+      if (action === 'toggle-music-segment-preview') toggleMusicSegmentPreview();
+      if (action === 'set-music-duration' && state.musicPicker?.selected) {
+        state.musicPicker.clipDuration = Math.min(Number(target.dataset.duration || 30), Number(state.musicPicker.selected.trackDuration || 30));
+        state.musicPicker.start = Math.min(Number(state.musicPicker.start || 0), Math.max(0, Number(state.musicPicker.selected.trackDuration || 0) - state.musicPicker.clipDuration));
+        updateMusicPickerSlot();
+      }
+      if (action === 'apply-music-selection') applyMusicSelection();
+      if (action === 'music-category' && state.musicPicker) {
+        state.musicPicker.query = target.dataset.query || '';
+        await searchMusicCatalog(state.musicPicker.query);
+      }
+      if (action === 'retry-music-search' && state.musicPicker) await searchMusicCatalog(state.musicPicker.query);
+      if (action === 'clear-music-search' && state.musicPicker) {
+        state.musicPicker.query = '';
+        await searchMusicCatalog('');
+      }
+      if (action === 'retry-chat-gif-search') await loadChatGifResults(state.chatGifQuery);
       if (action === 'open-chat') {
         if (state.longPressTriggered) {
           state.longPressTriggered = false;
@@ -11633,7 +12473,7 @@
       }
       if (action === 'set-chat-tray') {
         state.chatTrayTab = target.dataset.tray === 'gifs' ? 'gifs' : 'stickers';
-        if (state.chatTrayTab === 'gifs') await loadGifPool();
+        if (state.chatTrayTab === 'gifs') await Promise.all([loadGifPool(), loadChatGifResults(state.chatGifQuery)]);
         document.activeElement?.blur?.();
         updateChatFooter({ suppressFocus: true });
       }
@@ -12712,6 +13552,29 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.matches('[data-post-preview-progress]')) {
+      const video = event.target.closest('.post-composer-media')?.querySelector('video');
+      if (video && Number.isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = clamp(Number(event.target.value || 0) / 1000, 0, 1) * video.duration;
+        syncPostPreviewUi(video);
+        syncPostPreviewMusic(video);
+      }
+      return;
+    }
+    if (event.target.id === 'music-search' && state.musicPicker) {
+      state.musicPicker.query = event.target.value.slice(0, 80);
+      const clear = event.target.closest('.music-search-field')?.querySelector('[data-action="clear-music-search"]');
+      if (clear) clear.hidden = !state.musicPicker.query;
+      clearTimeout(musicSearchTimer);
+      musicSearchTimer = setTimeout(() => {
+        searchMusicCatalog(state.musicPicker?.query || '').catch(() => {});
+      }, 300);
+      return;
+    }
+    if (event.target.matches('[data-music-segment-start]') && state.musicPicker?.selected) {
+      updateMusicSegmentStart(event.target.value);
+      return;
+    }
     if (event.target.id === 'post-share-search' && state.actionSheet?.type === 'post-share') {
       state.actionSheet.query = event.target.value.slice(0, 80);
       const term = state.actionSheet.query.trim().toLowerCase();
@@ -12778,15 +13641,7 @@
       const preview = document.querySelector('.note-composer-preview > span');
       if (preview) preview.textContent = state.noteComposer.text || 'Share a thought…';
       const share = document.querySelector('.note-share');
-      if (share) share.disabled = !state.noteComposer.text.trim() && !state.noteComposer.audio;
-      return;
-    }
-    if (event.target.id === 'note-audio-title' && state.noteComposer) {
-      state.noteComposer.audioTitle = event.target.value.slice(0, 80);
-      return;
-    }
-    if (event.target.id === 'note-audio-artist' && state.noteComposer) {
-      state.noteComposer.audioArtist = event.target.value.slice(0, 80);
+      if (share) share.disabled = !state.noteComposer.text.trim() && !state.noteComposer.audio && !state.noteComposer.music;
       return;
     }
     if (event.target.id === 'group-name-input' && state.groupComposer) {
@@ -12866,6 +13721,10 @@
       });
       const empty = document.querySelector('.chat-gif-empty');
       if (empty) empty.hidden = visible > 0;
+      clearTimeout(chatGifSearchTimer);
+      chatGifSearchTimer = setTimeout(() => {
+        loadChatGifResults(state.chatGifQuery).catch(() => {});
+      }, 280);
       return;
     }
     if (event.target.dataset.storyAdjust && state.storyEditor) {
@@ -13138,6 +13997,50 @@
   });
 
   document.addEventListener('keydown', async (event) => {
+    if (state.musicPicker && event.key === 'Tab') {
+      const dialog = document.querySelector('#music-picker-slot .music-picker-sheet');
+      const focusable = Array.from(dialog?.querySelectorAll('input:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+        .filter((element) => !element.hidden && element.getClientRects().length);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === first)) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+    }
+    if (state.messageFocus && event.key === 'Tab') {
+      const dialog = document.querySelector('#message-focus-slot .message-focus-overlay');
+      const focusable = Array.from(dialog?.querySelectorAll('button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+        .filter((element) => !element.hidden && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === first)) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+    }
     if (state.actionSheet && event.key === 'Tab') {
       const dialog = document.querySelector('#action-sheet-slot .action-sheet');
       const focusable = Array.from(dialog?.querySelectorAll('input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
@@ -13168,6 +14071,11 @@
     if (event.target.matches('.clip-video') && ['Enter', ' '].includes(event.key)) {
       event.preventDefault();
       toggleClipPlayback(event.target);
+      return;
+    }
+    if (event.key === 'Escape' && state.musicPicker) {
+      event.preventDefault();
+      closeMusicPicker();
       return;
     }
     if (event.key === 'Escape' && state.postComposer) {
@@ -13286,7 +14194,7 @@
       state.edgeSwipe = null;
       return;
     }
-    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture ||
+    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture || state.musicPicker ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer ||
       state.postComposer || state.noteComposer || state.noteRecording;
     const backEntry = state.navigationStack[state.navigationStack.length - 1];
