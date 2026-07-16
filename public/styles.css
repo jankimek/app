@@ -12445,6 +12445,10 @@ button.profile-stat:is(:hover, :focus-visible) {
   font-weight: 820;
 }
 
+.post-stage-meta {
+  background: #080c13;
+}
+
 .post-stage-dots {
   min-height: 22px;
   display: flex;
@@ -12466,6 +12470,18 @@ button.profile-stat:is(:hover, :focus-visible) {
 .post-stage-dots i.active {
   background: linear-gradient(90deg, var(--social-violet), var(--social-teal));
   transform: scaleX(1.06);
+}
+
+.post-media-warning {
+  width: min(calc(100% - 24px), 720px);
+  margin: 8px auto 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 177, 79, 0.42);
+  border-radius: 12px;
+  color: #ffd7a3;
+  font-size: 12px;
+  line-height: 1.4;
+  background: rgba(112, 62, 8, 0.24);
 }
 
 .post-editor-body,
