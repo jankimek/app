@@ -7731,29 +7731,31 @@ html.keyboard-open .bottom-tabs {
   background: #2d6fa8;
 }
 
-.chat-gif-grid {
-  min-height: 0;
+.chat-gif-grid,
+.story-gif-grid,
+.story-comment-gif-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-content: start;
-  gap: 3px;
-  overflow-y: auto;
-}
-
-.chat-gif-grid button {
-  aspect-ratio: 1;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 3px;
+  gap: 1px;                    /* tighter like IG */
+  background: #0f1117;         /* optional: fills tiny lines */
+  border-radius: 8px;
   overflow: hidden;
-  background: #121821;
 }
 
-.chat-gif-grid img {
+.chat-gif-grid button,
+.story-gif-grid button,
+.story-comment-gif-grid button {
+  background: transparent;     /* removes extra box look */
+  border-radius: 0;            /* or keep 3-4px if you prefer */
+}
+
+.chat-gif-grid img,
+.story-gif-grid img,
+.story-comment-gif-grid img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
 .chat-gif-grid p {
