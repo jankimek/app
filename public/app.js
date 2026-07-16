@@ -155,7 +155,6 @@
     searchProfileMediaTab: 'posts',
     profilePosts: new Map(),
     expandedPosts: new Set(),
-    openPostComments: new Set(),
     noteComposer: null,
     noteRecording: null,
     settingsSection: 'main',
@@ -1586,6 +1585,7 @@
   }
 
   function renderApp(options = {}) {
+    clearActiveMessagePress();
     if (state.messageFocus) closeMessageFocus({ immediate: true, skipRefresh: true });
     capturePersistentScroll();
     const scrollSnapshot = Object.prototype.hasOwnProperty.call(options, 'scrollSnapshot')
@@ -1781,8 +1781,8 @@
 
   function renderSidebar() {
     const scrollKey = state.searchProfileOpen && state.publicProfile
-      ? `public-profile:${state.publicProfile.username}:${state.searchProfileSocialView || state.searchProfileMediaTab || 'main'}`
-      : `tab:${state.tab}:${state.tab === 'home' ? state.feedMode : (state.profileSocialView || state.profileMediaTab || 'main')}`;
+      ? `public-profile:${state.publicProfile.username}:${state.searchProfileSocialView || 'main'}`
+      : `tab:${state.tab}:${state.tab === 'home' ? state.feedMode : (state.profileSocialView || 'main')}`;
     return `
       <aside class="sidebar">
         <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}" data-scroll-memory="${esc(scrollKey)}">
@@ -1900,16 +1900,22 @@
   }
 
   function renderPostComments(post) {
-    const comments = post.comments || [];
-    const open = state.openPostComments.has(post.id);
-    if (!open && !comments.length) return '';
-    const visible = open ? comments : comments.slice(-2);
+    const comments = (post.comments || []).filter((comment) => comment?.user && String(comment.text || '').trim());
+    const topComment = comments.at(-1);
     return `
-      <div class="post-comments ${open ? 'open' : ''}">
-        ${visible.map((comment) => `
-          <p><button data-action="view-user-profile" data-username="${esc(comment.user?.username || '')}">${esc(comment.user?.username || 'user')}</button> ${renderMentionText(comment.text || '')}</p>
-        `).join('')}
-        ${comments.length > 2 ? `<button class="post-comments-more" data-action="toggle-post-comments" data-post-id="${esc(post.id)}">${open ? 'Hide comments' : `View all ${comments.length} comments`}</button>` : ''}
+      <div class="post-comments">
+        ${topComment ? `
+          <button class="post-comment-preview" data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Open comments. Latest from ${esc(topComment.user.username || 'user')}: ${esc(topComment.text || '')}">
+            <span class="highlight-comment-preview-card">
+              ${avatarHtml(topComment.user)}
+              <span class="highlight-comment-preview-copy">
+                <strong>${esc(topComment.user.username || 'user')}</strong>
+                <span>${esc(topComment.text || '')}</span>
+              </span>
+            </span>
+          </button>
+        ` : ''}
+        ${comments.length > 1 ? `<button class="post-comments-more" data-action="open-post-comments" data-post-id="${esc(post.id)}">View all ${comments.length} comments</button>` : ''}
       </div>
     `;
   }
@@ -1934,22 +1940,18 @@
         </header>
         ${renderPostMedia(post)}
         <div class="post-action-row">
-          <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}">${icon('heart')}</button>
-          <button data-action="focus-post-comment" data-post-id="${esc(post.id)}" aria-label="Comment">${icon('comment')}</button>
-          ${post.allowReposts === false ? '' : `<button class="${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="Repost">${icon('repost')}</button>`}
-          <button class="post-save ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="Save">${icon('bookmark')}</button>
+          <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}" aria-pressed="${liked}">${icon('heart')}</button>
+          <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comment">${icon('comment')}</button>
+          ${post.allowReposts === false ? '' : `<button class="${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="${reposted ? 'Undo repost' : 'Repost'}" aria-pressed="${reposted}">${icon('repost')}</button>`}
+          <button class="post-save ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
         </div>
         <div class="post-copy">
-          <strong>${Number(post.likeCount || 0).toLocaleString()} likes</strong>
+          <strong data-post-like-count>${Number(post.likeCount || 0).toLocaleString()} likes</strong>
           ${post.title ? `<h3>${esc(post.title)}</h3>` : ''}
           ${description ? `<p>${expanded ? renderMentionText(description) : renderMentionText(`${description.slice(0, 135).trim()}…`)} ${expanded ? '' : `<button data-action="expand-post" data-post-id="${esc(post.id)}">read more</button>`}</p>` : ''}
           ${hashtags.length ? `<p class="post-hashtags">${hashtags.map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}
-          <small>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments · ${Number(post.repostCount || 0)} reposts</small>
+          <small class="post-counts"><button data-action="open-post-comments" data-post-id="${esc(post.id)}" data-post-comment-count>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments</button><span>·</span><span data-post-repost-count>${Number(post.repostCount || 0)} reposts</span></small>
           ${renderPostComments(post)}
-          <form class="post-comment-form" data-form="post-comment" data-post-id="${esc(post.id)}">
-            <input name="comment" maxlength="500" placeholder="Add a comment…" autocomplete="off">
-            <button type="submit">Post</button>
-          </form>
         </div>
       </article>
     `;
@@ -2342,8 +2344,8 @@
         </section>
         <div class="search-profile-actions">${renderSearchProfileActions(user)}</div>
         ${renderHighlights(user, false)}
-        ${canSeeMedia ? renderProfileMedia(user, false) : `<div class="profile-private-media">${icon('lock')}<strong>This account is private</strong><small>Follow this account to see their posts.</small></div>`}
         ${renderProfileSuggestions(user)}
+        ${canSeeMedia ? renderProfileMedia(user, false) : `<div class="profile-private-media">${icon('lock')}<strong>This account is private</strong><small>Follow this account to see their posts.</small></div>`}
       </section>
     `;
   }
@@ -2405,8 +2407,8 @@
         </div>
       </section>
       ${renderHighlights(state.me, true)}
-      ${renderProfileMedia(state.me, true)}
       ${renderRecommendations()}
+      ${renderProfileMedia(state.me, true)}
     `;
   }
 
@@ -2428,7 +2430,7 @@
       ['tagged', 'Tagged photos', 'tagged']
     ];
     return `
-      <section class="profile-media-section">
+      <section class="profile-media-section" data-profile-id="${esc(user.id)}" data-own="${own}">
         <div class="profile-media-tabs" role="tablist">
           ${labels.map(([value, label, iconName]) => `<button class="${tab === value ? 'active' : ''}" data-action="set-profile-media-tab" data-tab="${value}" data-user-id="${esc(user.id)}" data-own="${own}" role="tab" aria-selected="${tab === value}" aria-label="${label}" ${!own && value === 'saved' ? 'title="Saved posts are private"' : ''}>${icon(iconName)}</button>`).join('')}
         </div>
@@ -2439,6 +2441,21 @@
             : `<div class="profile-media-empty">${icon(tab === 'saved' ? 'bookmark' : tab === 'reposts' ? 'repost' : tab === 'tagged' ? 'tagged' : 'grid')}<strong>No ${tab === 'posts' ? 'posts' : tab} yet</strong><small>${own && tab === 'posts' ? 'Photos and videos you share will appear here.' : 'Nothing to show in this tab.'}</small></div>`}
       </section>
     `;
+  }
+
+  function updateProfileMediaSection(user, own = false) {
+    const escapedId = window.CSS?.escape ? CSS.escape(String(user?.id || '')) : String(user?.id || '').replace(/"/g, '\\"');
+    const current = document.querySelector(`.profile-media-section[data-profile-id="${escapedId}"][data-own="${own}"]`);
+    if (!current) return false;
+    const scrollHost = current.closest('.side-content');
+    const scrollTop = scrollHost?.scrollTop ?? 0;
+    const template = document.createElement('template');
+    template.innerHTML = renderProfileMedia(user, own).trim();
+    const next = template.content.firstElementChild;
+    if (!next) return false;
+    current.replaceWith(next);
+    if (scrollHost) scrollHost.scrollTop = scrollTop;
+    return true;
   }
 
   function renderProfileSocialPage() {
@@ -5268,6 +5285,54 @@
     if (grid) grid.innerHTML = renderStoryCommentGifChoices(sheet.storyId, sheet);
   }
 
+  function renderPostCommentsSheet(post, sheet) {
+    if (!post) return '<p class="hint">Post not found.</p>';
+    const comments = (post.comments || []).filter((comment) => comment?.user && String(comment.text || '').trim());
+    const posting = Boolean(sheet.commentPosting);
+    const rows = comments.map((comment, index) => {
+      const username = comment.user.username || 'user';
+      return `
+        <article class="story-comment-row post-comment-row ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(index, 12)}">
+          <button class="story-comment-avatar" data-action="view-user-profile" data-username="${esc(username)}" aria-label="View ${esc(username)}'s profile">${avatarHtml(comment.user)}</button>
+          <div class="story-comment-content">
+            <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(username)}">${esc(username)}</button> <span>${renderMentionText(comment.text || '')}</span></p>
+            <div class="story-comment-meta"><time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(compactRelativeTime(comment.createdAt))}</time></div>
+          </div>
+          <span aria-hidden="true"></span>
+        </article>
+      `;
+    }).join('');
+    const quickReactions = ['❤️', '🙌', '🔥', '👏', '😂', '😍'];
+    return `
+      <header class="story-comments-head">
+        <span class="story-sheet-grabber" aria-hidden="true"></span>
+        <strong>Comments</strong>
+        <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close comments">${icon('x')}</button>
+      </header>
+      <div class="story-comment-list post-comment-list" role="feed" aria-label="Post comments">
+        ${rows || `
+          <div class="story-comments-empty">
+            <span>${icon('comment')}</span>
+            <strong>No comments yet</strong>
+            <small>Start the conversation.</small>
+          </div>
+        `}
+      </div>
+      <form class="story-comment-composer post-comment-composer" data-form="post-comment" data-post-id="${esc(post.id)}" aria-busy="${posting}">
+        <div class="story-comment-quick-reactions" aria-label="Quick reactions">
+          ${quickReactions.map((emoji) => `<button type="button" data-action="add-post-comment-emoji" data-emoji="${emoji}" ${posting ? 'disabled' : ''}>${emoji}</button>`).join('')}
+        </div>
+        <div class="story-comment-box">
+          <button type="button" class="story-comment-composer-avatar" data-action="view-own-profile" aria-label="View your profile" ${posting ? 'disabled' : ''}>${avatarHtml(state.me)}</button>
+          <div class="story-comment-field">
+            <input id="post-comment-input" name="comment" maxlength="500" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}" ${posting ? 'disabled' : ''}>
+            <button class="story-comment-post post-comment-submit" type="submit" ${posting || !String(sheet.commentDraft || '').trim() ? 'disabled' : ''}>Post</button>
+          </div>
+        </div>
+      </form>
+    `;
+  }
+
   function renderActionSheet() {
     const sheet = state.actionSheet;
     if (!sheet) return '';
@@ -5347,6 +5412,9 @@
         <input class="search-input" value="${esc(sheet.link)}" readonly>
         <button data-action="copy-profile-link" data-link="${esc(sheet.link)}">${icon('link')} Copy to clipboard</button>
       `;
+    }
+    if (sheet.type === 'post-comments') {
+      body = renderPostCommentsSheet(postById(sheet.postId), sheet);
     }
     if (sheet.type === 'story-comments') {
       const story = storyById(sheet.storyId);
@@ -5487,10 +5555,11 @@
         <button class="story-owner-action danger-text" data-action="delete-story" data-story-id="${esc(story.id)}">${icon('trash')}<span>Delete story</span></button>
       ` : '';
     }
-    const compact = ['story-comments', 'story-owner'].includes(sheet.type);
+    const compact = ['post-comments', 'story-comments', 'story-owner'].includes(sheet.type);
+    const compactClass = sheet.type === 'post-comments' ? 'story-comments-sheet post-comments-sheet' : `${sheet.type}-sheet`;
     return `
       <div class="overlay ${state.storyViewer ? 'over-story' : ''} ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
-        <section class="action-sheet ${compact ? `compact-sheet ${sheet.type}-sheet` : ''} ${sheet.refreshing ? 'sheet-refreshing' : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
+        <section class="action-sheet ${compact ? `compact-sheet ${compactClass}` : ''} ${sheet.refreshing ? 'sheet-refreshing' : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
           ${body || '<p class="hint">No actions available.</p>'}
           ${compact ? '' : '<button data-action="close-overlays">Cancel</button>'}
         </section>
@@ -6216,6 +6285,45 @@
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, replace(posts));
   }
 
+  function syncPostEngagement(post, changedAction = '') {
+    if (!post?.id) return false;
+    const escapedId = window.CSS?.escape ? CSS.escape(String(post.id)) : String(post.id).replace(/"/g, '\\"');
+    const card = document.querySelector(`.feed-post[data-post-id="${escapedId}"]`);
+    if (!card) return false;
+    const states = {
+      like: { active: Boolean(post.likedByMe), activeLabel: 'Unlike', idleLabel: 'Like' },
+      save: { active: Boolean(post.savedByMe), activeLabel: 'Unsave', idleLabel: 'Save' },
+      repost: { active: Boolean(post.repostedByMe), activeLabel: 'Undo repost', idleLabel: 'Repost' }
+    };
+    for (const [action, config] of Object.entries(states)) {
+      const button = card.querySelector(`[data-action="toggle-post-${action}"]`);
+      if (!button) continue;
+      button.classList.remove('is-pending');
+      button.classList.toggle('active', config.active);
+      button.setAttribute('aria-pressed', config.active ? 'true' : 'false');
+      button.setAttribute('aria-label', config.active ? config.activeLabel : config.idleLabel);
+      if (action === changedAction) {
+        button.classList.remove('post-action-pop');
+        void button.offsetWidth;
+        button.classList.add('post-action-pop');
+      }
+    }
+    const likeCount = card.querySelector('[data-post-like-count]');
+    if (likeCount) likeCount.textContent = `${Number(post.likeCount || 0).toLocaleString()} likes`;
+    const commentCount = card.querySelector('[data-post-comment-count]');
+    if (commentCount) commentCount.textContent = `${Number(post.commentCount ?? post.comments?.length ?? 0)} comments`;
+    const repostCount = card.querySelector('[data-post-repost-count]');
+    if (repostCount) repostCount.textContent = `${Number(post.repostCount || 0)} reposts`;
+    const currentComments = card.querySelector('.post-comments');
+    if (currentComments) {
+      const template = document.createElement('template');
+      template.innerHTML = renderPostComments(post).trim();
+      const nextComments = template.content.firstElementChild;
+      if (nextComments) currentComments.replaceWith(nextComments);
+    }
+    return true;
+  }
+
   const POST_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
   const POST_VIDEO_MAX_BYTES = 128 * 1024 * 1024;
 
@@ -6463,20 +6571,85 @@
   }
 
   async function togglePostAction(postId, action) {
-    const data = await api(`/api/posts/${encodeURIComponent(postId)}/${action}`, { method: 'POST' });
+    const escapedId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
+    const button = document.querySelector(`.feed-post[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"]`);
+    if (button?.classList.contains('is-pending')) return;
+    button?.classList.add('is-pending');
+    let data;
+    try {
+      data = await api(`/api/posts/${encodeURIComponent(postId)}/${action}`, { method: 'POST' });
+    } catch (error) {
+      button?.classList.remove('is-pending');
+      throw error;
+    }
     replacePost(data.post);
+    syncPostEngagement(data.post, action);
     if (action === 'save') await loadProfilePosts(state.me, 'saved', { render: false }).catch(() => []);
     if (action === 'repost') await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
-    updateSidebar();
   }
 
   async function commentOnPost(postId, text) {
     const clean = String(text || '').trim();
     if (!clean) return;
-    const data = await api(`/api/posts/${encodeURIComponent(postId)}/comments`, { method: 'POST', body: { text: clean } });
+    const sheet = state.actionSheet?.type === 'post-comments' && state.actionSheet.postId === postId
+      ? state.actionSheet
+      : null;
+    if (sheet?.commentPosting) return;
+    if (sheet) {
+      sheet.commentDraft = clean;
+      sheet.commentPosting = true;
+      document.querySelector('.post-comment-composer')?.setAttribute('aria-busy', 'true');
+      document.querySelectorAll('.post-comment-composer input, .post-comment-composer button').forEach((control) => { control.disabled = true; });
+    }
+    let data;
+    try {
+      data = await api(`/api/posts/${encodeURIComponent(postId)}/comments`, { method: 'POST', body: { text: clean } });
+    } catch (error) {
+      if (sheet && state.actionSheet === sheet) {
+        sheet.commentPosting = false;
+        updateActionSheetSlot();
+        requestAnimationFrame(() => document.getElementById('post-comment-input')?.focus({ preventScroll: true }));
+      }
+      throw error;
+    }
     replacePost(data.post);
-    state.openPostComments.add(postId);
-    updateSidebar();
+    syncPostEngagement(data.post);
+    if (sheet && state.actionSheet === sheet) {
+      state.actionSheet = {
+        ...sheet,
+        commentDraft: '',
+        commentPosting: false,
+        newCommentId: data.comment?.id || null
+      };
+      updateActionSheetSlot();
+      requestAnimationFrame(() => {
+        const list = document.querySelector('.post-comment-list');
+        list?.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+        document.getElementById('post-comment-input')?.focus({ preventScroll: true });
+      });
+      setTimeout(() => {
+        if (state.actionSheet?.type === 'post-comments' && state.actionSheet.postId === postId) state.actionSheet.newCommentId = null;
+      }, 520);
+    }
+  }
+
+  function addPostCommentEmoji(emoji, sourceButton) {
+    if (state.actionSheet?.type !== 'post-comments' || state.actionSheet.commentPosting) return;
+    const input = document.getElementById('post-comment-input');
+    if (!input) return;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const next = `${input.value.slice(0, start)}${emoji}${input.value.slice(end)}`.slice(0, 500);
+    input.value = next;
+    state.actionSheet.commentDraft = next;
+    const submit = document.querySelector('.post-comment-submit');
+    if (submit) submit.disabled = !next.trim();
+    sourceButton?.classList.remove('reaction-pop');
+    void sourceButton?.offsetWidth;
+    sourceButton?.classList.add('reaction-pop');
+    input.focus({ preventScroll: true });
+    const caret = Math.min(next.length, start + emoji.length);
+    input.setSelectionRange?.(caret, caret);
   }
 
   async function deletePost(postId) {
@@ -9447,8 +9620,59 @@
   let overlayCloseTimer = null;
   let messageFocusCloseTimer = null;
   let focusedMessageDom = null;
+  let activeMessagePress = null;
   let settingsCloseTimer = null;
   let storyAdvanceTimer = null;
+  const MESSAGE_LONG_PRESS_MS = 500;
+  const MESSAGE_PRESS_CANCEL_DISTANCE = 10;
+
+  function clearActiveMessagePress(options = {}) {
+    const press = activeMessagePress;
+    if (!press) return null;
+    if (options.pointerId !== undefined && options.pointerId !== press.pointerId) return null;
+    clearTimeout(press.timer);
+    press.element?.classList.remove('message-press-pending', 'message-press-held');
+    if (options.suppressClick && press.recognized) state.suppressClickUntil = Math.max(state.suppressClickUntil, Date.now() + 360);
+    activeMessagePress = null;
+    return press;
+  }
+
+  function beginMessagePress(event, element, messageId) {
+    clearActiveMessagePress();
+    element.classList.remove('message-press-held');
+    element.classList.add('message-press-pending');
+    const press = {
+      pointerId: event.pointerId,
+      messageId,
+      element,
+      startX: event.clientX,
+      startY: event.clientY,
+      recognized: false,
+      timer: null
+    };
+    press.timer = setTimeout(() => {
+      if (activeMessagePress !== press || !element.isConnected) return;
+      press.recognized = true;
+      state.drag = null;
+      element.classList.remove('message-press-pending');
+      element.classList.add('message-press-held');
+      navigator.vibrate?.(20);
+      openMessageFocus(messageId);
+    }, MESSAGE_LONG_PRESS_MS);
+    activeMessagePress = press;
+  }
+
+  function cancelMessagePressFromMove(event) {
+    const press = activeMessagePress;
+    if (!press || press.pointerId !== event.pointerId) return false;
+    if (Math.hypot(event.clientX - press.startX, event.clientY - press.startY) <= MESSAGE_PRESS_CANCEL_DISTANCE) return false;
+    clearActiveMessagePress({ pointerId: event.pointerId });
+    return true;
+  }
+
+  function finishMessagePress(pointerId) {
+    return clearActiveMessagePress({ pointerId, suppressClick: true });
+  }
 
   function clearStoryAdvance() {
     clearTimeout(storyAdvanceTimer);
@@ -9487,7 +9711,6 @@
     document.activeElement?.blur?.();
     state.messageFocusClosing = false;
     state.messageFocusNeedsRefresh = false;
-    state.suppressClickUntil = Date.now() + 160;
     state.messageFocus = { messageId, mode: 'actions' };
     updateMessageFocusSlot();
     const host = document.querySelector('.message-focus-host');
@@ -9507,13 +9730,14 @@
     element.getBoundingClientRect();
     requestAnimationFrame(() => {
       if (focusedMessageDom?.element !== element) return;
-      element.style.transition = 'transform 280ms cubic-bezier(.2,.82,.2,1)';
+      element.style.transition = `transform ${navigationMotionDuration(280)}ms cubic-bezier(.2,.82,.2,1)`;
       element.style.transform = 'translate3d(0,0,0)';
     });
   }
 
   function closeMessageFocus(options = {}) {
     if (!state.messageFocus) return;
+    clearActiveMessagePress();
     clearTimeout(messageFocusCloseTimer);
     const finish = () => {
       const dom = focusedMessageDom;
@@ -9537,13 +9761,14 @@
     state.messageFocusClosing = true;
     document.querySelector('.message-focus-overlay')?.classList.add('closing');
     const dom = focusedMessageDom;
+    const closeDuration = navigationMotionDuration(220);
     if (dom?.element && dom.placeholder?.isConnected) {
       const currentRect = dom.element.getBoundingClientRect();
       const targetRect = dom.placeholder.getBoundingClientRect();
-      dom.element.style.transition = 'transform 220ms cubic-bezier(.4,0,.2,1)';
+      dom.element.style.transition = `transform ${closeDuration}ms cubic-bezier(.4,0,.2,1)`;
       dom.element.style.transform = `translate3d(${targetRect.left - currentRect.left}px, ${targetRect.top - currentRect.top}px, 0)`;
     }
-    messageFocusCloseTimer = setTimeout(finish, 220);
+    messageFocusCloseTimer = setTimeout(finish, closeDuration);
   }
 
   function setMessageFocusMode(mode) {
@@ -10038,16 +10263,11 @@
         state.expandedPosts.add(target.dataset.postId);
         updateSidebar();
       }
-      if (action === 'toggle-post-comments') {
-        const postId = target.dataset.postId;
-        if (state.openPostComments.has(postId)) state.openPostComments.delete(postId);
-        else state.openPostComments.add(postId);
-        updateSidebar();
+      if (action === 'open-post-comments') {
+        openActionSheet({ type: 'post-comments', postId: target.dataset.postId, commentDraft: '', commentPosting: false });
       }
-      if (action === 'focus-post-comment') {
-        state.openPostComments.add(target.dataset.postId);
-        updateSidebar();
-        setTimeout(() => document.querySelector(`[data-post-id="${window.CSS?.escape ? CSS.escape(target.dataset.postId) : target.dataset.postId}"] .post-comment-form input`)?.focus(), 0);
+      if (action === 'add-post-comment-emoji') {
+        addPostCommentEmoji(target.dataset.emoji || '', target);
       }
       if (action === 'open-explore-post' || action === 'open-profile-post') {
         const post = postById(target.dataset.postId);
@@ -10067,10 +10287,26 @@
         if (own) state.profileMediaTab = tab;
         else state.searchProfileMediaTab = tab;
         const user = own ? state.me : state.publicProfile;
-        await loadProfilePosts(user, tab, { render: true }).catch((error) => {
-          updateSidebar();
-          if (tab !== 'saved') throw error;
+        const section = target.closest('.profile-media-section');
+        section?.classList.add('is-loading');
+        section?.querySelectorAll('[data-action="set-profile-media-tab"]').forEach((button) => {
+          const active = button.dataset.tab === tab;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-selected', active ? 'true' : 'false');
         });
+        let loadError = null;
+        try {
+          await loadProfilePosts(user, tab, { render: false });
+        } catch (error) {
+          loadError = error;
+        }
+        const currentTab = own ? state.profileMediaTab : state.searchProfileMediaTab;
+        if (currentTab === tab && !updateProfileMediaSection(user, own)) {
+          if (own) updateSidebar();
+          else if (!updateChatPane()) updateSidebar();
+        }
+        section?.classList.remove('is-loading');
+        if (loadError && tab !== 'saved') throw loadError;
       }
       if (action === 'open-profile-menu') openActionSheet({ type: 'profile-user', userId: target.dataset.userId });
       if (action === 'toggle-favorite-user') await toggleFavoriteUser(target.dataset.userId);
@@ -11350,6 +11586,12 @@
       syncStoryCommentPostButton();
       return;
     }
+    if (event.target.id === 'post-comment-input' && state.actionSheet?.type === 'post-comments') {
+      state.actionSheet.commentDraft = event.target.value.slice(0, 500);
+      const submit = document.querySelector('.post-comment-submit');
+      if (submit) submit.disabled = !state.actionSheet.commentDraft.trim();
+      return;
+    }
     if (event.target.id === 'story-comment-gif-search' && state.actionSheet?.type === 'story-comments') {
       state.actionSheet.gifQuery = event.target.value.slice(0, 80);
       const term = state.actionSheet.gifQuery.trim().toLowerCase();
@@ -11717,7 +11959,7 @@
       return;
     }
     const commentSheetHeader = event.target.closest('.story-comments-head');
-    if (state.actionSheet?.type === 'story-comments' && commentSheetHeader && !event.target.closest('button')) {
+    if (['story-comments', 'post-comments'].includes(state.actionSheet?.type) && commentSheetHeader && !event.target.closest('button')) {
       const sheet = commentSheetHeader.closest('.story-comments-sheet');
       const overlay = sheet?.closest('.overlay');
       if (sheet && overlay) {
@@ -12020,17 +12262,12 @@
     const message = event.target.closest('.message');
     if (state.messageFocus) return;
     if (!message || event.target.closest('button,a,input,textarea')) return;
-    clearTimeout(state.longPressTimer);
     const messageId = message.dataset.messageId;
-    state.longPressTimer = setTimeout(() => {
-      state.longPressTriggered = true;
-      state.drag = null;
-      navigator.vibrate?.(25);
-      openMessageFocus(messageId);
-    }, 560);
+    beginMessagePress(event, message, messageId);
     state.drag = {
       id: messageId,
       el: message,
+      pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY
     };
@@ -12246,6 +12483,7 @@
         }
       }
     }
+    cancelMessagePressFromMove(event);
     if (state.longPressTimer) {
       const pointer = state.drag || state.edgeSwipe || state.tabSwipe;
       if (pointer && Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) > 10) {
@@ -12364,6 +12602,7 @@
     }
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;
+    finishMessagePress(event.pointerId);
     const recordButton = event.target.closest('[data-action="record-voice"]') || document.querySelector('.recording');
     if (recordButton) stopRecording(recordButton);
     if (state.edgeSwipe) {
@@ -12484,7 +12723,8 @@
     state.tabSwipe = null;
   });
 
-  document.addEventListener('pointercancel', () => {
+  document.addEventListener('pointercancel', (event) => {
+    clearActiveMessagePress({ pointerId: event.pointerId });
     if (state.commentSheetDrag) {
       const { sheet, overlay } = state.commentSheetDrag;
       sheet.style.transition = 'transform 220ms cubic-bezier(.2, .9, .25, 1)';

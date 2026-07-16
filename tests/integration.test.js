@@ -225,6 +225,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /openCameraCapture\('chat'/);
   assert.match(styleSource, /class="message-focus-overlay"|\.message-focus-overlay/);
   assert.match(clientSource, /class="message-focus-host"/);
+  assert.match(clientSource, /const MESSAGE_LONG_PRESS_MS = 500;/);
+  assert.match(clientSource, /const MESSAGE_PRESS_CANCEL_DISTANCE = 10;/);
+  assert.match(clientSource, /function beginMessagePress/);
+  assert.match(clientSource, /function finishMessagePress/);
+  assert.match(clientSource, /clearActiveMessagePress\(\{ pointerId, suppressClick: true \}\)/);
+  assert.match(styleSource, /\.message\.message-press-pending \.bubble/);
+  assert.match(styleSource, /\.message\.message-press-held \.bubble/);
   assert.match(clientSource, /function renderStickerManager/);
   assert.match(clientSource, /data-action="like-story-comment"/);
   assert.match(clientSource, /function renderHighlightCommentPreview/);
@@ -339,6 +346,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   }
   assert.match(sidebarSource, /class="bottom-tab bottom-tab-create"[^>]*data-action="open-post-create"[^>]*aria-label="Create post"/);
   assert.doesNotMatch(sidebarSource, /navButton\('create'/);
+  assert.match(styleSource, /--social-icon-blue: #2f7895;/);
+  assert.match(styleSource, /\.bottom-tab-create \{[\s\S]*?border-radius: 8px;[\s\S]*?var\(--social-icon-blue\)/);
+  assert.match(styleSource, /@media \(min-width: 861px\) \{[\s\S]*?\.app-shell\.home-root \{[\s\S]*?grid-template-columns: 360px minmax\(0, 1fr\);[\s\S]*?\.app-shell\.home-root > \.sidebar > \.bottom-tabs \{[\s\S]*?width: 360px;/);
   const swipeTabSource = sourceSection(clientSource, 'function tabSwipeTarget', 'function ensureTabSwipePreview');
   for (const tab of ['home', 'search', 'chats', 'profile']) assert.match(swipeTabSource, new RegExp(`['"]${tab}['"]`));
   assert.doesNotMatch(swipeTabSource, /create|notifications/);
@@ -355,9 +365,33 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(homePanelSource, /data-action="open-post-create"/);
   assert.match(homePanelSource, /data-action="open-notifications"/);
   assert.match(homePanelSource, /feed\.map\(renderPostCard\)/);
+  const postCardSource = sourceSection(clientSource, 'function renderPostComments', 'function renderHomePanel');
+  assert.match(postCardSource, /const topComment = comments\.at\(-1\)/);
+  assert.match(postCardSource, /class="post-comment-preview" data-action="open-post-comments"/);
+  assert.match(postCardSource, /class="post-counts"/);
+  assert.doesNotMatch(postCardSource, /focus-post-comment|toggle-post-comments|class="post-comment-form"/);
+  assert.match(clientSource, /function renderPostCommentsSheet/);
+  assert.match(clientSource, /story-comments-sheet post-comments-sheet/);
+  const postActionSource = sourceSection(clientSource, 'async function togglePostAction', 'async function deletePost');
+  assert.match(postActionSource, /syncPostEngagement\(data\.post, action\)/);
+  assert.match(postActionSource, /syncPostEngagement\(data\.post\)/);
+  assert.doesNotMatch(postActionSource, /updateSidebar\(\)/);
   assert.match(clientSource, /renderMentionText\(comment\.text \|\| ''\)/);
   assert.match(clientSource, /renderMentionText\(description\)/);
   assert.doesNotMatch(clientSource, /renderMentions\(/);
+
+  const profilePanelSource = sourceSection(clientSource, 'function renderProfilePanel', 'function profilePostKey');
+  assert.ok(profilePanelSource.indexOf('renderHighlights(state.me, true)') < profilePanelSource.indexOf('renderRecommendations()'));
+  assert.ok(profilePanelSource.indexOf('renderRecommendations()') < profilePanelSource.indexOf('renderProfileMedia(state.me, true)'));
+  const searchProfileSource = sourceSection(clientSource, 'function renderSearchProfilePage', 'function renderSearchProfileSocialPage');
+  assert.ok(searchProfileSource.indexOf('renderHighlights(user, false)') < searchProfileSource.indexOf('renderProfileSuggestions(user)'));
+  assert.ok(searchProfileSource.indexOf('renderProfileSuggestions(user)') < searchProfileSource.indexOf('renderProfileMedia(user, false)'));
+  assert.match(clientSource, /function updateProfileMediaSection/);
+  assert.match(clientSource, /const scrollTop = scrollHost\?\.scrollTop \?\? 0;/);
+  assert.match(clientSource, /if \(scrollHost\) scrollHost\.scrollTop = scrollTop;/);
+  assert.match(clientSource, /loadProfilePosts\(user, tab, \{ render: false \}\)/);
+  assert.match(styleSource, /\.profile-media-section \{[\s\S]*?min-height: calc\(var\(--visual-height\) - 64px\);/);
+  assert.doesNotMatch(sidebarSource, /searchProfileMediaTab|profileMediaTab/);
 
   const postComposerSource = sourceSection(clientSource, 'function renderPostComposerMedia(', 'function renderNoteRail');
   assert.match(postComposerSource, /const stage = clamp\(Number\(composer\.stage \|\| 1\), 1, 3\)/);
