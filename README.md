@@ -13,7 +13,7 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Optional authenticator-app 2FA.
 - Public user pages at `/u/username`.
 - Home feed with For you, Following, and Favorites views; story rail, likes, comments, saves, and reposts.
-- Three-step photo/video post composer with crop controls, filters/adjustments, captions, hashtags, and positioned person tags.
+- Three-step photo/video post composer with lightweight local previews, streamed uploads, crop controls, filters/adjustments, captions, hashtags, and positioned person tags.
 - Profile tab with display name, permanent tag username, post/follower/following counts, profile details, 24-hour stories, editable highlights, and profile-link sharing.
 - Profile media tabs for posts, private saves, reposts, and tagged photos/videos.
 - Search Explore grid, account suggestions, favorites, post activity, and block-aware discovery.

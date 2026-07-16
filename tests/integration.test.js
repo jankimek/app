@@ -44,6 +44,23 @@ class ApiClient {
     else data = Buffer.from(await response.arrayBuffer());
     return { status: response.status, headers: response.headers, data };
   }
+
+  async raw(route, options = {}) {
+    const headers = { ...(options.headers || {}) };
+    if (this.cookie) headers.Cookie = this.cookie;
+    const response = await fetch(`${this.baseUrl}${route}`, {
+      method: options.method || 'POST',
+      headers,
+      body: options.body,
+      redirect: 'manual'
+    });
+    const contentType = response.headers.get('content-type') || '';
+    let data;
+    if (contentType.includes('application/json')) data = await response.json();
+    else if (contentType.startsWith('text/')) data = await response.text();
+    else data = Buffer.from(await response.arrayBuffer());
+    return { status: response.status, headers: response.headers, data };
+  }
 }
 
 function decodeBase32(value) {
@@ -358,6 +375,21 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(postComposerSource, /id="post-hashtags"[^>]*maxlength="300"/);
   assert.match(postComposerSource, /id="post-allow-reposts"/);
   assert.match(clientSource, /pendingTagPoint = \{[\s\S]{0,300}?x: Math\.round\([\s\S]{0,300}?y: Math\.round\(/);
+  assert.match(postComposerSource, /<video src="\$\{esc\(composer\.previewUrl\)\}"[\s\S]{0,180}?playsinline controls preload="metadata"/);
+  const filterRailSource = sourceSection(postComposerSource, 'class="post-filter-rail"', 'class="post-adjust-tabs"');
+  assert.doesNotMatch(filterRailSource, /<video/);
+  assert.match(filterRailSource, /data-video-poster/);
+
+  const postUploadSource = sourceSection(clientSource, 'const POST_IMAGE_MAX_BYTES', 'async function togglePostAction');
+  assert.match(postUploadSource, /URL\.createObjectURL\(file\)/);
+  assert.match(postUploadSource, /file,[\s\S]{0,100}?previewUrl/);
+  assert.match(postUploadSource, /fetch\('\/api\/post-media'/);
+  assert.match(postUploadSource, /body: file/);
+  assert.match(postUploadSource, /fileId: pendingFileId/);
+  assert.match(postUploadSource, /URL\.revokeObjectURL\(url\)/);
+  assert.match(postUploadSource, /releasePostComposerMedia\(composer\)/);
+  assert.doesNotMatch(postUploadSource, /fileToDataUrl\(file\)|dataUrl: composer/);
+  assert.match(clientSource, /window\.addEventListener\('pagehide',[\s\S]{0,120}?closePostComposer\(\)/);
 
   const ownProfileSource = sourceSection(clientSource, 'function renderProfilePanel()', 'function profilePostKey');
   assert.match(ownProfileSource, /<h1>\$\{esc\(state\.me\.displayName\)\}<\/h1>/);
@@ -537,6 +569,68 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
     method: 'PATCH',
     body: { currentPassword: PASSWORD, newPassword: 'ChangedPass456!' }
   })).status, 200);
+
+  const rawVideoBytes = Buffer.from('tiny deterministic mp4 payload');
+  const rawVideoUpload = await dora.raw('/api/post-media', {
+    headers: {
+      'Content-Type': 'video/mp4',
+      'X-File-Name': encodeURIComponent('raw-video.mp4'),
+      'X-File-Last-Modified': '2026-07-16T00:00:00.000Z'
+    },
+    body: rawVideoBytes
+  });
+  assert.equal(rawVideoUpload.status, 201);
+  assert.equal(rawVideoUpload.data.file.mime, 'video/mp4');
+  assert.equal(rawVideoUpload.data.file.size, rawVideoBytes.length);
+  assert.equal(rawVideoUpload.data.file.name, 'raw-video.mp4');
+  assert.equal((await bob.request('/api/posts', {
+    method: 'POST',
+    body: { fileId: rawVideoUpload.data.fileId, title: 'Foreign pending file' }
+  })).status, 404);
+  const rawVideoPost = await dora.request('/api/posts', {
+    method: 'POST',
+    body: {
+      fileId: rawVideoUpload.data.fileId,
+      title: 'Streamed video',
+      description: 'Published without base64 JSON.'
+    }
+  });
+  assert.equal(rawVideoPost.status, 201);
+  assert.equal(rawVideoPost.data.post.media.mime, 'video/mp4');
+  const streamedVideo = await dora.request(rawVideoPost.data.post.media.url);
+  assert.equal(streamedVideo.status, 200);
+  assert.deepEqual(streamedVideo.data, rawVideoBytes);
+  const videoRange = await dora.request(rawVideoPost.data.post.media.url, {
+    headers: { Range: 'bytes=5-12' }
+  });
+  assert.equal(videoRange.status, 206);
+  assert.deepEqual(videoRange.data, rawVideoBytes.subarray(5, 13));
+  assert.equal(videoRange.headers.get('accept-ranges'), 'bytes');
+  assert.equal(videoRange.headers.get('content-range'), `bytes 5-12/${rawVideoBytes.length}`);
+  const invalidVideoRange = await dora.request(rawVideoPost.data.post.media.url, {
+    headers: { Range: `bytes=${rawVideoBytes.length}-` }
+  });
+  assert.equal(invalidVideoRange.status, 416);
+  assert.equal(invalidVideoRange.headers.get('content-range'), `bytes */${rawVideoBytes.length}`);
+  assert.equal((await dora.request('/api/posts', {
+    method: 'POST',
+    body: { fileId: rawVideoUpload.data.fileId, title: 'Cannot reuse upload' }
+  })).status, 404);
+  const invalidRawUpload = await dora.raw('/api/post-media', {
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: Buffer.from('not media')
+  });
+  assert.equal(invalidRawUpload.status, 400);
+  const abandonedUpload = await dora.raw('/api/post-media', {
+    headers: { 'Content-Type': 'image/png', 'X-File-Name': encodeURIComponent('abandoned.png') },
+    body: Buffer.from('small pending image')
+  });
+  assert.equal(abandonedUpload.status, 201);
+  assert.equal((await dora.request(`/api/post-media/${abandonedUpload.data.fileId}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await dora.request('/api/posts', {
+    method: 'POST',
+    body: { fileId: abandonedUpload.data.fileId, title: 'Deleted pending file' }
+  })).status, 404);
 
   const createdPost = await alice.request('/api/posts', {
     method: 'POST',
