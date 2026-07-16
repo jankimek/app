@@ -12,8 +12,9 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Customized verification emails through the host's `sendmail` service, account contact management, and password changes.
 - Optional authenticator-app 2FA.
 - Public user pages at `/u/username`.
-- Home feed with For you, Following, and Favorites views; story rail, likes, comments, saves, and reposts.
-- Three-step photo/video post composer with lightweight local previews, streamed uploads, crop controls, filters/adjustments, captions, hashtags, and positioned person tags.
+- Responsive Instagram-inspired Home feed with For you, Following, and Favorites views; story rail, desktop suggestions, likes, comments, reposts, sharing, saves, and swipeable media.
+- Three-step photo/video post composer with up to 20 mixed items, ordered thumbnails, add/remove/reorder controls, per-item drag/pinch/wheel crop, shared and mixed aspect modes, filters/adjustments, streamed uploads, captions, hashtags, and positioned person tags.
+- Native inline video playback with byte-range streaming plus a vertically snapping **Clips** tab for single-video posts.
 - Profile tab with display name, permanent tag username, post/follower/following counts, profile details, 24-hour stories, editable highlights, and profile-link sharing.
 - Profile media tabs for posts, private saves, reposts, and tagged photos/videos.
 - Search Explore grid, account suggestions, favorites, post activity, and block-aware discovery.
@@ -22,7 +23,7 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, interactive polls/quizzes/sliders, mentions, maps, live weather, audio clips, and downloads.
 - Shared GIF pool with moderator approval; the usernames in `MODERATOR_USERNAMES` can approve submissions.
 - Full-screen story/highlight viewer with progress, navigation, likes, comments, and private-account access control.
-- Five-control bottom navigation for Home, Search, Create, Messages, and Profile.
+- Phone-first bottom navigation for Home, Search, Create, Clips, and Profile, with Messages in the Home header; desktop uses an expanded navigation rail.
 - Username search, friend requests, and a notification center for accepting or declining requests.
 - Conversation search on the Messages tab that finds saved message references.
 - Public/private followers and following lists.

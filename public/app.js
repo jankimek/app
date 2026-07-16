@@ -7,11 +7,16 @@
   postMediaInput.id = 'post-input';
   postMediaInput.type = 'file';
   postMediaInput.accept = 'image/*,video/*';
+  postMediaInput.multiple = true;
   postMediaInput.hidden = true;
   postMediaInput.tabIndex = -1;
   document.body.appendChild(postMediaInput);
 
+  let postMediaPickerMode = 'replace';
+
   function openPostMediaPicker() {
+    const options = arguments[0] || {};
+    postMediaPickerMode = options.append ? 'append' : 'replace';
     postMediaInput.value = '';
     postMediaInput.click();
   }
@@ -148,6 +153,8 @@
     feedLoading: false,
     explorePosts: [],
     exploreLoading: false,
+    clips: [],
+    clipMode: 'for_you',
     notes: [],
     postComposer: null,
     postPublishing: false,
@@ -218,6 +225,8 @@
     storyStickerGesture: null,
     storyDraw: null,
     storyVideoTrimDrag: null,
+    postCropDrag: null,
+    postCropGesture: null,
     commentSheetDrag: null,
     edgeSwipe: null,
     tabSwipe: null,
@@ -229,6 +238,7 @@
   };
 
   const cropPointers = new Map();
+  const postCropPointers = new Map();
   const storyTextPointers = new Map();
   const storyMediaPointers = new Map();
   const storyStickerPointers = new Map();
@@ -983,6 +993,7 @@
       back: '<svg viewBox="0 0 24 24"><path d="M15 18 9 12l6-6"/></svg>',
       phone: '<svg viewBox="0 0 24 24"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7A2 2 0 0 1 22 16.9Z"/></svg>',
       video: '<svg viewBox="0 0 24 24"><path d="M4 6h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/><path d="m17 10 5-3v10l-5-3"/></svg>',
+      clips: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 3 4 5 4-5M3 9h18"/><path d="m10 13 5 3-5 3Z"/></svg>',
       file: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
       sticker: '<svg viewBox="0 0 24 24"><path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5"/><path d="M14 20c0-3.3 2.7-6 6-6"/><path d="M9 9h.01M15 9h.01M8.5 14a5 5 0 0 0 7 0"/></svg>',
       mic: '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg>',
@@ -1050,6 +1061,7 @@
     return `
       <button class="bottom-tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" title="${esc(label)}" aria-label="${esc(label)}">
         ${symbol}
+        <span class="nav-label">${esc(label)}</span>
         ${unreadDot ? '<span class="red-dot tab-dot"></span>' : ''}
       </button>
     `;
@@ -1068,7 +1080,7 @@
   }
 
   function tabIndex(tab) {
-    return { home: 0, notifications: 0, search: 1, chats: 2, profile: 3 }[tab] ?? 0;
+    return { home: 0, notifications: 0, search: 1, clips: 2, chats: 3, profile: 4 }[tab] ?? 0;
   }
 
   function hasActiveConversation() {
@@ -1145,7 +1157,7 @@
   }
 
   function switchMainTab(nextTab, options = {}) {
-    if (!['home', 'chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
+    if (!['home', 'chats', 'search', 'clips', 'profile'].includes(nextTab) || nextTab === state.tab) return;
     const leavingPublicProfile = state.searchProfileOpen;
     const profileReturnScroll = state.profileReturnScroll;
     const wasChatProfileOpen = state.chatProfileOpen;
@@ -1190,7 +1202,7 @@
   }
 
   function tabSwipeTarget(dx) {
-    const tabs = ['home', 'search', 'chats', 'profile'];
+    const tabs = ['home', 'search', 'clips', 'chats', 'profile'];
     const index = tabIndex(state.tab);
     const targetIndex = index + (dx < 0 ? 1 : -1);
     return tabs[targetIndex] || null;
@@ -1599,7 +1611,7 @@
     forwardLiveShell?.remove();
     app.innerHTML = `
       ${forwardEntry?.previewHtml && !forwardLiveShell ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
-      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.tab === 'home' && !hasActiveConversation() ? 'home-root' : ''}">
+      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.tab === 'home' && !hasActiveConversation() ? 'home-root' : ''} ${state.tab !== 'chats' && !hasActiveConversation() && !state.searchProfileOpen ? 'social-root' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -1661,6 +1673,8 @@
       attachCameraStream();
       attachStoryEditorVideo();
       attachStoryViewerVideo();
+      initializePostCarousels();
+      attachClipPlayback();
       state.chatReturnAnimation = false;
       state.chatOpening = false;
     }, 0);
@@ -1789,9 +1803,11 @@
           ${renderTabContent(state.tab)}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
+          <div class="desktop-brand" aria-label="New Around">New Around</div>
           ${navButton('home', 'Home', 'home')}
           ${navButton('search', 'Search', 'search')}
           <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
+          ${navButton('clips', 'Clips', 'clips')}
           ${navButton('chats', 'Messages', 'messages')}
           ${navButton('profile', 'Profile', 'profile')}
         </nav>
@@ -1803,6 +1819,7 @@
     if (tab === 'home') return renderHomePanel();
     if (tab === 'chats') return renderChatsPanel();
     if (tab === 'search') return renderSearchPanel();
+    if (tab === 'clips') return renderClipsPanel();
     if (tab === 'notifications') return renderNotificationsPage();
     return renderProfilePanel();
   }
@@ -1848,7 +1865,35 @@
   }
 
   function postMedia(post) {
-    return post?.media || post?.file || post?.attachment || null;
+    return postMediaItems(post)[0]?.media || null;
+  }
+
+  function postMediaItems(post) {
+    const rawItems = Array.isArray(post?.mediaItems) && post.mediaItems.length
+      ? post.mediaItems
+      : [{
+          fileId: post?.media?.id || post?.file?.id || '',
+          media: post?.media || post?.file || post?.attachment || null,
+          edits: post?.edits || {},
+          crop: post?.crop,
+          adjustments: post?.adjustments,
+          filter: post?.filter
+        }];
+    return rawItems.map((item, index) => {
+      const media = item?.media || item?.file || (index === 0 ? (post?.media || post?.file || post?.attachment) : null);
+      const edits = item?.edits || (index === 0 ? post?.edits : {}) || {};
+      return {
+        id: item?.fileId || media?.id || `${post?.id || 'post'}-${index}`,
+        fileId: item?.fileId || media?.id || '',
+        media,
+        edits,
+        crop: item?.crop || edits.crop || (index === 0 ? post?.crop : {}) || {},
+        adjustments: item?.adjustments || edits.adjustments || (index === 0 ? post?.adjustments : {}) || {},
+        filter: item?.filter || edits.filter || (index === 0 ? post?.filter : 'normal') || 'normal',
+        altText: String(item?.altText || (index === 0 ? post?.altText : '') || ''),
+        mediaType: item?.mediaType || (String(media?.mime || '').startsWith('video/') ? 'video' : 'image')
+      };
+    }).filter((item) => item.media?.url);
   }
 
   function postFilterStyle(post) {
@@ -1873,30 +1918,124 @@
 
   function postCropStyle(post) {
     const crop = post?.crop || post?.edits?.crop || post?.edits || {};
-    const zoom = clamp(Number(crop.zoom ?? 1), 1, 3);
-    const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -50, 50);
-    const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -50, 50);
-    const rotation = clamp(Number(crop.rotation ?? 0), -180, 180);
-    return `transform:translate3d(${x}%,${y}%,0) scale(${zoom}) rotate(${rotation}deg);filter:${postFilterStyle(post)}`;
+    const aspect = String(crop.aspect || crop.aspectRatio || '');
+    const zoom = clamp(Number(crop.zoom ?? 1), 1, 5);
+    const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
+    const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
+    const rotation = clamp(Number(crop.rotation ?? 0), -360, 360);
+    return `object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;transform:scale(${zoom}) rotate(${rotation}deg);filter:${postFilterStyle(post)}`;
+  }
+
+  function postAspect(postOrItem) {
+    const crop = postOrItem?.crop || postOrItem?.edits?.crop || postOrItem?.edits || {};
+    const raw = String(crop.aspect || crop.aspectRatio || 'portrait').toLowerCase();
+    if (raw.startsWith('mixed:')) {
+      const ratio = clamp(Number(raw.split(':')[1]), 0.75, 1.91);
+      return { name: 'mixed', ratio: Number.isFinite(ratio) ? ratio : 1 };
+    }
+    if (raw.startsWith('original:')) {
+      const ratio = clamp(Number(raw.split(':')[1]), 0.75, 1.91);
+      return { name: 'original', ratio: Number.isFinite(ratio) ? ratio : 1 };
+    }
+    if (raw === 'square' || raw === '1:1') return { name: 'square', ratio: 1 };
+    if (raw === 'landscape' || raw === '1.91:1') return { name: 'landscape', ratio: 1.91 };
+    if (raw === 'portrait34' || raw === '3:4') return { name: 'portrait34', ratio: 3 / 4 };
+    if (raw === 'original') return { name: 'original', ratio: 1 };
+    return { name: 'portrait', ratio: 4 / 5 };
+  }
+
+  function renderPostVisual(item, post, options = {}) {
+    const media = item?.media;
+    if (!media?.url) return '<div class="post-media-missing">Media unavailable</div>';
+    const isVideo = item.mediaType === 'video' || String(media.mime || '').startsWith('video/');
+    const visual = { ...post, ...item, edits: item.edits, crop: item.crop, adjustments: item.adjustments, filter: item.filter };
+    if (isVideo) {
+      const crop = item.crop || {};
+      const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
+      const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
+      const aspect = String(crop.aspect || crop.aspectRatio || '');
+      return `<video class="post-native-video" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline ${options.grid ? 'muted' : 'controls'} preload="metadata" aria-label="${esc(item.altText || `Video by ${postAuthor(post)?.username || 'user'}`)}"></video>`;
+    }
+    return `<img src="${esc(media.url)}" style="${esc(postCropStyle(visual))}" alt="${esc(item.altText || post.title || `Post by ${postAuthor(post)?.username || 'user'}`)}" loading="lazy">`;
+  }
+
+  function renderPostPersonTags(post, mediaIndex) {
+    const tags = post.personTags || post.peopleTags || [];
+    return tags.filter((tag) => Number(tag.mediaIndex || 0) === mediaIndex).map((tag) => {
+      const tagged = tag.user || tag.person || null;
+      return `<button class="post-person-tag" style="left:${clamp(Number(tag.x || 50), 2, 98)}%;top:${clamp(Number(tag.y || 50), 2, 98)}%" data-action="view-user-profile" data-username="${esc(tagged?.username || tag.username || '')}">@${esc(tagged?.username || tag.username || '')}</button>`;
+    }).join('');
   }
 
   function renderPostMedia(post, options = {}) {
-    const media = postMedia(post);
-    if (!media?.url) return '<div class="post-media-missing">Media unavailable</div>';
-    const isVideo = String(media.mime || '').startsWith('video/');
-    const tags = post.personTags || post.peopleTags || [];
+    const items = postMediaItems(post);
+    if (!items.length) return '<div class="post-media-missing">Media unavailable</div>';
+    const first = items[0];
+    const isVideo = first.mediaType === 'video';
+    const aspect = postAspect(first);
+    if (options.grid) {
+      return `
+        <div class="post-media-frame post-media-grid aspect-${esc(aspect.name)}" style="--post-aspect:${aspect.ratio}">
+          ${renderPostVisual(first, post, { grid: true })}
+          ${isVideo ? `<span class="post-video-mark">${icon('play')}</span>` : ''}
+          ${items.length > 1 ? `<span class="post-carousel-mark" aria-label="${items.length} items">${icon('clips')}</span>` : ''}
+        </div>
+      `;
+    }
     return `
-      <div class="post-media-frame ${options.grid ? 'post-media-grid' : ''}">
-        ${isVideo
-          ? `<video src="${esc(media.url)}" style="${esc(postCropStyle(post))}" muted playsinline preload="metadata" ${options.grid ? '' : 'controls'}></video>`
-          : `<img src="${esc(media.url)}" style="${esc(postCropStyle(post))}" alt="${esc(post.title || 'Post')}" loading="lazy">`}
-        ${options.grid ? '' : tags.map((tag) => {
-          const tagged = tag.user || tag.person || null;
-          return `<button class="post-person-tag" style="left:${clamp(Number(tag.x || 50), 2, 98)}%;top:${clamp(Number(tag.y || 50), 2, 98)}%" data-action="view-user-profile" data-username="${esc(tagged?.username || tag.username || '')}">@${esc(tagged?.username || tag.username || '')}</button>`;
-        }).join('')}
-        ${isVideo && options.grid ? `<span class="post-video-mark">${icon('play')}</span>` : ''}
+      <div class="post-media-frame aspect-${esc(aspect.name)} ${items.length > 1 ? 'has-carousel' : ''}" style="--post-aspect:${aspect.ratio}" data-post-carousel="${esc(post.id)}">
+        <div class="post-carousel-track" data-post-id="${esc(post.id)}">
+          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post)}${renderPostPersonTags(post, index)}</div>`).join('')}
+        </div>
+        ${items.length > 1 ? `
+          <span class="post-carousel-count" aria-live="polite"><b>1</b>/${items.length}</span>
+          <button class="post-carousel-arrow previous" data-action="post-carousel-previous" data-post-id="${esc(post.id)}" aria-label="Previous item" disabled>${icon('back')}</button>
+          <button class="post-carousel-arrow next" data-action="post-carousel-next" data-post-id="${esc(post.id)}" aria-label="Next item">${icon('back')}</button>
+          <div class="post-carousel-dots" aria-hidden="true">${items.map((_, index) => `<i class="${index === 0 ? 'active' : ''}"></i>`).join('')}</div>
+        ` : ''}
       </div>
     `;
+  }
+
+  function syncPostCarousel(track) {
+    if (!track?.matches?.('.post-carousel-track')) return;
+    const slides = Array.from(track.children);
+    if (!slides.length) return;
+    const index = clamp(Math.round(track.scrollLeft / Math.max(1, track.clientWidth)), 0, slides.length - 1);
+    const frame = track.closest('.post-media-frame');
+    const count = frame?.querySelector('.post-carousel-count b');
+    if (count) count.textContent = String(index + 1);
+    frame?.querySelectorAll('.post-carousel-dots i').forEach((dot, dotIndex) => dot.classList.toggle('active', dotIndex === index));
+    const previous = frame?.querySelector('.post-carousel-arrow.previous');
+    const next = frame?.querySelector('.post-carousel-arrow.next');
+    if (previous) previous.disabled = index === 0;
+    if (next) next.disabled = index === slides.length - 1;
+    slides.forEach((slide, slideIndex) => {
+      const active = slideIndex === index;
+      slide.setAttribute('aria-hidden', active ? 'false' : 'true');
+      slide.toggleAttribute('inert', !active);
+      slide.querySelectorAll('video').forEach((video) => {
+        if (active) video.removeAttribute('tabindex');
+        else {
+          video.tabIndex = -1;
+          video.pause();
+        }
+      });
+    });
+  }
+
+  function initializePostCarousels(root = document) {
+    root.querySelectorAll?.('.post-carousel-track').forEach(syncPostCarousel);
+  }
+
+  function movePostCarousel(postId, direction) {
+    const selectorId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
+    const track = document.querySelector(`.post-carousel-track[data-post-id="${selectorId}"]`);
+    if (!track) return;
+    const index = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+    const nextIndex = clamp(index + direction, 0, track.children.length - 1);
+    track.scrollTo({ left: nextIndex * track.clientWidth, behavior: 'smooth' });
+    setTimeout(() => syncPostCarousel(track), 280);
   }
 
   function renderPostComments(post) {
@@ -1928,13 +2067,14 @@
     const hashtags = post.hashtags || post.tags || [];
     const liked = Boolean(post.likedByMe);
     const saved = Boolean(post.savedByMe);
+    const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
     const reposted = Boolean(post.repostedByMe);
     return `
       <article class="feed-post" data-post-id="${esc(post.id)}">
         <header class="post-head">
           <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">
             ${avatarHtml(author)}
-            <span><strong>${esc(author.displayName || author.username)}</strong><small>@${esc(author.username)} · ${esc(shortTime(post.createdAt))}</small></span>
+            <span><strong>${esc(author.username)}</strong><small>${post.location ? `${esc(post.location)} · ` : ''}${esc(shortTime(post.createdAt))}</small></span>
           </a>
           ${author.id === state.me?.id ? `<button data-action="post-owner-menu" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>` : ''}
         </header>
@@ -1943,15 +2083,17 @@
           <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}" aria-pressed="${liked}">${icon('heart')}</button>
           <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comment">${icon('comment')}</button>
           ${post.allowReposts === false ? '' : `<button class="${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="${reposted ? 'Undo repost' : 'Repost'}" aria-pressed="${reposted}">${icon('repost')}</button>`}
+          <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
           <button class="post-save ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
         </div>
         <div class="post-copy">
-          <strong data-post-like-count>${Number(post.likeCount || 0).toLocaleString()} likes</strong>
+          <strong data-post-like-count>${showLikeCount ? `${Number(post.likeCount || 0).toLocaleString()} likes` : 'Like count hidden'}</strong>
           ${post.title ? `<h3>${esc(post.title)}</h3>` : ''}
           ${description ? `<p>${expanded ? renderMentionText(description) : renderMentionText(`${description.slice(0, 135).trim()}…`)} ${expanded ? '' : `<button data-action="expand-post" data-post-id="${esc(post.id)}">read more</button>`}</p>` : ''}
           ${hashtags.length ? `<p class="post-hashtags">${hashtags.map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}
           <small class="post-counts"><button data-action="open-post-comments" data-post-id="${esc(post.id)}" data-post-comment-count>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments</button><span>·</span><span data-post-repost-count>${Number(post.repostCount || 0)} reposts</span></small>
           ${renderPostComments(post)}
+          ${post.allowComments === false ? '<small class="post-comments-off">Comments are turned off.</small>' : ''}
         </div>
       </article>
     `;
@@ -1959,11 +2101,12 @@
 
   function renderHomePanel() {
     const feed = state.homeFeed || [];
+    const suggestions = visibleRecommendations().slice(0, 5);
     return `
       <section class="home-page">
         <header class="home-topbar">
           <div class="feed-picker-wrap">
-            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}">${esc(feedModeLabel())}${icon('chevron')}</button>
+            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}" aria-label="Choose feed"><span class="home-brand">New Around</span>${icon('chevron')}</button>
             ${state.feedMenuOpen ? `
               <div class="feed-picker-menu">
                 ${['for_you', 'following', 'favorites'].map((mode) => `<button class="${state.feedMode === mode ? 'active' : ''}" data-action="set-feed-mode" data-mode="${mode}">${esc(feedModeLabel(mode))}${state.feedMode === mode ? icon('check') : ''}</button>`).join('')}
@@ -1973,47 +2116,225 @@
           <div class="home-head-actions">
             <button class="icon-btn" data-action="open-post-create" aria-label="Create post">${icon('plus')}</button>
             <button class="icon-btn notification-btn" data-action="open-notifications" aria-label="Notifications">${icon('bell')}${state.pendingRequestCount ? '<span class="red-dot"></span>' : ''}</button>
+            <button class="icon-btn notification-btn" data-action="tab" data-tab="chats" aria-label="Messages">${icon('messages')}${hasUnreadMessages() ? '<span class="red-dot"></span>' : ''}</button>
           </div>
         </header>
-        ${renderHomeStories()}
-        ${renderNotificationPermissionPrompt()}
-        <section class="home-feed" aria-live="polite">
-          ${state.feedLoading
-            ? '<div class="feed-loading"><i></i><i></i><i></i></div>'
-            : feed.length
-              ? feed.map(renderPostCard).join('')
-              : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${state.feedMode === 'favorites' ? 'Favorite an account from their profile to build this feed.' : 'Share the first post or follow more accounts.'}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
-        </section>
+        <div class="home-layout">
+          <main class="home-primary">
+            ${renderHomeStories()}
+            ${renderNotificationPermissionPrompt()}
+            <section class="home-feed" aria-live="polite">
+              ${state.feedLoading
+                ? '<div class="feed-loading"><i></i><i></i><i></i></div>'
+                : feed.length
+                  ? feed.map(renderPostCard).join('')
+                  : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${state.feedMode === 'favorites' ? 'Favorite an account from their profile to build this feed.' : 'Share the first post or follow more accounts.'}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
+            </section>
+          </main>
+          <aside class="home-suggestions" aria-label="Suggested accounts">
+            <button class="home-current-user" data-action="tab" data-tab="profile">
+              ${avatarHtml(state.me)}
+              <span><strong>${esc(state.me?.username || '')}</strong><small>${esc(state.me?.displayName || '')}</small></span>
+              <b>Profile</b>
+            </button>
+            <header><strong>Suggested for you</strong><button data-action="tab" data-tab="search">See all</button></header>
+            ${suggestions.map((user) => `<div class="home-suggestion-row">${avatarHtml(user)}<button class="home-suggestion-name" data-action="view-user-profile" data-username="${esc(user.username)}"><strong>${esc(user.username)}</strong><small>${esc(user.displayName || 'Suggested for you')}</small></button><button class="home-follow-link" data-action="${user.requested ? 'cancel-request' : 'send-request'}" data-user-id="${esc(user.id)}">${user.requested ? 'Requested' : 'Follow'}</button></div>`).join('')}
+            <small class="home-legal">About · Help · Privacy · Terms<br>© ${new Date().getFullYear()} New Around</small>
+          </aside>
+        </div>
       </section>
     `;
+  }
+
+  function clipPosts() {
+    const seen = new Set();
+    const friends = new Set([state.me?.id, ...(state.me?.following || []).map((user) => user.id)].filter(Boolean));
+    return [...(state.clips || []), ...(state.explorePosts || []), ...(state.homeFeed || [])].filter((post) => {
+      if (!post?.id || seen.has(post.id)) return false;
+      seen.add(post.id);
+      const items = postMediaItems(post);
+      return items.length === 1 && items[0].mediaType === 'video' && (state.clipMode !== 'friends' || friends.has(post.ownerId || postAuthor(post)?.id));
+    });
+  }
+
+  function renderClipCard(post) {
+    const item = postMediaItems(post)[0];
+    const media = item?.media;
+    const author = postAuthor(post);
+    if (!media?.url || !author) return '';
+    const crop = item.crop || {};
+    const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
+    const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
+    const aspect = String(crop.aspect || crop.aspectRatio || '');
+    const liked = Boolean(post.likedByMe);
+    const saved = Boolean(post.savedByMe);
+    const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
+    return `
+      <article class="clip-card" data-post-id="${esc(post.id)}">
+        <video class="clip-video" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline controls loop muted preload="metadata" aria-label="${esc(item.altText || `Clip by ${author.username}`)}"></video>
+        <div class="clip-shade" aria-hidden="true"></div>
+        <div class="clip-copy">
+          <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
+          ${post.description ? `<p>${renderMentionText(post.description)}</p>` : ''}
+        </div>
+        <div class="clip-actions">
+          <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}">${icon('heart')}<small data-clip-like-count>${showLikeCount ? Number(post.likeCount || 0).toLocaleString() : '—'}</small></button>
+          <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comments">${icon('comment')}<small data-clip-comment-count>${Number(post.commentCount || 0).toLocaleString()}</small></button>
+          ${post.allowReposts === false ? '' : `<button data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="Repost">${icon('repost')}<small data-clip-repost-count>${Number(post.repostCount || 0).toLocaleString()}</small></button>`}
+          <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
+          <button class="${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}">${icon('bookmark')}</button>
+          <button data-action="view-user-profile" data-username="${esc(author.username)}" aria-label="About ${esc(author.username)}">${icon('more')}</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderClipsPanel() {
+    const posts = clipPosts();
+    return `
+      <section class="clips-page" aria-label="Clips">
+        <header class="clips-head"><strong>Clips</strong><div class="clips-tabs" role="tablist"><button class="${state.clipMode === 'for_you' ? 'active' : ''}" data-action="set-clip-mode" data-mode="for_you" role="tab" aria-selected="${state.clipMode === 'for_you'}">For you</button><button class="${state.clipMode === 'friends' ? 'active' : ''}" data-action="set-clip-mode" data-mode="friends" role="tab" aria-selected="${state.clipMode === 'friends'}">Friends</button></div><button data-action="open-post-create" aria-label="Create a clip">${icon('camera')}</button></header>
+        <div class="clips-feed" data-scroll-memory="clips-feed">
+          ${posts.length ? posts.map(renderClipCard).join('') : `<div class="clips-empty">${icon('clips')}<strong>No clips yet</strong><small>Share a video post and it will appear here.</small><button class="primary" data-action="open-post-create">Share a video</button></div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  let clipPlaybackObserver = null;
+
+  function attachClipPlayback() {
+    clipPlaybackObserver?.disconnect();
+    clipPlaybackObserver = null;
+    const videos = Array.from(document.querySelectorAll('.clips-feed .clip-video'));
+    if (!videos.length || !('IntersectionObserver' in window)) return;
+    clipPlaybackObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        const video = entry.target;
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.72) {
+          videos.filter((item) => item !== video).forEach((item) => item.pause());
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      });
+    }, { root: document.querySelector('.clips-feed'), threshold: [0, 0.72, 1] });
+    videos.forEach((video) => clipPlaybackObserver.observe(video));
   }
 
   function composerFilterStyle(composer) {
     return postFilterStyle({ filter: composer.filter, adjustments: composer.adjustments });
   }
 
+  function activePostComposerItem(composer = state.postComposer) {
+    if (!composer?.items?.length) return null;
+    return composer.items[clamp(Number(composer.activeIndex || 0), 0, composer.items.length - 1)] || composer.items[0];
+  }
+
+  function syncPostComposerAliases(composer = state.postComposer) {
+    const item = activePostComposerItem(composer);
+    if (!composer || !item) return null;
+    Object.assign(composer, {
+      file: item.file,
+      previewUrl: item.previewUrl,
+      posterUrl: item.posterUrl,
+      name: item.name,
+      type: item.type,
+      isVideo: item.isVideo,
+      crop: item.crop,
+      filter: item.filter,
+      activeAdjustment: item.activeAdjustment,
+      adjustments: item.adjustments
+    });
+    composer.sizeError = composer.items.map((entry) => entry.sizeError).filter(Boolean).join(' ');
+    return item;
+  }
+
+  function postComposerAspectRatio(composer = state.postComposer) {
+    const item = activePostComposerItem(composer);
+    const name = item?.crop?.aspect || composer?.aspect || 'portrait';
+    if (name === 'square') return 1;
+    if (name === 'landscape') return 1.91;
+    if (name === 'portrait34') return 3 / 4;
+    if (name === 'mixed') return clamp(Number(composer?.items?.[0]?.naturalAspect || 1), 0.75, 1.91);
+    if (name === 'original') return clamp(Number(composer?.originalAspect || composer?.items?.[0]?.naturalAspect || 1), 0.75, 1.91);
+    return 4 / 5;
+  }
+
+  function syncPostComposerAspectFromOrder(composer = state.postComposer) {
+    if (!composer?.items?.length) return;
+    composer.originalAspect = clamp(Number(composer.items[0]?.naturalAspect || 1), 0.25, 4);
+    if (composer.aspect === 'original') {
+      const aspectRatio = `original:${clamp(composer.originalAspect, 0.75, 1.91).toFixed(4)}`;
+      composer.items.forEach((item) => Object.assign(item.crop, { aspect: 'original', aspectRatio }));
+    }
+    syncPostComposerAliases(composer);
+  }
+
   function postComposerMediaStyle(composer) {
-    return `transform:translate3d(${composer.crop.x}%,${composer.crop.y}%,0) scale(${composer.crop.zoom}) rotate(${composer.crop.rotation}deg);filter:${composerFilterStyle(composer)}`;
+    const fit = composer.crop.aspect === 'mixed' ? 'contain' : 'cover';
+    if (composer.isVideo) {
+      const x = clamp(Number(composer.crop.x || 0), -100, 100);
+      const y = clamp(Number(composer.crop.y || 0), -100, 100);
+      return `object-fit:${fit};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${composerFilterStyle(composer)}`;
+    }
+    const zoom = clamp(Number(composer.crop.zoom || 1), 1, 3);
+    const x = clamp(Number(composer.crop.x || 0), -100, 100);
+    const y = clamp(Number(composer.crop.y || 0), -100, 100);
+    return `object-fit:${fit};object-position:${50 + x / 2}% ${50 + y / 2}%;transform:scale(${zoom}) rotate(${composer.crop.rotation}deg);filter:${composerFilterStyle(composer)}`;
   }
 
   function updatePostComposerMediaStyle() {
     if (!state.postComposer) return;
+    syncPostComposerAliases(state.postComposer);
     const style = postComposerMediaStyle(state.postComposer);
     document.querySelectorAll('#post-composer-slot .post-composer-media > img, #post-composer-slot .post-composer-media > video').forEach((media) => {
       media.style.cssText = style;
     });
   }
 
+  function syncPostCropControls() {
+    const crop = state.postComposer?.crop;
+    if (!crop) return;
+    document.querySelectorAll('#post-composer-slot [data-post-crop]').forEach((input) => {
+      const value = crop[input.dataset.postCrop];
+      if (Number.isFinite(Number(value))) input.value = String(value);
+    });
+  }
+
   function renderPostComposerMedia(composer, taggable = false) {
+    syncPostComposerAliases(composer);
     const style = postComposerMediaStyle(composer);
+    const cropGesture = !taggable && Number(composer.stage || 1) === 1;
     const media = composer.isVideo
       ? `<video src="${esc(composer.previewUrl)}" ${composer.posterUrl ? `poster="${esc(composer.posterUrl)}"` : ''} style="${esc(style)}" muted playsinline controls preload="metadata"></video>`
       : `<img src="${esc(composer.previewUrl)}" style="${esc(style)}" alt="Post preview">`;
     return `
-      <div class="post-composer-media aspect-${esc(composer.crop.aspect || 'portrait')} ${taggable ? 'taggable' : ''}" ${taggable ? 'data-action="pick-post-tag-position"' : ''}>
+      <div class="post-composer-media aspect-${esc(composer.crop.aspect || 'portrait')} ${taggable ? 'taggable' : ''}" style="--post-aspect:${postComposerAspectRatio(composer)}" ${taggable ? 'data-action="pick-post-tag-position"' : cropGesture ? 'data-post-crop-surface' : ''}>
         ${media}
-        ${(composer.personTags || []).map((tag, index) => `<button class="post-tag-draft" style="left:${tag.x}%;top:${tag.y}%" data-action="remove-post-tag" data-tag-index="${index}">@${esc(tag.username)}</button>`).join('')}
-        ${composer.pendingTagPoint ? `<span class="post-tag-target" style="left:${composer.pendingTagPoint.x}%;top:${composer.pendingTagPoint.y}%"></span>` : ''}
+        ${cropGesture ? `<span class="post-crop-gesture-layer ${composer.isVideo ? 'is-video' : ''}" aria-hidden="true"></span>` : ''}
+        ${composer.items?.length > 1 ? `<span class="post-composer-count">${Number(composer.activeIndex || 0) + 1}/${composer.items.length}</span>` : ''}
+        ${(composer.personTags || []).map((tag, index) => ({ tag, index })).filter(({ tag }) => Number(tag.mediaIndex || 0) === Number(composer.activeIndex || 0)).map(({ tag, index }) => `<button class="post-tag-draft" style="left:${tag.x}%;top:${tag.y}%" data-action="remove-post-tag" data-tag-index="${index}">@${esc(tag.username)}</button>`).join('')}
+        ${composer.pendingTagPoint && Number(composer.pendingTagPoint.mediaIndex || 0) === Number(composer.activeIndex || 0) ? `<span class="post-tag-target" style="left:${composer.pendingTagPoint.x}%;top:${composer.pendingTagPoint.y}%"></span>` : ''}
+      </div>
+    `;
+  }
+
+  function renderPostMediaRail(composer) {
+    if (!composer.items?.length) return '';
+    return `
+      <div class="post-selection-rail" aria-label="Selected photos and videos">
+        ${composer.items.map((item, index) => `
+          <div class="post-selection-item ${index === composer.activeIndex ? 'active' : ''}">
+            <button class="post-selection-thumb" data-action="select-post-media" data-media-index="${index}" aria-label="Edit item ${index + 1}">
+              ${item.isVideo ? `<video src="${esc(item.previewUrl)}" muted playsinline preload="metadata"></video><i>${icon('play')}</i>` : `<img src="${esc(item.previewUrl)}" alt="">`}
+              <b>${index + 1}</b>
+            </button>
+            ${composer.items.length > 1 ? `<button class="post-selection-remove" data-action="remove-post-media" data-media-index="${index}" aria-label="Remove item ${index + 1}">${icon('x')}</button>` : ''}
+            ${index === composer.activeIndex && composer.items.length > 1 ? `<span class="post-selection-order"><button data-action="move-post-media-previous" data-media-index="${index}" aria-label="Move item earlier" ${index === 0 ? 'disabled' : ''}>${icon('back')}</button><button data-action="move-post-media-next" data-media-index="${index}" aria-label="Move item later" ${index === composer.items.length - 1 ? 'disabled' : ''}>${icon('back')}</button></span>` : ''}
+          </div>
+        `).join('')}
+        ${composer.items.length < 20 ? `<button class="post-selection-add" data-action="add-post-media" aria-label="Add more photos or videos">${icon('plus')}<small>Add</small></button>` : ''}
       </div>
     `;
   }
@@ -2034,9 +2355,9 @@
     const adjustment = composer.activeAdjustment || 'saturation';
     return `
       <div class="post-composer-overlay">
-        <section class="post-composer-page" role="dialog" aria-modal="true" aria-label="Create post">
+        <section class="post-composer-page ${state.postPublishing ? 'is-publishing' : ''}" role="dialog" aria-modal="true" aria-label="Create post" aria-busy="${state.postPublishing}">
           <header class="post-composer-head">
-            <button data-action="${stage === 1 ? 'close-post-composer' : 'post-composer-back'}" aria-label="${stage === 1 ? 'Close' : 'Back'}">${stage === 1 ? icon('x') : icon('back')}</button>
+            <button data-action="${state.postPublishing || stage === 1 ? 'close-post-composer' : 'post-composer-back'}" aria-label="${state.postPublishing ? 'Cancel upload' : stage === 1 ? 'Close' : 'Back'}">${state.postPublishing || stage === 1 ? icon('x') : icon('back')}</button>
             <span><strong>${stage === 1 ? 'Crop' : stage === 2 ? 'Look' : 'Share'}</strong><small>Step ${stage} of 3</small></span>
             ${stage < 3 ? `<button class="post-next" data-action="post-composer-next">Next</button>` : `<button class="post-next" data-action="publish-post" ${state.postPublishing || composer.sizeError ? 'disabled' : ''}>${state.postPublishing ? 'Sharing…' : composer.sizeError ? 'Too large' : 'Share'}</button>`}
           </header>
@@ -2047,19 +2368,22 @@
           ${stage === 1 ? `
             <div class="post-editor-body">
               ${renderPostComposerMedia(composer)}
+              ${renderPostMediaRail(composer)}
               <div class="post-crop-controls">
+                <p class="post-crop-hint">${composer.isVideo ? 'Drag to choose the video framing. Playback uses your browser\'s native controls.' : 'Drag to reposition. Pinch or use the slider to zoom.'}</p>
                 <div class="post-aspect-row">
-                  ${[['square','1:1'],['portrait','4:5'],['original','Original']].map(([value,label]) => `<button class="${composer.crop.aspect === value ? 'active' : ''}" data-action="set-post-aspect" data-aspect="${value}">${label}</button>`).join('')}
+                  ${[['mixed','Mixed'],['original','Original'],['square','1:1'],['portrait','4:5'],['portrait34','3:4'],['landscape','1.91:1']].map(([value,label]) => `<button class="${composer.crop.aspect === value ? 'active' : ''}" data-action="set-post-aspect" data-aspect="${value}">${label}</button>`).join('')}
                 </div>
-                <label>Zoom <input type="range" min="1" max="3" step=".01" value="${composer.crop.zoom}" data-post-crop="zoom"></label>
-                <label>Horizontal <input type="range" min="-50" max="50" step="1" value="${composer.crop.x}" data-post-crop="x"></label>
-                <label>Vertical <input type="range" min="-50" max="50" step="1" value="${composer.crop.y}" data-post-crop="y"></label>
-                <button class="secondary" data-action="rotate-post-media">${icon('rotate')} Rotate</button>
+                ${composer.isVideo ? '' : `<label>Zoom <input type="range" min="1" max="3" step=".01" value="${composer.crop.zoom}" data-post-crop="zoom"></label>`}
+                <label>Horizontal <input type="range" min="-100" max="100" step="1" value="${composer.crop.x}" data-post-crop="x"></label>
+                <label>Vertical <input type="range" min="-100" max="100" step="1" value="${composer.crop.y}" data-post-crop="y"></label>
+                <div class="post-crop-actions ${composer.isVideo ? 'single' : ''}"><button class="secondary" data-action="reset-post-crop">Reset</button>${composer.isVideo ? '' : `<button class="secondary" data-action="rotate-post-media">${icon('rotate')} Rotate</button>`}</div>
               </div>
             </div>
           ` : stage === 2 ? `
             <div class="post-editor-body">
               ${renderPostComposerMedia(composer)}
+              ${renderPostMediaRail(composer)}
               <div class="post-filter-rail" data-scroll-memory="post-filters">
                 ${[['normal','Original'],['vivid','Vivid'],['warm','Warm'],['cool','Cool'],['mono','Mono'],['fade','Fade'],['noir','Noir']].map(([value,label]) => `<button class="${composer.filter === value ? 'active' : ''}" data-action="set-post-filter" data-filter="${value}"><span style="filter:${postFilterStyle({filter:value})}">${composer.isVideo ? `<img class="post-video-filter-poster" data-video-poster ${composer.posterUrl ? `src="${esc(composer.posterUrl)}"` : 'hidden'} alt=""><i class="post-video-filter-placeholder" ${composer.posterUrl ? 'hidden' : ''}>${icon('play')}</i>` : `<img src="${esc(composer.previewUrl)}" alt="">`}</span><small>${label}</small></button>`).join('')}
               </div>
@@ -2072,6 +2396,7 @@
             <div class="post-details-layout">
               <div>
                 ${renderPostComposerMedia(composer, true)}
+                ${renderPostMediaRail(composer)}
                 <small class="post-tag-help">Tap the photo or video to place a person tag.</small>
                 ${composer.pendingTagPoint ? `
                   <div class="post-tag-picker">
@@ -2083,9 +2408,13 @@
               </div>
               <div class="post-details-fields">
                 <label>Title <input id="post-title" maxlength="100" value="${esc(composer.title)}" placeholder="Give this post a title"></label>
-                <label>Description <textarea id="post-description" maxlength="2200" placeholder="Write a description…">${esc(composer.description)}</textarea></label>
+                <label>Caption <textarea id="post-description" maxlength="2200" placeholder="Write a caption…">${esc(composer.description)}</textarea></label>
                 <label>Tags <input id="post-hashtags" maxlength="300" value="${esc(composer.hashtags)}" placeholder="#travel #summer"></label>
+                <label>Location <input id="post-location" maxlength="100" value="${esc(composer.location || '')}" placeholder="Add a location"></label>
+                <label>Alt text · item ${Number(composer.activeIndex || 0) + 1}<textarea id="post-alt-text" maxlength="500" placeholder="Describe this media for people who use screen readers">${esc(activePostComposerItem(composer)?.altText || '')}</textarea></label>
                 <label class="switch-row compact"><span><strong>Allow reposts</strong><small>Other people can share this post to their profile.</small></span><input id="post-allow-reposts" type="checkbox" ${composer.allowReposts ? 'checked' : ''}></label>
+                <label class="switch-row compact"><span><strong>Allow comments</strong><small>People can reply to this post.</small></span><input id="post-allow-comments" type="checkbox" ${composer.allowComments ? 'checked' : ''}></label>
+                <label class="switch-row compact"><span><strong>Hide like counts</strong><small>You will still be able to see the count.</small></span><input id="post-hide-like-counts" type="checkbox" ${composer.hideLikeCounts ? 'checked' : ''}></label>
               </div>
             </div>
           `}
@@ -5318,18 +5647,22 @@
           </div>
         `}
       </div>
-      <form class="story-comment-composer post-comment-composer" data-form="post-comment" data-post-id="${esc(post.id)}" aria-busy="${posting}">
-        <div class="story-comment-quick-reactions" aria-label="Quick reactions">
-          ${quickReactions.map((emoji) => `<button type="button" data-action="add-post-comment-emoji" data-emoji="${emoji}" ${posting ? 'disabled' : ''}>${emoji}</button>`).join('')}
-        </div>
-        <div class="story-comment-box">
-          <button type="button" class="story-comment-composer-avatar" data-action="view-own-profile" aria-label="View your profile" ${posting ? 'disabled' : ''}>${avatarHtml(state.me)}</button>
-          <div class="story-comment-field">
-            <input id="post-comment-input" name="comment" maxlength="500" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}" ${posting ? 'disabled' : ''}>
-            <button class="story-comment-post post-comment-submit" type="submit" ${posting || !String(sheet.commentDraft || '').trim() ? 'disabled' : ''}>Post</button>
+      ${post.allowComments === false ? `
+        <div class="post-comments-disabled">${icon('comment')}<span><strong>Comments are off</strong><small>The author has limited replies on this post.</small></span></div>
+      ` : `
+        <form class="story-comment-composer post-comment-composer" data-form="post-comment" data-post-id="${esc(post.id)}" aria-busy="${posting}">
+          <div class="story-comment-quick-reactions" aria-label="Quick reactions">
+            ${quickReactions.map((emoji) => `<button type="button" data-action="add-post-comment-emoji" data-emoji="${emoji}" ${posting ? 'disabled' : ''}>${emoji}</button>`).join('')}
           </div>
-        </div>
-      </form>
+          <div class="story-comment-box">
+            <button type="button" class="story-comment-composer-avatar" data-action="view-own-profile" aria-label="View your profile" ${posting ? 'disabled' : ''}>${avatarHtml(state.me)}</button>
+            <div class="story-comment-field">
+              <input id="post-comment-input" name="comment" maxlength="500" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}" ${posting ? 'disabled' : ''}>
+              <button class="story-comment-post post-comment-submit" type="submit" ${posting || !String(sheet.commentDraft || '').trim() ? 'disabled' : ''}>Post</button>
+            </div>
+          </div>
+        </form>
+      `}
     `;
   }
 
@@ -6235,6 +6568,13 @@
     }
   }
 
+  async function loadClips(options = {}) {
+    const data = await api('/api/clips?limit=60');
+    state.clips = data.posts || [];
+    if (options.render && state.tab === 'clips') updateSidebar();
+    return state.clips;
+  }
+
   async function loadNotes(options = {}) {
     const data = await api('/api/notes');
     state.notes = data.notes || [];
@@ -6258,6 +6598,7 @@
     await Promise.all([
       loadFeed(state.feedMode, { render: false }).catch(() => { state.homeFeed = []; state.feedLoading = false; }),
       loadExplore().catch(() => { state.explorePosts = []; state.exploreLoading = false; }),
+      loadClips().catch(() => { state.clips = []; }),
       loadNotes().catch(() => { state.notes = []; }),
       loadProfilePosts(state.me, state.profileMediaTab, { render: false }).catch(() => [])
     ]);
@@ -6268,6 +6609,7 @@
     return [
       ...state.homeFeed,
       ...state.explorePosts,
+      ...state.clips,
       ...Array.from(state.profilePosts.values()).flat(),
       ...state.accountActivity.reposts.map((item) => item.post || item)
     ].filter(Boolean);
@@ -6282,44 +6624,55 @@
     const replace = (posts) => (posts || []).map((post) => post.id === updatedPost.id ? { ...post, ...updatedPost } : post);
     state.homeFeed = replace(state.homeFeed);
     state.explorePosts = replace(state.explorePosts);
+    state.clips = replace(state.clips);
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, replace(posts));
   }
 
   function syncPostEngagement(post, changedAction = '') {
     if (!post?.id) return false;
     const escapedId = window.CSS?.escape ? CSS.escape(String(post.id)) : String(post.id).replace(/"/g, '\\"');
-    const card = document.querySelector(`.feed-post[data-post-id="${escapedId}"]`);
-    if (!card) return false;
+    const cards = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"], .clip-card[data-post-id="${escapedId}"]`));
+    if (!cards.length) return false;
     const states = {
       like: { active: Boolean(post.likedByMe), activeLabel: 'Unlike', idleLabel: 'Like' },
       save: { active: Boolean(post.savedByMe), activeLabel: 'Unsave', idleLabel: 'Save' },
       repost: { active: Boolean(post.repostedByMe), activeLabel: 'Undo repost', idleLabel: 'Repost' }
     };
-    for (const [action, config] of Object.entries(states)) {
-      const button = card.querySelector(`[data-action="toggle-post-${action}"]`);
-      if (!button) continue;
-      button.classList.remove('is-pending');
-      button.classList.toggle('active', config.active);
-      button.setAttribute('aria-pressed', config.active ? 'true' : 'false');
-      button.setAttribute('aria-label', config.active ? config.activeLabel : config.idleLabel);
-      if (action === changedAction) {
-        button.classList.remove('post-action-pop');
-        void button.offsetWidth;
-        button.classList.add('post-action-pop');
+    for (const card of cards) {
+      for (const [action, config] of Object.entries(states)) {
+        const button = card.querySelector(`[data-action="toggle-post-${action}"]`);
+        if (!button) continue;
+        button.classList.remove('is-pending');
+        button.classList.toggle('active', config.active);
+        button.setAttribute('aria-pressed', config.active ? 'true' : 'false');
+        button.setAttribute('aria-label', config.active ? config.activeLabel : config.idleLabel);
+        if (action === changedAction) {
+          button.classList.remove('post-action-pop');
+          void button.offsetWidth;
+          button.classList.add('post-action-pop');
+        }
       }
-    }
-    const likeCount = card.querySelector('[data-post-like-count]');
-    if (likeCount) likeCount.textContent = `${Number(post.likeCount || 0).toLocaleString()} likes`;
-    const commentCount = card.querySelector('[data-post-comment-count]');
-    if (commentCount) commentCount.textContent = `${Number(post.commentCount ?? post.comments?.length ?? 0)} comments`;
-    const repostCount = card.querySelector('[data-post-repost-count]');
-    if (repostCount) repostCount.textContent = `${Number(post.repostCount || 0)} reposts`;
-    const currentComments = card.querySelector('.post-comments');
-    if (currentComments) {
-      const template = document.createElement('template');
-      template.innerHTML = renderPostComments(post).trim();
-      const nextComments = template.content.firstElementChild;
-      if (nextComments) currentComments.replaceWith(nextComments);
+      const likeCount = card.querySelector('[data-post-like-count]');
+      if (likeCount) likeCount.textContent = post.hideLikeCounts && postAuthor(post)?.id !== state.me?.id
+        ? 'Like count hidden'
+        : `${Number(post.likeCount || 0).toLocaleString()} likes`;
+      const commentCount = card.querySelector('[data-post-comment-count]');
+      if (commentCount) commentCount.textContent = `${Number(post.commentCount ?? post.comments?.length ?? 0)} comments`;
+      const repostCount = card.querySelector('[data-post-repost-count]');
+      if (repostCount) repostCount.textContent = `${Number(post.repostCount || 0)} reposts`;
+      const clipLikeCount = card.querySelector('[data-clip-like-count]');
+      if (clipLikeCount) clipLikeCount.textContent = post.hideLikeCounts && postAuthor(post)?.id !== state.me?.id ? '—' : Number(post.likeCount || 0).toLocaleString();
+      const clipCommentCount = card.querySelector('[data-clip-comment-count]');
+      if (clipCommentCount) clipCommentCount.textContent = Number(post.commentCount ?? post.comments?.length ?? 0).toLocaleString();
+      const clipRepostCount = card.querySelector('[data-clip-repost-count]');
+      if (clipRepostCount) clipRepostCount.textContent = Number(post.repostCount || 0).toLocaleString();
+      const currentComments = card.querySelector('.post-comments');
+      if (currentComments) {
+        const template = document.createElement('template');
+        template.innerHTML = renderPostComments(post).trim();
+        const nextComments = template.content.firstElementChild;
+        if (nextComments) currentComments.replaceWith(nextComments);
+      }
     }
     return true;
   }
@@ -6331,9 +6684,17 @@
     if (!composer) return;
     composer.uploadController?.abort();
     unloadPostComposerVideos();
-    const urls = new Set([composer.previewUrl, composer.posterUrl].filter((url) => String(url || '').startsWith('blob:')));
+    const urls = new Set([
+      composer.previewUrl,
+      composer.posterUrl,
+      ...(composer.items || []).flatMap((item) => [item.previewUrl, item.posterUrl])
+    ].filter((url) => String(url || '').startsWith('blob:')));
     composer.previewUrl = '';
     composer.posterUrl = '';
+    (composer.items || []).forEach((item) => {
+      item.previewUrl = '';
+      item.posterUrl = '';
+    });
     urls.forEach((url) => URL.revokeObjectURL(url));
   }
 
@@ -6399,6 +6760,7 @@
   }
 
   function applyPostVideoPoster(composer) {
+    syncPostComposerAliases(composer);
     if (!composer?.posterUrl || state.postComposer !== composer) return;
     document.querySelectorAll('#post-composer-slot [data-video-poster]').forEach((image) => {
       image.src = composer.posterUrl;
@@ -6457,61 +6819,149 @@
     }[extension] || declared;
   }
 
-  async function beginPostComposer(file = null) {
-    if (!file) {
-      openPostMediaPicker();
-      return;
-    }
+  function createPostComposerItem(file, aspect = 'original') {
     const type = postMediaType(file);
-    if (!type.startsWith('image/') && !type.startsWith('video/')) {
-      throw new Error('Choose a photo or video.');
-    }
+    if (!type.startsWith('image/') && !type.startsWith('video/')) throw new Error(`${file?.name || 'That file'} is not a supported photo or video.`);
     const isVideo = type.startsWith('video/');
     const maximum = isVideo ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES;
-    if (state.postComposer) releasePostComposerMedia(state.postComposer);
     const previewUrl = URL.createObjectURL(file);
-    const composer = {
-      stage: 1,
+    return {
       file,
       previewUrl,
       posterUrl: '',
-      uploadController: null,
       sizeError: file.size > maximum
-        ? `This ${isVideo ? 'video' : 'image'} is ${Math.ceil(file.size / 1024 / 1024)} MB. You can edit it, but choose one under ${Math.floor(maximum / 1024 / 1024)} MB to share.`
+        ? `${file.name || `This ${isVideo ? 'video' : 'image'}`} is ${Math.ceil(file.size / 1024 / 1024)} MB. Choose one under ${Math.floor(maximum / 1024 / 1024)} MB to share.`
         : '',
       name: file.name || (isVideo ? 'post.mp4' : 'post.jpg'),
       type,
       lastModified: file.lastModified || null,
       isVideo,
-      crop: { aspect: 'portrait', zoom: 1, x: 0, y: 0, rotation: 0 },
+      naturalAspect: 1,
+      altText: '',
+      crop: { aspect, aspectRatio: aspect, zoom: 1, x: 0, y: 0, rotation: 0 },
       filter: 'normal',
       activeAdjustment: 'saturation',
-      adjustments: { brightness: 100, contrast: 100, saturation: 100, warmth: 0 },
+      adjustments: { brightness: 100, contrast: 100, saturation: 100, warmth: 0 }
+    };
+  }
+
+  function readPostMediaAspect(item) {
+    return new Promise((resolve) => {
+      const media = item.isVideo ? document.createElement('video') : new Image();
+      let settled = false;
+      const timeout = setTimeout(() => finish(1), 5000);
+      const finish = (ratio) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (item.isVideo) {
+          media.pause();
+          media.removeAttribute('src');
+          media.load();
+        } else {
+          media.src = '';
+        }
+        resolve(clamp(Number(ratio) || 1, 0.25, 4));
+      };
+      const ready = () => finish(item.isVideo
+        ? Number(media.videoWidth || 1) / Number(media.videoHeight || 1)
+        : Number(media.naturalWidth || 1) / Number(media.naturalHeight || 1));
+      media.addEventListener(item.isVideo ? 'loadedmetadata' : 'load', ready, { once: true });
+      media.addEventListener('error', () => finish(1), { once: true });
+      if (item.isVideo) {
+        media.muted = true;
+        media.preload = 'metadata';
+      }
+      media.src = item.previewUrl;
+      if (item.isVideo) media.load();
+    });
+  }
+
+  async function hydratePostComposerItem(composer, item) {
+    const [naturalAspect, posterUrl] = await Promise.all([
+      readPostMediaAspect(item),
+      item.isVideo ? createVideoPoster(item.previewUrl) : Promise.resolve('')
+    ]);
+    if (state.postComposer !== composer || !composer.items.includes(item)) {
+      if (String(posterUrl || '').startsWith('blob:')) URL.revokeObjectURL(posterUrl);
+      return;
+    }
+    item.naturalAspect = naturalAspect;
+    item.posterUrl = posterUrl;
+    if (composer.aspect === 'mixed') Object.assign(item.crop, { aspect: 'mixed', aspectRatio: `mixed:${clamp(naturalAspect, 0.75, 1.91).toFixed(4)}` });
+    if (composer.items[0] === item) {
+      composer.originalAspect = naturalAspect;
+      if (composer.aspect === 'original') {
+        const aspectRatio = `original:${clamp(naturalAspect, 0.75, 1.91).toFixed(4)}`;
+        composer.items.forEach((entry) => Object.assign(entry.crop, { aspect: 'original', aspectRatio }));
+      }
+      if (composer.aspect === 'original' || composer.aspect === 'mixed') {
+        document.querySelector('#post-composer-slot .post-composer-media')?.style.setProperty('--post-aspect', String(postComposerAspectRatio(composer)));
+      }
+    }
+    syncPostComposerAliases(composer);
+    if (activePostComposerItem(composer) === item && item.isVideo) applyPostVideoPoster(composer);
+  }
+
+  async function appendPostComposerMedia(files) {
+    const composer = state.postComposer;
+    if (!composer) return beginPostComposer(files);
+    const selectedFiles = Array.from(files || []).filter(Boolean);
+    if (!selectedFiles.length) return;
+    if (composer.items.length + selectedFiles.length > 20) throw new Error('You can share up to 20 photos and videos in one post.');
+    const newItems = selectedFiles.map((file) => createPostComposerItem(file, composer.aspect || 'portrait'));
+    if (composer.aspect === 'original') {
+      const aspectRatio = `original:${clamp(Number(composer.originalAspect || 1), 0.75, 1.91).toFixed(4)}`;
+      newItems.forEach((item) => Object.assign(item.crop, { aspect: 'original', aspectRatio }));
+    }
+    composer.items.push(...newItems);
+    composer.activeIndex = composer.items.length - newItems.length;
+    syncPostComposerAliases(composer);
+    updatePostComposerSlot();
+    await Promise.all(newItems.map((item) => hydratePostComposerItem(composer, item)));
+  }
+
+  async function beginPostComposer(file = null) {
+    if (!file) {
+      openPostMediaPicker();
+      return;
+    }
+    const selectedFiles = Array.isArray(file) ? file.filter(Boolean) : Array.from(typeof file?.length === 'number' && !file?.name ? file : [file]).filter(Boolean);
+    if (!selectedFiles.length) return;
+    if (selectedFiles.length > 20) throw new Error('You can share up to 20 photos and videos in one post.');
+    const items = selectedFiles.map((selectedFile) => createPostComposerItem(selectedFile));
+    if (state.postComposer) releasePostComposerMedia(state.postComposer);
+    const composer = {
+      stage: 1,
+      items,
+      activeIndex: 0,
+      aspect: 'original',
+      originalAspect: 1,
+      uploadController: null,
       title: '',
       description: '',
       hashtags: '',
+      location: '',
       allowReposts: state.me?.allowReposts !== false,
+      allowComments: true,
+      hideLikeCounts: false,
       personTags: [],
       pendingTagPoint: null
     };
+    syncPostComposerAliases(composer);
     state.postComposer = composer;
     state.postPublishing = false;
     updatePostComposerSlot();
-    if (isVideo) {
-      const posterUrl = await createVideoPoster(previewUrl);
-      if (state.postComposer === composer) {
-        composer.posterUrl = posterUrl;
-        applyPostVideoPoster(composer);
-      } else if (String(posterUrl || '').startsWith('blob:')) {
-        URL.revokeObjectURL(posterUrl);
-      }
-    }
+    await Promise.all(items.map((item) => hydratePostComposerItem(composer, item)));
   }
 
   function closePostComposer() {
     const composer = state.postComposer;
     state.postComposer = null;
     state.postPublishing = false;
+    state.postCropDrag = null;
+    state.postCropGesture = null;
+    postCropPointers.clear();
     releasePostComposerMedia(composer);
     updatePostComposerSlot();
   }
@@ -6519,50 +6969,97 @@
   async function publishPost() {
     const composer = state.postComposer;
     if (!composer || state.postPublishing) return;
+    syncPostComposerAliases(composer);
     if (composer.sizeError) throw new Error(composer.sizeError);
     composer.title = document.getElementById('post-title')?.value.slice(0, 100) || composer.title;
     composer.description = document.getElementById('post-description')?.value.slice(0, 2200) || composer.description;
     composer.hashtags = document.getElementById('post-hashtags')?.value.slice(0, 300) || composer.hashtags;
+    composer.location = (document.getElementById('post-location')?.value ?? composer.location).slice(0, 100);
+    const activeItem = activePostComposerItem(composer);
+    if (activeItem) activeItem.altText = (document.getElementById('post-alt-text')?.value ?? activeItem.altText).slice(0, 500);
     composer.allowReposts = document.getElementById('post-allow-reposts')?.checked !== false;
+    composer.allowComments = document.getElementById('post-allow-comments')?.checked !== false;
+    composer.hideLikeCounts = document.getElementById('post-hide-like-counts')?.checked === true;
+    const publishItems = composer.items.map((item) => ({
+      file: item.file,
+      type: item.type,
+      crop: { ...item.crop },
+      filter: item.filter,
+      adjustments: { ...item.adjustments },
+      altText: item.altText || ''
+    }));
+    const publishDetails = {
+      title: composer.title,
+      description: composer.description,
+      hashtags: composer.hashtags,
+      location: composer.location,
+      allowReposts: composer.allowReposts,
+      allowComments: composer.allowComments,
+      hideLikeCounts: composer.hideLikeCounts,
+      personTags: composer.personTags.map(({ userId, mediaIndex, x, y }) => ({ userId, mediaIndex, x, y }))
+    };
     const controller = new AbortController();
     composer.uploadController = controller;
     setPostPublishing(true);
+    updatePostComposerSlot();
     let pendingFileId = '';
+    const pendingFileIds = [];
     try {
-      const uploaded = await uploadPostMedia(composer.file, composer.type, controller.signal);
-      pendingFileId = uploaded.file?.id || uploaded.fileId || '';
-      if (!pendingFileId) throw new Error('The video upload did not return a file ID.');
-      if (state.postComposer !== composer) throw new DOMException('Post upload cancelled.', 'AbortError');
+      for (let index = 0; index < publishItems.length; index += 1) {
+        const item = publishItems[index];
+        const button = document.querySelector('#post-composer-slot [data-action="publish-post"]');
+        if (button) button.textContent = `Uploading ${index + 1}/${publishItems.length}`;
+        const uploaded = await uploadPostMedia(item.file, item.type, controller.signal);
+        pendingFileId = uploaded.file?.id || uploaded.fileId || '';
+        if (!pendingFileId) throw new Error('A media upload did not return a file ID.');
+        pendingFileIds.push(pendingFileId);
+        if (state.postComposer !== composer) throw new DOMException('Post upload cancelled.', 'AbortError');
+      }
       const data = await api('/api/posts', {
         method: 'POST',
         signal: controller.signal,
         body: {
-          fileId: pendingFileId,
-          title: composer.title,
-          description: composer.description,
-          hashtags: composer.hashtags,
-          personTags: composer.personTags.map(({ userId, x, y }) => ({ userId, x, y })),
-          allowReposts: composer.allowReposts,
-          crop: composer.crop,
-          filter: composer.filter,
-          adjustments: composer.adjustments,
-          edits: { crop: composer.crop, filter: composer.filter, adjustments: composer.adjustments }
+          fileId: pendingFileIds[0] || pendingFileId,
+          fileIds: pendingFileIds,
+          mediaEdits: publishItems.map((item) => ({
+            crop: item.crop,
+            filter: item.filter,
+            adjustments: item.adjustments,
+            edits: { crop: item.crop, filter: item.filter, adjustments: item.adjustments }
+          })),
+          title: publishDetails.title,
+          description: publishDetails.description,
+          hashtags: publishDetails.hashtags,
+          location: publishDetails.location,
+          altTexts: publishItems.map((item) => item.altText),
+          personTags: publishDetails.personTags,
+          allowReposts: publishDetails.allowReposts,
+          allowComments: publishDetails.allowComments,
+          hideLikeCounts: publishDetails.hideLikeCounts,
+          crop: publishItems[0].crop,
+          filter: publishItems[0].filter,
+          adjustments: publishItems[0].adjustments,
+          edits: { crop: publishItems[0].crop, filter: publishItems[0].filter, adjustments: publishItems[0].adjustments }
         }
       });
       pendingFileId = '';
+      pendingFileIds.length = 0;
       if (data.user) state.me = data.user;
       state.postComposer = null;
       state.postPublishing = false;
       releasePostComposerMedia(composer);
       updatePostComposerSlot();
-      await Promise.all([loadFeed(state.feedMode, { render: false }), loadExplore(), loadProfilePosts(state.me, 'posts', { render: false })]);
+      await Promise.all([loadFeed(state.feedMode, { render: false }), loadExplore(), loadClips(), loadProfilePosts(state.me, 'posts', { render: false })]);
       state.profileMediaTab = 'posts';
       state.tab = 'home';
       updateSidebar();
       pushToast({ key: `post-${data.post?.id || Date.now()}`, kind: 'social', title: 'Post shared', body: 'Your photo or video is now live.' });
     } catch (error) {
-      await discardPendingPostMedia(pendingFileId);
-      if (state.postComposer === composer) setPostPublishing(false);
+      await Promise.all(Array.from(new Set([...pendingFileIds, pendingFileId].filter(Boolean))).map(discardPendingPostMedia));
+      if (state.postComposer === composer) {
+        setPostPublishing(false);
+        updatePostComposerSlot();
+      }
       if (error?.name === 'AbortError') return;
       throw error;
     } finally {
@@ -6572,20 +7069,47 @@
 
   async function togglePostAction(postId, action) {
     const escapedId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
-    const button = document.querySelector(`.feed-post[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"]`);
-    if (button?.classList.contains('is-pending')) return;
-    button?.classList.add('is-pending');
+    const buttons = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"], .clip-card[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"]`));
+    if (buttons.some((button) => button.classList.contains('is-pending'))) return;
+    buttons.forEach((button) => button.classList.add('is-pending'));
     let data;
     try {
       data = await api(`/api/posts/${encodeURIComponent(postId)}/${action}`, { method: 'POST' });
     } catch (error) {
-      button?.classList.remove('is-pending');
+      buttons.forEach((button) => button.classList.remove('is-pending'));
       throw error;
     }
     replacePost(data.post);
-    syncPostEngagement(data.post, action);
+    const synced = syncPostEngagement(data.post, action);
+    if (!synced && state.tab === 'clips') {
+      renderSidebarState();
+      requestAnimationFrame(attachClipPlayback);
+    }
     if (action === 'save') await loadProfilePosts(state.me, 'saved', { render: false }).catch(() => []);
     if (action === 'repost') await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
+  }
+
+  async function sharePost(postId) {
+    const post = postById(postId);
+    if (!post) return;
+    const author = postAuthor(post);
+    const url = new URL(accountProfileHref(author), location.origin);
+    url.searchParams.set('post', post.id);
+    const shareData = {
+      title: post.title || `Post by @${author?.username || 'user'}`,
+      text: String(post.description || '').slice(0, 180),
+      url: url.toString()
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+      }
+    }
+    await navigator.clipboard?.writeText?.(shareData.url);
+    pushToast({ key: `post-link-${post.id}`, kind: 'social', title: 'Link copied', body: 'The post link is ready to share.' });
   }
 
   async function commentOnPost(postId, text) {
@@ -6657,6 +7181,7 @@
     state.actionSheet = null;
     state.homeFeed = state.homeFeed.filter((post) => post.id !== postId);
     state.explorePosts = state.explorePosts.filter((post) => post.id !== postId);
+    state.clips = state.clips.filter((post) => post.id !== postId);
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, posts.filter((post) => post.id !== postId));
     await loadContactsAndChats();
     updateActionSheetSlot();
@@ -8833,8 +9358,8 @@
     const cachedConversation = conversationType && conversationId
       ? state.conversationCache.get(conversationCacheKey(conversationType, conversationId))
       : null;
-    state.tab = ['home', 'chats', 'search', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'home';
-    state.lastTab = ['home', 'chats', 'search', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
+    state.tab = ['home', 'chats', 'search', 'clips', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'home';
+    state.lastTab = ['home', 'chats', 'search', 'clips', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
     state.profileSocialView = view?.profileSocialView || null;
     state.activePeer = peer;
     state.activeGroup = group;
@@ -9953,6 +10478,8 @@
     if (!next) return false;
     current.replaceWith(next);
     restorePersistentScroll();
+    initializePostCarousels(next);
+    if (state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
     return true;
   }
 
@@ -10114,6 +10641,7 @@
     if (target.matches('a[data-action]') && (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)) return;
     if (target.matches('button, a[data-action]')) event.preventDefault();
     const action = target.dataset.action;
+    if (state.postPublishing && target.closest('#post-composer-slot') && action !== 'close-post-composer') return;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-note-composer' && target.classList.contains('note-composer-overlay') && event.target.closest('[data-stop-close]')) return;
@@ -10177,10 +10705,16 @@
         state.feedMenuOpen = false;
         await loadFeed(target.dataset.mode, { render: true });
       }
+      if (action === 'set-clip-mode') {
+        state.clipMode = target.dataset.mode === 'friends' ? 'friends' : 'for_you';
+        updateSidebar();
+        requestAnimationFrame(attachClipPlayback);
+      }
       if (action === 'open-post-create') {
         state.feedMenuOpen = false;
         openPostMediaPicker();
       }
+      if (action === 'add-post-media') openPostMediaPicker({ append: true });
       if (action === 'close-post-composer') closePostComposer();
       if (action === 'post-composer-back' && state.postComposer) {
         state.postComposer.stage = Math.max(1, state.postComposer.stage - 1);
@@ -10190,27 +10724,84 @@
         state.postComposer.stage = Math.min(3, state.postComposer.stage + 1);
         updatePostComposerSlot();
       }
+      if (action === 'select-post-media' && state.postComposer) {
+        state.postComposer.activeIndex = clamp(Number(target.dataset.mediaIndex || 0), 0, state.postComposer.items.length - 1);
+        state.postComposer.pendingTagPoint = null;
+        syncPostComposerAliases(state.postComposer);
+        updatePostComposerSlot();
+      }
+      if (action === 'remove-post-media' && state.postComposer?.items?.length > 1) {
+        const index = clamp(Number(target.dataset.mediaIndex || 0), 0, state.postComposer.items.length - 1);
+        const [removed] = state.postComposer.items.splice(index, 1);
+        [removed?.previewUrl, removed?.posterUrl].filter((url) => String(url || '').startsWith('blob:')).forEach((url) => URL.revokeObjectURL(url));
+        state.postComposer.personTags = state.postComposer.personTags
+          .filter((tag) => Number(tag.mediaIndex || 0) !== index)
+          .map((tag) => Number(tag.mediaIndex || 0) > index ? { ...tag, mediaIndex: Number(tag.mediaIndex || 0) - 1 } : tag);
+        state.postComposer.pendingTagPoint = null;
+        state.postComposer.activeIndex = clamp(state.postComposer.activeIndex - (index <= state.postComposer.activeIndex ? 1 : 0), 0, state.postComposer.items.length - 1);
+        syncPostComposerAspectFromOrder(state.postComposer);
+        updatePostComposerSlot();
+      }
+      if ((action === 'move-post-media-previous' || action === 'move-post-media-next') && state.postComposer?.items?.length > 1) {
+        const from = clamp(Number(target.dataset.mediaIndex || 0), 0, state.postComposer.items.length - 1);
+        const to = clamp(from + (action.endsWith('previous') ? -1 : 1), 0, state.postComposer.items.length - 1);
+        if (from !== to) {
+          const [item] = state.postComposer.items.splice(from, 1);
+          state.postComposer.items.splice(to, 0, item);
+          state.postComposer.personTags = state.postComposer.personTags.map((tag) => {
+            const mediaIndex = Number(tag.mediaIndex || 0);
+            if (mediaIndex === from) return { ...tag, mediaIndex: to };
+            if (from < to && mediaIndex > from && mediaIndex <= to) return { ...tag, mediaIndex: mediaIndex - 1 };
+            if (from > to && mediaIndex >= to && mediaIndex < from) return { ...tag, mediaIndex: mediaIndex + 1 };
+            return tag;
+          });
+          state.postComposer.pendingTagPoint = null;
+          state.postComposer.activeIndex = to;
+          syncPostComposerAspectFromOrder(state.postComposer);
+          updatePostComposerSlot();
+        }
+      }
       if (action === 'set-post-aspect' && state.postComposer) {
-        state.postComposer.crop.aspect = target.dataset.aspect || 'portrait';
+        const aspect = target.dataset.aspect || 'portrait';
+        state.postComposer.aspect = aspect;
+        state.postComposer.items.forEach((item) => {
+          const ratio = aspect === 'original'
+            ? `original:${clamp(Number(state.postComposer.items[0]?.naturalAspect || 1), 0.75, 1.91).toFixed(4)}`
+            : aspect === 'mixed'
+              ? `mixed:${clamp(Number(item.naturalAspect || 1), 0.75, 1.91).toFixed(4)}`
+              : aspect;
+          Object.assign(item.crop, { aspect, aspectRatio: ratio });
+        });
+        syncPostComposerAliases(state.postComposer);
         target.parentElement?.querySelectorAll('[data-action="set-post-aspect"]').forEach((button) => button.classList.toggle('active', button === target));
         const frame = document.querySelector('#post-composer-slot .post-composer-media');
         if (frame) {
           Array.from(frame.classList).filter((name) => name.startsWith('aspect-')).forEach((name) => frame.classList.remove(name));
           frame.classList.add(`aspect-${state.postComposer.crop.aspect}`);
+          frame.style.setProperty('--post-aspect', String(postComposerAspectRatio(state.postComposer)));
         }
       }
       if (action === 'rotate-post-media' && state.postComposer) {
         state.postComposer.crop.rotation = (Number(state.postComposer.crop.rotation || 0) + 90) % 360;
         updatePostComposerMediaStyle();
       }
+      if (action === 'reset-post-crop' && state.postComposer) {
+        Object.assign(state.postComposer.crop, { zoom: 1, x: 0, y: 0, rotation: 0 });
+        updatePostComposerMediaStyle();
+        syncPostCropControls();
+      }
       if (action === 'set-post-filter' && state.postComposer) {
         state.postComposer.filter = target.dataset.filter || 'normal';
+        const item = activePostComposerItem(state.postComposer);
+        if (item) item.filter = state.postComposer.filter;
         target.parentElement?.querySelectorAll('[data-action="set-post-filter"]').forEach((button) => button.classList.toggle('active', button === target));
         updatePostComposerMediaStyle();
       }
       if (action === 'select-post-adjustment' && state.postComposer) {
         const adjustment = target.dataset.adjustment || 'saturation';
         state.postComposer.activeAdjustment = adjustment;
+        const item = activePostComposerItem(state.postComposer);
+        if (item) item.activeAdjustment = adjustment;
         target.parentElement?.querySelectorAll('[data-action="select-post-adjustment"]').forEach((button) => button.classList.toggle('active', button === target));
         const slider = document.querySelector('#post-composer-slot .post-adjust-slider');
         const input = slider?.querySelector('input');
@@ -10228,7 +10819,9 @@
       if (action === 'pick-post-tag-position' && state.postComposer?.stage === 3) {
         if (event.target.closest('.post-tag-draft')) return;
         const rect = target.getBoundingClientRect();
+        if (state.postComposer.isVideo && event.clientY >= rect.bottom - 54) return;
         state.postComposer.pendingTagPoint = {
+          mediaIndex: Number(state.postComposer.activeIndex || 0),
           x: Math.round(clamp(((event.clientX - rect.left) / rect.width) * 100, 2, 98) * 10) / 10,
           y: Math.round(clamp(((event.clientY - rect.top) / rect.height) * 100, 2, 98) * 10) / 10
         };
@@ -10249,16 +10842,19 @@
         }
         if (!tagged) throw new Error('That username was not found.');
         state.postComposer.personTags = [
-          ...state.postComposer.personTags.filter((tag) => tag.userId !== tagged.id),
+          ...state.postComposer.personTags.filter((tag) => tag.userId !== tagged.id || Number(tag.mediaIndex || 0) !== Number(state.postComposer.pendingTagPoint.mediaIndex || 0)),
           { userId: tagged.id, username: tagged.username, ...state.postComposer.pendingTagPoint }
         ];
         state.postComposer.pendingTagPoint = null;
         updatePostComposerSlot();
       }
       if (action === 'publish-post') await publishPost();
+      if (action === 'post-carousel-previous') movePostCarousel(target.dataset.postId, -1);
+      if (action === 'post-carousel-next') movePostCarousel(target.dataset.postId, 1);
       if (action === 'toggle-post-like') await togglePostAction(target.dataset.postId, 'like');
       if (action === 'toggle-post-save') await togglePostAction(target.dataset.postId, 'save');
       if (action === 'toggle-post-repost') await togglePostAction(target.dataset.postId, 'repost');
+      if (action === 'share-post') await sharePost(target.dataset.postId);
       if (action === 'expand-post') {
         state.expandedPosts.add(target.dataset.postId);
         updateSidebar();
@@ -11469,13 +12065,18 @@
         if (file) await beginAvatarCrop(file);
       }
       if (event.target.id === 'post-input') {
-        const file = event.target.files[0];
+        const files = Array.from(event.target.files || []);
+        const file = files[0];
         event.target.value = '';
-        if (file) {
+        if (files.length) {
           try {
-            await beginPostComposer(file);
+            if (postMediaPickerMode === 'append' && state.postComposer) await appendPostComposerMedia(files);
+            else if (files.length === 1) await beginPostComposer(file);
+            else await beginPostComposer(files);
           } catch (error) {
             showPostSelectionError(error);
+          } finally {
+            postMediaPickerMode = 'replace';
           }
         }
         return;
@@ -11546,8 +12147,25 @@
       state.postComposer.hashtags = event.target.value.slice(0, 300);
       return;
     }
+    if (event.target.id === 'post-location' && state.postComposer) {
+      state.postComposer.location = event.target.value.slice(0, 100);
+      return;
+    }
+    if (event.target.id === 'post-alt-text' && state.postComposer) {
+      const item = activePostComposerItem(state.postComposer);
+      if (item) item.altText = event.target.value.slice(0, 500);
+      return;
+    }
     if (event.target.id === 'post-allow-reposts' && state.postComposer) {
       state.postComposer.allowReposts = event.target.checked;
+      return;
+    }
+    if (event.target.id === 'post-allow-comments' && state.postComposer) {
+      state.postComposer.allowComments = event.target.checked;
+      return;
+    }
+    if (event.target.id === 'post-hide-like-counts' && state.postComposer) {
+      state.postComposer.hideLikeCounts = event.target.checked;
       return;
     }
     if (event.target.id === 'note-text' && state.noteComposer) {
@@ -11873,11 +12491,34 @@
   });
 
   document.addEventListener('scroll', (event) => {
+    if (event.target?.matches?.('.post-carousel-track')) {
+      if (event.target._carouselFrame) cancelAnimationFrame(event.target._carouselFrame);
+      event.target._carouselFrame = requestAnimationFrame(() => {
+        event.target._carouselFrame = 0;
+        syncPostCarousel(event.target);
+      });
+      return;
+    }
     if (event.target?.id === 'messages') {
       if (state.chatLoading || chatScrollSettleCleanup || event.target.classList.contains('chat-settling')) return;
       if (event.target.scrollTop < 80) loadOlderMessages().catch((error) => alert(error.message));
     }
   }, true);
+
+  document.addEventListener('dblclick', (event) => {
+    const media = event.target.closest('.feed-post .post-carousel-slide img, .feed-post > .post-media-frame img');
+    const card = media?.closest('.feed-post');
+    if (!media || !card) return;
+    event.preventDefault();
+    const post = postById(card.dataset.postId);
+    const frame = media.closest('.post-media-frame');
+    const burst = document.createElement('span');
+    burst.className = 'post-like-burst';
+    burst.innerHTML = icon('heart');
+    frame?.append(burst);
+    setTimeout(() => burst.remove(), 760);
+    if (!post?.likedByMe) togglePostAction(card.dataset.postId, 'like').catch((error) => alert(error.message));
+  });
 
   document.addEventListener('keydown', async (event) => {
     if (event.key === 'Escape' && state.postComposer) {
@@ -12033,6 +12674,41 @@
       };
     }
     if (state.edgeSwipe) return;
+
+    const postCropSurface = event.target.closest('[data-post-crop-surface]');
+    if (state.postComposer?.stage === 1 && postCropSurface && !event.target.closest('button,input,a')) {
+      const rect = postCropSurface.getBoundingClientRect();
+      if (state.postComposer.isVideo && event.clientY >= rect.bottom - 54) return;
+      event.preventDefault();
+      state.edgeSwipe = null;
+      state.tabSwipe = null;
+      const crop = state.postComposer.crop;
+      postCropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      capturePointer(postCropSurface, event.pointerId);
+      if (postCropPointers.size >= 2) {
+        const entries = Array.from(postCropPointers.entries()).slice(0, 2);
+        const points = entries.map(([, point]) => point);
+        state.postCropDrag = null;
+        state.postCropGesture = {
+          pointerIds: entries.map(([pointerId]) => pointerId),
+          distance: Math.max(1, pointerDistance(points[0], points[1])),
+          zoom: Number(crop.zoom || 1),
+          rect
+        };
+        state.postCropGesture.pointerIds.forEach((pointerId) => capturePointer(postCropSurface, pointerId));
+      } else {
+        state.postCropGesture = null;
+        state.postCropDrag = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          x: Number(crop.x || 0),
+          y: Number(crop.y || 0),
+          rect
+        };
+      }
+      return;
+    }
 
     const storySticker = event.target.closest('[data-action="story-sticker-drag"]');
     if (state.storyEditor && storySticker) {
@@ -12295,6 +12971,26 @@
       updateStoryVideoFromPointer(state.storyVideoTrimDrag, event.clientX);
       return;
     }
+    if (state.postComposer && postCropPointers.has(event.pointerId)) {
+      event.preventDefault();
+      postCropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const crop = state.postComposer.crop;
+      if (state.postCropGesture && postCropPointers.size >= 2) {
+        const points = state.postCropGesture.pointerIds.map((pointerId) => postCropPointers.get(pointerId)).filter(Boolean);
+        if (points.length >= 2) {
+          const zoom = clamp(state.postCropGesture.zoom * (pointerDistance(points[0], points[1]) / state.postCropGesture.distance), 1, 3);
+          Object.assign(crop, { zoom });
+        }
+      } else if (state.postCropDrag?.pointerId === event.pointerId) {
+        const drag = state.postCropDrag;
+        const x = clamp(drag.x - ((event.clientX - drag.startX) / Math.max(1, drag.rect.width)) * 200, -100, 100);
+        const y = clamp(drag.y - ((event.clientY - drag.startY) / Math.max(1, drag.rect.height)) * 200, -100, 100);
+        Object.assign(crop, { x, y });
+      }
+      updatePostComposerMediaStyle();
+      syncPostCropControls();
+      return;
+    }
     if (state.storyEditor && storyStickerPointers.has(event.pointerId)) {
       const pointer = storyStickerPointers.get(event.pointerId);
       storyStickerPointers.set(event.pointerId, { ...pointer, x: event.clientX, y: event.clientY });
@@ -12546,6 +13242,29 @@
       state.edgeSwipe = null;
       return;
     }
+    if (postCropPointers.has(event.pointerId)) {
+      postCropPointers.delete(event.pointerId);
+      state.postCropDrag = null;
+      state.postCropGesture = null;
+      if (postCropPointers.size) {
+        const [pointerId, point] = postCropPointers.entries().next().value;
+        const surface = document.querySelector('#post-composer-slot [data-post-crop-surface]');
+        const rect = surface?.getBoundingClientRect();
+        if (rect && state.postComposer) {
+          state.postCropDrag = {
+            pointerId,
+            startX: point.x,
+            startY: point.y,
+            x: Number(state.postComposer.crop.x || 0),
+            y: Number(state.postComposer.crop.y || 0),
+            rect
+          };
+        }
+      }
+      state.edgeSwipe = null;
+      state.tabSwipe = null;
+      return;
+    }
     if (storyStickerPointers.has(event.pointerId)) {
       const trash = document.getElementById('story-object-trash');
       const removeSticker = Boolean(trash?.classList.contains('active'));
@@ -12764,10 +13483,13 @@
     state.storyStickerGesture = null;
     state.storyDraw = null;
     state.storyVideoTrimDrag = null;
+    state.postCropDrag = null;
+    state.postCropGesture = null;
     storyTextPointers.clear();
     storyMediaPointers.clear();
     storyStickerPointers.clear();
     cropPointers.clear();
+    postCropPointers.clear();
     document.getElementById('story-object-trash')?.classList.remove('visible', 'active');
     state.edgeSwipe = null;
     state.tabSwipe = null;
@@ -12777,11 +13499,19 @@
 
   ['gesturestart', 'gesturechange', 'gestureend'].forEach((eventName) => {
     document.addEventListener(eventName, (event) => {
-      if (state.storyEditor && event.target.closest?.('.story-editor-preview')) event.preventDefault();
+      if ((state.storyEditor && event.target.closest?.('.story-editor-preview')) || (state.postComposer && event.target.closest?.('[data-post-crop-surface]'))) event.preventDefault();
     }, { passive: false });
   });
 
   document.addEventListener('wheel', (event) => {
+    if (state.postComposer?.stage === 1 && !state.postComposer.isVideo && event.target.closest('[data-post-crop-surface]')) {
+      event.preventDefault();
+      const zoom = clamp(Number(state.postComposer.crop.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
+      Object.assign(state.postComposer.crop, { zoom });
+      updatePostComposerMediaStyle();
+      syncPostCropControls();
+      return;
+    }
     if (state.avatarCrop && event.target.closest('#crop-stage')) {
       event.preventDefault();
       state.avatarCrop.zoom = clamp((state.avatarCrop.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);

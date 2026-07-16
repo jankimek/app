@@ -344,6 +344,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   for (const [tab, label] of [['home', 'Home'], ['search', 'Search'], ['chats', 'Messages'], ['profile', 'Profile']]) {
     assert.match(sidebarSource, new RegExp(`navButton\\('${tab}', '${label}'`));
   }
+  assert.match(sidebarSource, /navButton\('clips', 'Clips', 'clips'\)/);
   assert.match(sidebarSource, /class="bottom-tab bottom-tab-create"[^>]*data-action="open-post-create"[^>]*aria-label="Create post"/);
   assert.doesNotMatch(sidebarSource, /navButton\('create'/);
   assert.match(styleSource, /--social-icon-blue: #2f7895;/);
@@ -365,6 +366,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(homePanelSource, /data-action="open-post-create"/);
   assert.match(homePanelSource, /data-action="open-notifications"/);
   assert.match(homePanelSource, /feed\.map\(renderPostCard\)/);
+  assert.match(homePanelSource, /function renderClipsPanel/);
+  assert.match(homePanelSource, /data-action="set-clip-mode"/);
+  assert.match(styleSource, /\.clips-feed \{[\s\S]*?scroll-snap-type: y mandatory;/);
   const postCardSource = sourceSection(clientSource, 'function renderPostComments', 'function renderHomePanel');
   assert.match(postCardSource, /const topComment = comments\.at\(-1\)/);
   assert.match(postCardSource, /class="post-comment-preview" data-action="open-post-comments"/);
@@ -408,6 +412,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(postComposerSource, /id="post-description"[^>]*maxlength="2200"/);
   assert.match(postComposerSource, /id="post-hashtags"[^>]*maxlength="300"/);
   assert.match(postComposerSource, /id="post-allow-reposts"/);
+  assert.match(postComposerSource, /function renderPostMediaRail/);
+  assert.match(postComposerSource, /data-action="add-post-media"/);
+  assert.match(postComposerSource, /data-action="remove-post-media"/);
+  assert.match(postComposerSource, /\['mixed','Mixed'\]/);
+  assert.match(postComposerSource, /\['portrait34','3:4'\]/);
   assert.match(clientSource, /pendingTagPoint = \{[\s\S]{0,300}?x: Math\.round\([\s\S]{0,300}?y: Math\.round\(/);
   assert.match(postComposerSource, /<video src="\$\{esc\(composer\.previewUrl\)\}"[\s\S]{0,180}?playsinline controls preload="metadata"/);
   const filterRailSource = sourceSection(postComposerSource, 'class="post-filter-rail"', 'class="post-adjust-tabs"');
@@ -422,6 +431,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(postUploadSource, /'X-File-Last-Modified'/);
   assert.match(postUploadSource, /body: file/);
   assert.match(postUploadSource, /fileId: pendingFileId/);
+  assert.match(postUploadSource, /fileIds: pendingFileIds/);
+  assert.match(postUploadSource, /const publishItems = composer\.items\.map/);
+  assert.match(postUploadSource, /mediaEdits: publishItems\.map/);
+  assert.match(postUploadSource, /for \(let index = 0; index < publishItems\.length;/);
+  assert.match(clientSource, /state\.postPublishing && target\.closest\('#post-composer-slot'\)/);
+  assert.match(postUploadSource, /up to 20 photos and videos/);
   assert.match(postUploadSource, /URL\.revokeObjectURL\(url\)/);
   assert.match(postUploadSource, /releasePostComposerMedia\(composer\)/);
   assert.match(postUploadSource, /function postMediaType\(file\)/);
@@ -432,10 +447,18 @@ test('mobile viewport and story editing controls stay inside their gesture bound
 
   const renderAppSource = sourceSection(clientSource, 'function renderApp(options = {})', 'function updateSlot');
   assert.match(clientSource, /const postMediaInput = document\.createElement\('input'\)[\s\S]{0,300}?document\.body\.appendChild\(postMediaInput\)/);
+  assert.match(clientSource, /postMediaInput\.multiple = true/);
   assert.match(clientSource, /function openPostMediaPicker\(\)[\s\S]{0,120}?postMediaInput\.value = ''[\s\S]{0,120}?postMediaInput\.click\(\)/);
   assert.doesNotMatch(renderAppSource, /id="post-input"/);
   assert.match(serverSource, /MAX_POST_VIDEO_BYTES[\s\S]{0,120}?128 \* 1024 \* 1024/);
   assert.match(serverSource, /'video\/quicktime': '\.mov'/);
+  assert.match(serverSource, /body\.fileIds\.length > 20/);
+  assert.match(serverSource, /postMediaFileIds\(item\)\.includes\(file\.id\)/);
+  assert.match(clientSource, /const postCropPointers = new Map\(\)/);
+  assert.match(clientSource, /data-post-crop-surface/);
+  assert.match(clientSource, /Object\.assign\(crop, \{ x, y \}\)/);
+  assert.match(styleSource, /\.post-carousel-track \{[\s\S]*?scroll-snap-type: x mandatory;/);
+  assert.match(styleSource, /\.app-shell\.social-root \{[\s\S]*?grid-template-columns: 245px minmax\(0, 1fr\);/);
 
   const ownProfileSource = sourceSection(clientSource, 'function renderProfilePanel()', 'function profilePostKey');
   assert.match(ownProfileSource, /<h1>\$\{esc\(state\.me\.displayName\)\}<\/h1>/);
@@ -643,6 +666,12 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   });
   assert.equal(rawVideoPost.status, 201);
   assert.equal(rawVideoPost.data.post.media.mime, 'video/mp4');
+  const clips = await bob.request('/api/clips?limit=1');
+  assert.equal(clips.status, 200);
+  assert.equal(clips.data.posts.length, 1);
+  assert.equal(clips.data.posts[0].id, rawVideoPost.data.post.id);
+  assert.equal(clips.data.posts[0].mediaItems.length, 1);
+  assert.equal(clips.data.posts[0].mediaItems[0].mediaType, 'video');
   const streamedVideo = await dora.request(rawVideoPost.data.post.media.url);
   assert.equal(streamedVideo.status, 200);
   assert.deepEqual(streamedVideo.data, rawVideoBytes);
@@ -676,6 +705,60 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   assert.equal((await dora.request('/api/posts', {
     method: 'POST',
     body: { fileId: abandonedUpload.data.fileId, title: 'Deleted pending file' }
+  })).status, 404);
+
+  const carouselImageUpload = await dora.raw('/api/post-media', {
+    headers: { 'Content-Type': 'image/png', 'X-File-Name': encodeURIComponent('carousel-first.png') },
+    body: Buffer.from('carousel image payload')
+  });
+  const carouselVideoUpload = await dora.raw('/api/post-media', {
+    headers: { 'Content-Type': 'video/mp4', 'X-File-Name': encodeURIComponent('carousel-second.mp4') },
+    body: Buffer.from('carousel video payload')
+  });
+  assert.equal(carouselImageUpload.status, 201);
+  assert.equal(carouselVideoUpload.status, 201);
+  const carouselPost = await dora.request('/api/posts', {
+    method: 'POST',
+    body: {
+      fileIds: [carouselImageUpload.data.fileId, carouselVideoUpload.data.fileId],
+      description: 'Mixed carousel',
+      location: 'Berlin',
+      altTexts: ['Purple geometric cover', 'Short launch video'],
+      allowComments: false,
+      hideLikeCounts: true,
+      mediaEdits: [
+        { crop: { aspectRatio: 'portrait', x: -20, y: 14, zoom: 1.4 }, filter: 'warm' },
+        { crop: { aspectRatio: 'mixed:1.7778', x: 8, y: -5 }, adjustments: { saturation: 122 } }
+      ]
+    }
+  });
+  assert.equal(carouselPost.status, 201);
+  assert.equal(carouselPost.data.post.mediaItems.length, 2);
+  assert.deepEqual(carouselPost.data.post.mediaFileIds, [carouselImageUpload.data.fileId, carouselVideoUpload.data.fileId]);
+  assert.equal(carouselPost.data.post.media.id, carouselPost.data.post.mediaItems[0].media.id);
+  assert.equal(carouselPost.data.post.mediaItems[0].filter, 'warm');
+  assert.equal(carouselPost.data.post.mediaItems[1].mediaType, 'video');
+  assert.equal(carouselPost.data.post.mediaItems[1].crop.aspectRatio, 'mixed:1.7778');
+  assert.equal(carouselPost.data.post.mediaItems[1].adjustments.saturation, 122);
+  assert.equal(carouselPost.data.post.location, 'Berlin');
+  assert.equal(carouselPost.data.post.mediaItems[0].altText, 'Purple geometric cover');
+  assert.equal(carouselPost.data.post.mediaItems[1].altText, 'Short launch video');
+  assert.equal(carouselPost.data.post.allowComments, false);
+  assert.equal(carouselPost.data.post.hideLikeCounts, true);
+  assert.equal((await dora.request(carouselPost.data.post.mediaItems[1].media.url)).status, 200);
+  const clipsAfterCarousel = await dora.request('/api/clips?limit=100');
+  assert.ok(clipsAfterCarousel.data.posts.some((post) => post.id === rawVideoPost.data.post.id));
+  assert.ok(!clipsAfterCarousel.data.posts.some((post) => post.id === carouselPost.data.post.id));
+  assert.equal((await bob.request(`/api/posts/${carouselPost.data.post.id}/comments`, {
+    method: 'POST', body: { text: 'This should stay closed.' }
+  })).status, 403);
+  assert.equal((await dora.request('/api/posts', {
+    method: 'POST',
+    body: { fileIds: Array.from({ length: 21 }, (_, index) => `too_many_${index}`) }
+  })).status, 400);
+  assert.equal((await dora.request('/api/posts', {
+    method: 'POST',
+    body: { fileIds: [carouselImageUpload.data.fileId, carouselVideoUpload.data.fileId] }
   })).status, 404);
 
   const createdPost = await alice.request('/api/posts', {

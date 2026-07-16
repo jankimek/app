@@ -806,6 +806,19 @@ function publicPostComment(comment, viewerId) {
   };
 }
 
+function postMediaFileIds(post) {
+  if (!post) return [];
+  const ids = [];
+  const add = (value) => {
+    if (typeof value !== 'string' || !value || ids.includes(value)) return;
+    ids.push(value);
+  };
+  if (Array.isArray(post.mediaFileIds)) post.mediaFileIds.forEach(add);
+  if (!ids.length) add(post.fileId);
+  else if (post.fileId && !ids.includes(post.fileId)) ids.unshift(post.fileId);
+  return ids;
+}
+
 function publicPost(post, viewerId = null) {
   if (!post) return null;
   const likes = Array.isArray(post.likes) ? post.likes.filter((userId) => db.users[userId]) : [];
@@ -813,28 +826,54 @@ function publicPost(post, viewerId = null) {
   const reposts = Array.isArray(post.repostedBy) ? post.repostedBy.filter((userId) => db.users[userId]) : [];
   const comments = Array.isArray(post.comments) ? post.comments.filter((comment) => !comment.deletedAt) : [];
   const personTags = Array.isArray(post.personTags) ? post.personTags : [];
+  const mediaFileIds = postMediaFileIds(post);
+  const storedMediaEdits = Array.isArray(post.mediaEdits) ? post.mediaEdits : [];
+  const mediaItems = mediaFileIds.map((fileId, index) => {
+    const storedFile = db.files[fileId];
+    const media = publicFile(storedFile);
+    const edits = storedMediaEdits[index] || (index === 0 ? post.edits : null) || {};
+    return {
+      fileId,
+      media,
+      file: media,
+      mediaType: String(storedFile?.mime || '').startsWith('video/') ? 'video' : 'image',
+      edits,
+      crop: edits.crop || {},
+      adjustments: edits.adjustments || {},
+      filter: edits.filter || 'normal',
+      altText: cleanText(Array.isArray(post.altTexts) ? post.altTexts[index] : (index === 0 ? post.altText : ''), 500)
+    };
+  });
+  const firstMedia = mediaItems[0] || null;
+  const firstEdits = firstMedia?.edits || post.edits || {};
   return {
     id: post.id,
     ownerId: post.ownerId,
     author: postActor(db.users[post.ownerId], viewerId),
     user: postActor(db.users[post.ownerId], viewerId),
-    media: publicFile(db.files[post.fileId]),
-    file: publicFile(db.files[post.fileId]),
-    mediaType: String(db.files[post.fileId]?.mime || '').startsWith('video/') ? 'video' : 'image',
+    mediaFileIds,
+    mediaItems,
+    media: firstMedia?.media || null,
+    file: firstMedia?.file || null,
+    mediaType: firstMedia?.mediaType || 'image',
     title: post.title || '',
     description: post.description || '',
+    location: post.location || '',
     hashtags: Array.isArray(post.hashtags) ? post.hashtags : [],
     personTags: personTags.map((tag) => ({
       userId: tag.userId,
       user: postActor(db.users[tag.userId], viewerId),
+      mediaIndex: Math.floor(boundedNumber(tag.mediaIndex, 0, 19, 0)),
       x: tag.x,
       y: tag.y
     })).filter((tag) => tag.user),
-    edits: post.edits || {},
-    crop: post.edits?.crop || {},
-    adjustments: post.edits?.adjustments || {},
-    filter: post.edits?.filter || 'normal',
+    edits: firstEdits,
+    crop: firstEdits.crop || {},
+    adjustments: firstEdits.adjustments || {},
+    filter: firstEdits.filter || 'normal',
     allowReposts: postRepostsAllowed(post),
+    allowComments: post.allowComments !== false,
+    hideLikeCounts: Boolean(post.hideLikeCounts),
     createdAt: post.createdAt,
     updatedAt: post.updatedAt || post.createdAt,
     likeCount: likes.length,
@@ -908,20 +947,45 @@ function cleanPostEdits(body) {
   };
 }
 
+function cleanPostMediaEdits(body, fileIds) {
+  const mediaEdits = body?.mediaEdits;
+  const mediaItems = Array.isArray(body?.mediaItems) ? body.mediaItems : [];
+  return fileIds.map((fileId, index) => {
+    let raw = null;
+    if (Array.isArray(mediaEdits)) raw = mediaEdits[index];
+    else if (mediaEdits && typeof mediaEdits === 'object') raw = mediaEdits[fileId] ?? mediaEdits[index];
+
+    if (!raw && mediaItems.length) {
+      const matchingItem = mediaItems.find((item) => {
+        if (!item || typeof item !== 'object') return false;
+        const itemFileId = cleanText(item.fileId || item.id || item.file?.id || item.media?.id || '', 120);
+        return itemFileId === fileId;
+      });
+      raw = matchingItem || mediaItems[index];
+    }
+
+    if (!raw && index === 0) raw = body;
+    return cleanPostEdits(raw && typeof raw === 'object' ? raw : {});
+  });
+}
+
 function cleanPersonTags(value, ownerId) {
   const tags = Array.isArray(value) ? value : [];
   const seen = new Set();
   const cleaned = [];
   for (const raw of tags) {
     const target = db.users[cleanText(raw?.userId || raw?.id || '', 120)] || userByUsername(raw?.username);
-    if (!target || seen.has(target.id) || isBlockedBetween(ownerId, target.id)) continue;
+    const mediaIndex = Math.floor(boundedNumber(raw?.mediaIndex, 0, 19, 0));
+    const tagKey = target ? `${target.id}:${mediaIndex}` : '';
+    if (!target || seen.has(tagKey) || isBlockedBetween(ownerId, target.id)) continue;
     const mentionPermission = target.profile?.mentionPermission || 'everyone';
     if (mentionPermission === 'nobody') continue;
     if (mentionPermission === 'following' && !isFollowing(target.id, ownerId)) continue;
     if (db.users[ownerId]?.profile?.socialPublic === false && target.id !== ownerId && !isFollowing(target.id, ownerId)) continue;
-    seen.add(target.id);
+    seen.add(tagKey);
     cleaned.push({
       userId: target.id,
+      mediaIndex,
       x: boundedNumber(raw?.x, 0, 100, 50),
       y: boundedNumber(raw?.y, 0, 100, 50)
     });
@@ -1358,20 +1422,23 @@ function mentionedUsers(text, excludeUserId = null) {
     .filter((user) => user && user.id !== excludeUserId);
 }
 
-function notifyMentions(actor, text, source) {
+function notifyMentions(actor, text, source, options = {}) {
   const notifications = [];
   for (const target of mentionedUsers(text, actor.id)) {
     const permission = target.profile?.mentionPermission || 'everyone';
     if (permission === 'nobody') continue;
     if (permission === 'following' && !isFollowing(target.id, actor.id)) continue;
+    options.beforeAdd?.(target);
     const note = addNotification(target.id, 'mention', actor.id, null, `${actor.username} mentioned you ${source}.`);
     if (note) {
       notifications.push({ target, note });
-      pushToUser(target.id, {
-        type: 'notification:new',
-        pendingRequestCount: pendingIncomingRequests(target.id).length,
-        notification: publicNotification(note, target.id)
-      });
+      if (options.broadcast !== false) {
+        pushToUser(target.id, {
+          type: 'notification:new',
+          pendingRequestCount: pendingIncomingRequests(target.id).length,
+          notification: publicNotification(note, target.id)
+        });
+      }
     }
   }
   return notifications;
@@ -1916,7 +1983,7 @@ function canAccessFile(userId, file) {
     return canViewStory(story, userId);
   }
   if (file.scope === 'post') {
-    const post = Object.values(db.posts).find((item) => item.fileId === file.id);
+    const post = Object.values(db.posts).find((item) => postMediaFileIds(item).includes(file.id));
     return canViewPost(post, userId);
   }
   if (file.scope === 'note-audio') {
@@ -2365,6 +2432,22 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { posts });
   }
 
+  if (req.method === 'GET' && pathname === '/api/clips') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const limit = Math.floor(boundedNumber(query.get('limit') || 40, 1, 100, 40));
+    const posts = activePostsFor()
+      .filter((post) => canViewPost(post, user.id))
+      .filter((post) => {
+        const fileIds = postMediaFileIds(post);
+        return fileIds.length === 1 && String(db.files[fileIds[0]]?.mime || '').startsWith('video/');
+      })
+      .sort((a, b) => postFeedScore(b) - postFeedScore(a) || String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, limit)
+      .map((post) => publicPost(post, user.id));
+    return sendJson(res, 200, { posts });
+  }
+
   const userPostsMatch = /^\/api\/users\/([^/]+)\/posts$/.exec(pathname);
   if (req.method === 'GET' && userPostsMatch) {
     const viewer = sessionFromRequest(req)?.user || null;
@@ -2392,21 +2475,43 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const body = await readJsonBody(req);
     const upload = body.file || body.media;
-    const pendingFileId = cleanText(body.fileId || '', 120);
-    let file;
-    let mime;
-    if (pendingFileId) {
-      file = db.files[pendingFileId];
-      if (!file || file.ownerId !== user.id || file.scope !== 'post-pending' || !file.diskPath || !fs.existsSync(file.diskPath)) {
-        return sendError(res, 404, 'Pending post upload not found.');
+    const hasFileIds = Object.prototype.hasOwnProperty.call(body, 'fileIds');
+    let pendingFileIds = [];
+    if (hasFileIds) {
+      if (!Array.isArray(body.fileIds) || body.fileIds.length < 1 || body.fileIds.length > 20) {
+        return sendError(res, 400, 'Choose between 1 and 20 photos or videos to post.');
       }
-      mime = String(file.mime || '').toLowerCase();
-      if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
-      const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
-      if (!file.size || file.size > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+      for (const rawFileId of body.fileIds) {
+        if (typeof rawFileId !== 'string') return sendError(res, 400, 'Every post upload must have a valid file ID.');
+        const pendingFileId = cleanText(rawFileId, 120);
+        if (!pendingFileId) return sendError(res, 400, 'Every post upload must have a valid file ID.');
+        if (pendingFileIds.includes(pendingFileId)) return sendError(res, 400, 'Each photo or video can only appear once in a post.');
+        pendingFileIds.push(pendingFileId);
+      }
+    } else {
+      const pendingFileId = cleanText(body.fileId || '', 120);
+      if (pendingFileId) pendingFileIds = [pendingFileId];
+    }
+
+    let files = [];
+    if (pendingFileIds.length) {
+      for (const pendingFileId of pendingFileIds) {
+        const file = db.files[pendingFileId];
+        if (!file || file.ownerId !== user.id || file.scope !== 'post-pending' || !file.diskPath || !fs.existsSync(file.diskPath)) {
+          return sendError(res, 404, 'Pending post upload not found.');
+        }
+        const mime = String(file.mime || '').toLowerCase();
+        if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain only images or videos.');
+        const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
+        const size = Number(file.size);
+        if (!Number.isFinite(size) || size <= 0 || size > maximum) {
+          return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+        }
+        files.push(file);
+      }
     } else {
       if (!upload?.dataUrl) return sendError(res, 400, 'Choose one photo or video to post.');
-      mime = mimeFromDataUrl(upload.dataUrl);
+      const mime = mimeFromDataUrl(upload.dataUrl);
       if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
       const decoded = dataUrlToBuffer(upload.dataUrl);
       const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
@@ -2414,21 +2519,34 @@ async function handleApi(req, res, pathname, query) {
     }
     const title = cleanText(body.title || '', 100);
     const description = cleanText(body.description || body.caption || '', 2200);
-    const personTags = cleanPersonTags(body.personTags || body.taggedPeople || body.taggedUsers || body.tags, user.id);
+    let personTags = cleanPersonTags(body.personTags || body.taggedPeople || body.taggedUsers || body.tags, user.id);
     const inlineHashtags = description.match(/#[\p{L}\p{N}_]+/gu) || [];
     const suppliedHashtags = body.hashtags ?? ((typeof body.tags === 'string' || (Array.isArray(body.tags) && body.tags.every((tag) => typeof tag === 'string'))) ? body.tags : '');
-    if (!file) file = await saveUpload(upload, user.id, 'post');
-    else file.scope = 'post';
+    const usesInlineUpload = !files.length;
+    if (usesInlineUpload) files = [await saveUpload(upload, user.id, 'post')];
+    const previousFileScopes = files.map((file) => file.scope);
+    if (!usesInlineUpload) files.forEach((file) => { file.scope = 'post'; });
+    const mediaFileIds = files.map((file) => file.id);
+    personTags = personTags.filter((tag) => Number(tag.mediaIndex || 0) < mediaFileIds.length);
+    const mediaEdits = cleanPostMediaEdits(body, mediaFileIds);
+    const rawAltTexts = Array.isArray(body.altTexts) ? body.altTexts : [];
+    const altTexts = mediaFileIds.map((_, index) => cleanText(rawAltTexts[index] ?? (index === 0 ? body.altText : ''), 500));
     const post = {
       id: id('post'),
       ownerId: user.id,
-      fileId: file.id,
+      fileId: mediaFileIds[0],
+      mediaFileIds,
       title,
       description,
+      location: cleanText(body.location || '', 100),
+      altTexts,
       hashtags: cleanHashtags([...(Array.isArray(suppliedHashtags) ? suppliedHashtags : String(suppliedHashtags || '').split(/[\s,]+/)), ...inlineHashtags]),
       personTags,
-      edits: cleanPostEdits(body),
+      edits: mediaEdits[0],
+      mediaEdits,
       allowReposts: body.allowReposts !== false,
+      allowComments: body.allowComments !== false,
+      hideLikeCounts: Boolean(body.hideLikeCounts),
       likes: [],
       savedBy: [],
       repostedBy: [],
@@ -2438,14 +2556,55 @@ async function handleApi(req, res, pathname, query) {
       updatedAt: nowIso(),
       deletedAt: null
     };
+    const notificationRecords = [];
+    const notificationSnapshots = new Map();
+    const rememberNotifications = (target) => {
+      if (!target?.id || notificationSnapshots.has(target.id)) return;
+      const exists = Object.prototype.hasOwnProperty.call(db.notifications, target.id);
+      notificationSnapshots.set(target.id, {
+        exists,
+        list: structuredClone(db.notifications[target.id] || [])
+      });
+    };
     db.posts[post.id] = post;
-    for (const tag of personTags) {
-      if (tag.userId === user.id) continue;
-      const note = addNotification(tag.userId, 'post_tag', user.id, null, `${user.username} tagged you in a post.`, { postId: post.id });
-      if (note) pushToUser(tag.userId, { type: 'notification:new', notification: publicNotification(note, tag.userId) });
+    try {
+      const notifiedTagUsers = new Set();
+      for (const tag of personTags) {
+        if (tag.userId === user.id || notifiedTagUsers.has(tag.userId)) continue;
+        notifiedTagUsers.add(tag.userId);
+        rememberNotifications(db.users[tag.userId]);
+        const note = addNotification(tag.userId, 'post_tag', user.id, null, `${user.username} tagged you in a post.`, { postId: post.id });
+        if (note) notificationRecords.push({ target: db.users[tag.userId], note });
+      }
+      notificationRecords.push(...notifyMentions(user, `${title} ${description}`, 'in a post', { broadcast: false, beforeAdd: rememberNotifications }));
+      await Promise.all([saveFiles(), savePosts(), saveNotifications()]);
+    } catch (error) {
+      delete db.posts[post.id];
+      if (usesInlineUpload) {
+        for (const file of files) {
+          delete db.files[file.id];
+          try {
+            if (file.diskPath && fs.existsSync(file.diskPath)) fs.unlinkSync(file.diskPath);
+          } catch {}
+        }
+      } else {
+        files.forEach((file, index) => { file.scope = previousFileScopes[index]; });
+      }
+      for (const [targetId, snapshot] of notificationSnapshots) {
+        if (snapshot.exists) db.notifications[targetId] = snapshot.list;
+        else delete db.notifications[targetId];
+      }
+      await Promise.allSettled([saveFiles(), savePosts(), saveNotifications()]);
+      throw error;
     }
-    notifyMentions(user, `${title} ${description}`, 'in a post');
-    await Promise.all([saveFiles(), savePosts(), saveNotifications()]);
+    for (const { target, note } of notificationRecords) {
+      if (!target?.id || !note) continue;
+      pushToUser(target.id, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(target.id).length,
+        notification: publicNotification(note, target.id)
+      });
+    }
     return sendJson(res, 201, { post: publicPost(post, user.id), user: publicUser(user, user.id) });
   }
 
@@ -2496,6 +2655,7 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const post = db.posts[decodeURIComponent(postCommentMatch[1])];
     if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    if (post.allowComments === false) return sendError(res, 403, 'Comments are turned off for this post.');
     const body = await readJsonBody(req);
     const text = cleanText(body.text || '', 1000);
     if (!text) return sendError(res, 400, 'Write a comment first.');
