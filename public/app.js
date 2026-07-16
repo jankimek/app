@@ -1888,7 +1888,7 @@
     return `
       <div class="post-media-frame ${options.grid ? 'post-media-grid' : ''}">
         ${isVideo
-          ? `<video src="${esc(media.url)}" style="${esc(postCropStyle(post))}" muted playsinline preload="metadata" ${options.grid ? '' : 'controls'}></video>`
+          ? `<video src="${esc(media.url)}" style="${esc(postCropStyle(post))}" autoplay muted playsinline loop preload="metadata" ${options.grid ? '' : 'controls'}></video>`
           : `<img src="${esc(media.url)}" style="${esc(postCropStyle(post))}" alt="${esc(post.title || 'Post')}" loading="lazy">`}
         ${options.grid ? '' : tags.map((tag) => {
           const tagged = tag.user || tag.person || null;
