@@ -2112,6 +2112,30 @@ async function handleApi(req, res, pathname, query) {
     clearSessionCookie(res);
     return sendJson(res, 200, { ok: true });
   }
+  if (req.method === 'GET' && pathname === '/api/music/search') {
+  const user = await requireAuth(req, res);
+  if (!user) return;
+
+  const term = cleanText(query.get('q') || '', 120);
+  if (!term || term.length < 2) return sendJson(res, 200, { tracks: [] });
+
+  try {
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=25`;
+    const r = await fetch(url);
+    const data = await r.json();
+
+    const tracks = (data.results || []).map(t => ({
+      id: String(t.trackId || ''),
+      title: t.trackName || 'Unknown',
+      artist: t.artistName || 'Unknown',
+      album: t.collectionName || '',
+    }));
+
+    return sendJson(res, 200, { tracks });
+  } catch {
+    return sendJson(res, 200, { tracks: [] });
+  }
+}
 
   if (req.method === 'GET' && pathname === '/api/giphy/search') {
   const user = await requireAuth(req, res);
