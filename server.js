@@ -1702,6 +1702,142 @@ function extensionForMime(mime) {
   return map[mime] || '.bin';
 }
 
+function requestHeader(req, name) {
+  const value = req.headers[String(name || '').toLowerCase()];
+  return Array.isArray(value) ? String(value[0] || '') : String(value || '');
+}
+
+function uploadNameFromHeader(req, mime) {
+  const raw = requestHeader(req, 'x-file-name').slice(0, 500);
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    // Accept an unescaped header as a fallback for older clients.
+  }
+  return safeFileName(decoded || `post${extensionForMime(mime)}`);
+}
+
+function uploadLastModifiedFromHeader(req) {
+  const raw = requestHeader(req, 'x-file-last-modified').trim();
+  if (!raw) return null;
+  const timestamp = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+async function saveStreamUpload(req, { ownerId, scope, mime, maximum, name, lastModified }) {
+  const announcedLength = requestHeader(req, 'content-length').trim();
+  if (announcedLength) {
+    if (!/^\d+$/.test(announcedLength) || !Number.isSafeInteger(Number(announcedLength))) {
+      if (!req.destroyed) req.resume();
+      throw Object.assign(new Error('Invalid upload size.'), { status: 400 });
+    }
+    if (Number(announcedLength) > maximum) {
+      if (!req.destroyed) req.resume();
+      throw Object.assign(new Error(`This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`), { status: 413 });
+    }
+  }
+
+  const originalName = safeFileName(name || `post${extensionForMime(mime)}`);
+  const ext = path.extname(originalName) || extensionForMime(mime);
+  const day = new Date().toISOString().slice(0, 10);
+  const folder = path.join(UPLOAD_DIR, day);
+  await fsp.mkdir(folder, { recursive: true });
+  const fileId = id('file');
+  const diskPath = path.join(folder, `${fileId}${ext}`);
+  const writer = fs.createWriteStream(diskPath, { flags: 'wx' });
+  let size = 0;
+
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+
+      const removeListeners = () => {
+        req.removeListener('data', onData);
+        req.removeListener('end', onEnd);
+        req.removeListener('aborted', onAborted);
+        req.removeListener('error', onRequestError);
+        writer.removeListener('drain', onDrain);
+        writer.removeListener('error', onWriterError);
+        writer.removeListener('finish', onFinish);
+        writer.removeListener('close', onClose);
+      };
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        removeListeners();
+        writer.destroy();
+        // Drain any remaining request bytes so the server can still return a
+        // useful HTTP error instead of abruptly resetting the connection.
+        if (!req.destroyed) req.resume();
+        reject(error);
+      };
+      const onData = (chunk) => {
+        size += chunk.length;
+        if (size > maximum) {
+          fail(Object.assign(new Error(`This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`), { status: 413 }));
+          return;
+        }
+        if (!writer.write(chunk)) req.pause();
+      };
+      const onEnd = () => {
+        if (!size) {
+          fail(Object.assign(new Error('Empty files are not supported'), { status: 400 }));
+          return;
+        }
+        writer.end();
+      };
+      const onAborted = () => fail(Object.assign(new Error('Upload was interrupted.'), { status: 400 }));
+      const onRequestError = (error) => fail(error);
+      const onWriterError = (error) => fail(error);
+      const onDrain = () => {
+        if (!settled) req.resume();
+      };
+      const onFinish = () => {
+        if (writer.closed) onClose();
+      };
+      const onClose = () => {
+        if (settled) return;
+        settled = true;
+        removeListeners();
+        resolve();
+      };
+
+      req.on('data', onData);
+      req.once('end', onEnd);
+      req.once('aborted', onAborted);
+      req.once('error', onRequestError);
+      writer.on('drain', onDrain);
+      writer.once('error', onWriterError);
+      writer.once('finish', onFinish);
+      writer.once('close', onClose);
+    });
+  } catch (error) {
+    writer.destroy();
+    if (!writer.closed) {
+      await new Promise((resolve) => writer.once('close', resolve));
+    }
+    await fsp.unlink(diskPath).catch(() => {});
+    throw error;
+  }
+
+  const record = {
+    id: fileId,
+    ownerId,
+    scope,
+    originalName,
+    mime,
+    size,
+    uploadedAt: nowIso(),
+    originalLastModified: lastModified || null,
+    diskPath,
+    messageId: null
+  };
+  db.files[fileId] = record;
+  await saveFiles();
+  return record;
+}
+
 async function saveUpload({ dataUrl, name, lastModified }, ownerId, scope) {
   const { buffer, mime } = dataUrlToBuffer(dataUrl);
   if (!buffer.length) throw Object.assign(new Error('Empty files are not supported'), { status: 400 });
@@ -2152,6 +2288,49 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { user: publicUser(target, user.id), favoriteUserIds: favoriteUserIdsFor(user) });
   }
 
+  if (req.method === 'POST' && pathname === '/api/post-media') {
+    const user = await requireAuth(req, res);
+    if (!user) {
+      if (!req.destroyed) req.resume();
+      return;
+    }
+    const mime = requestHeader(req, 'content-type').split(';', 1)[0].trim().toLowerCase();
+    if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
+      // Consume the body after rejecting its type so the connection remains reusable.
+      if (!req.destroyed) req.resume();
+      return sendError(res, 400, 'Posts must contain an image or video.');
+    }
+    const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
+    const file = await saveStreamUpload(req, {
+      ownerId: user.id,
+      scope: 'post-pending',
+      mime,
+      maximum,
+      name: uploadNameFromHeader(req, mime),
+      lastModified: uploadLastModifiedFromHeader(req)
+    });
+    return sendJson(res, 201, { fileId: file.id, file: publicFile(file) });
+  }
+
+  const pendingPostMediaMatch = /^\/api\/post-media\/([^/]+)$/.exec(pathname);
+  if (req.method === 'DELETE' && pendingPostMediaMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const fileId = decodeURIComponent(pendingPostMediaMatch[1]);
+    const file = db.files[fileId];
+    if (!file || file.ownerId !== user.id || file.scope !== 'post-pending') {
+      return sendError(res, 404, 'Pending post upload not found.');
+    }
+    try {
+      await fsp.unlink(file.diskPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    delete db.files[file.id];
+    await saveFiles();
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (req.method === 'GET' && pathname === '/api/feed') {
     const user = await requireAuth(req, res);
     if (!user) return;
@@ -2207,18 +2386,33 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const body = await readJsonBody(req);
     const upload = body.file || body.media;
-    if (!upload?.dataUrl) return sendError(res, 400, 'Choose one photo or video to post.');
-    const mime = mimeFromDataUrl(upload.dataUrl);
-    if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
-    const decoded = dataUrlToBuffer(upload.dataUrl);
-    const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
-    if (decoded.buffer.length > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+    const pendingFileId = cleanText(body.fileId || '', 120);
+    let file;
+    let mime;
+    if (pendingFileId) {
+      file = db.files[pendingFileId];
+      if (!file || file.ownerId !== user.id || file.scope !== 'post-pending' || !file.diskPath || !fs.existsSync(file.diskPath)) {
+        return sendError(res, 404, 'Pending post upload not found.');
+      }
+      mime = String(file.mime || '').toLowerCase();
+      if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
+      const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
+      if (!file.size || file.size > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+    } else {
+      if (!upload?.dataUrl) return sendError(res, 400, 'Choose one photo or video to post.');
+      mime = mimeFromDataUrl(upload.dataUrl);
+      if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
+      const decoded = dataUrlToBuffer(upload.dataUrl);
+      const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
+      if (decoded.buffer.length > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+    }
     const title = cleanText(body.title || '', 100);
     const description = cleanText(body.description || body.caption || '', 2200);
     const personTags = cleanPersonTags(body.personTags || body.taggedPeople || body.taggedUsers || body.tags, user.id);
     const inlineHashtags = description.match(/#[\p{L}\p{N}_]+/gu) || [];
     const suppliedHashtags = body.hashtags ?? ((typeof body.tags === 'string' || (Array.isArray(body.tags) && body.tags.every((tag) => typeof tag === 'string'))) ? body.tags : '');
-    const file = await saveUpload(upload, user.id, 'post');
+    if (!file) file = await saveUpload(upload, user.id, 'post');
+    else file.scope = 'post';
     const post = {
       id: id('post'),
       ownerId: user.id,
@@ -2245,7 +2439,7 @@ async function handleApi(req, res, pathname, query) {
       if (note) pushToUser(tag.userId, { type: 'notification:new', notification: publicNotification(note, tag.userId) });
     }
     notifyMentions(user, `${title} ${description}`, 'in a post');
-    await Promise.all([savePosts(), saveNotifications()]);
+    await Promise.all([saveFiles(), savePosts(), saveNotifications()]);
     return sendJson(res, 201, { post: publicPost(post, user.id), user: publicUser(user, user.id) });
   }
 
@@ -3946,13 +4140,37 @@ async function handleApi(req, res, pathname, query) {
     const file = db.files[decodeURIComponent(fileDownloadMatch[1])];
     if (!canAccessFile(auth?.user?.id || null, file)) return sendError(res, 404, 'File not found.');
     const inline = query.get('inline') === '1';
-    res.writeHead(200, {
+    const headers = {
       'Content-Type': file.mime || 'application/octet-stream',
-      'Content-Length': file.size,
       'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(file.originalName)}"`,
+      'Accept-Ranges': 'bytes',
       'X-Chat-Uploaded-At': file.uploadedAt,
       'X-Chat-Original-Last-Modified': file.originalLastModified || ''
-    });
+    };
+    const rangeHeader = requestHeader(req, 'range').trim();
+    if (rangeHeader) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+      if (!match || (!match[1] && !match[2])) {
+        res.writeHead(416, { ...headers, 'Content-Range': `bytes */${file.size}`, 'Content-Length': 0 });
+        return res.end();
+      }
+      const suffixLength = match[1] ? null : Number(match[2]);
+      const start = suffixLength === null ? Number(match[1]) : Math.max(0, file.size - suffixLength);
+      const requestedEnd = match[2] && suffixLength === null ? Number(match[2]) : file.size - 1;
+      const end = Math.min(file.size - 1, requestedEnd);
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= file.size || end < start) {
+        res.writeHead(416, { ...headers, 'Content-Range': `bytes */${file.size}`, 'Content-Length': 0 });
+        return res.end();
+      }
+      const length = end - start + 1;
+      res.writeHead(206, {
+        ...headers,
+        'Content-Length': length,
+        'Content-Range': `bytes ${start}-${end}/${file.size}`
+      });
+      return fs.createReadStream(file.diskPath, { start, end }).pipe(res);
+    }
+    res.writeHead(200, { ...headers, 'Content-Length': file.size });
     return fs.createReadStream(file.diskPath).pipe(res);
   }
 

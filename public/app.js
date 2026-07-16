@@ -277,6 +277,7 @@
       headers,
       credentials: 'same-origin'
     };
+    if (options.signal) init.signal = options.signal;
     if (options.body !== undefined) {
       init.headers = { 'Content-Type': 'application/json', ...headers };
       init.body = JSON.stringify(options.body);
@@ -1718,7 +1719,16 @@
     return updateSlot('highlight-composer-slot', renderHighlightComposer());
   }
 
+  function unloadPostComposerVideos() {
+    document.querySelectorAll('#post-composer-slot video').forEach((video) => {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    });
+  }
+
   function updatePostComposerSlot() {
+    unloadPostComposerVideos();
     return updateSlot('post-composer-slot', renderPostComposer());
   }
 
@@ -1966,11 +1976,23 @@
     return postFilterStyle({ filter: composer.filter, adjustments: composer.adjustments });
   }
 
+  function postComposerMediaStyle(composer) {
+    return `transform:translate3d(${composer.crop.x}%,${composer.crop.y}%,0) scale(${composer.crop.zoom}) rotate(${composer.crop.rotation}deg);filter:${composerFilterStyle(composer)}`;
+  }
+
+  function updatePostComposerMediaStyle() {
+    if (!state.postComposer) return;
+    const style = postComposerMediaStyle(state.postComposer);
+    document.querySelectorAll('#post-composer-slot .post-composer-media > img, #post-composer-slot .post-composer-media > video').forEach((media) => {
+      media.style.cssText = style;
+    });
+  }
+
   function renderPostComposerMedia(composer, taggable = false) {
-    const style = `transform:translate3d(${composer.crop.x}%,${composer.crop.y}%,0) scale(${composer.crop.zoom}) rotate(${composer.crop.rotation}deg);filter:${composerFilterStyle(composer)}`;
+    const style = postComposerMediaStyle(composer);
     const media = composer.isVideo
-      ? `<video src="${esc(composer.dataUrl)}" style="${esc(style)}" muted playsinline controls></video>`
-      : `<img src="${esc(composer.dataUrl)}" style="${esc(style)}" alt="Post preview">`;
+      ? `<video src="${esc(composer.previewUrl)}" ${composer.posterUrl ? `poster="${esc(composer.posterUrl)}"` : ''} style="${esc(style)}" muted playsinline controls preload="metadata"></video>`
+      : `<img src="${esc(composer.previewUrl)}" style="${esc(style)}" alt="Post preview">`;
     return `
       <div class="post-composer-media aspect-${esc(composer.crop.aspect || 'portrait')} ${taggable ? 'taggable' : ''}" ${taggable ? 'data-action="pick-post-tag-position"' : ''}>
         ${media}
@@ -2020,12 +2042,12 @@
             <div class="post-editor-body">
               ${renderPostComposerMedia(composer)}
               <div class="post-filter-rail" data-scroll-memory="post-filters">
-                ${[['normal','Original'],['vivid','Vivid'],['warm','Warm'],['cool','Cool'],['mono','Mono'],['fade','Fade'],['noir','Noir']].map(([value,label]) => `<button class="${composer.filter === value ? 'active' : ''}" data-action="set-post-filter" data-filter="${value}"><span style="filter:${postFilterStyle({filter:value})}">${composer.isVideo ? `<video src="${esc(composer.dataUrl)}" muted playsinline preload="metadata"></video>` : `<img src="${esc(composer.dataUrl)}" alt="">`}</span><small>${label}</small></button>`).join('')}
+                ${[['normal','Original'],['vivid','Vivid'],['warm','Warm'],['cool','Cool'],['mono','Mono'],['fade','Fade'],['noir','Noir']].map(([value,label]) => `<button class="${composer.filter === value ? 'active' : ''}" data-action="set-post-filter" data-filter="${value}"><span style="filter:${postFilterStyle({filter:value})}">${composer.isVideo ? `<img class="post-video-filter-poster" data-video-poster ${composer.posterUrl ? `src="${esc(composer.posterUrl)}"` : 'hidden'} alt=""><i class="post-video-filter-placeholder" ${composer.posterUrl ? 'hidden' : ''}>${icon('play')}</i>` : `<img src="${esc(composer.previewUrl)}" alt="">`}</span><small>${label}</small></button>`).join('')}
               </div>
               <div class="post-adjust-tabs">
                 ${['brightness','contrast','saturation','warmth'].map((name) => `<button class="${adjustment === name ? 'active' : ''}" data-action="select-post-adjustment" data-adjustment="${name}">${name}</button>`).join('')}
               </div>
-              <label class="post-adjust-slider">${adjustment}<input type="range" min="${adjustment === 'warmth' ? -50 : adjustment === 'saturation' ? 0 : 60}" max="${adjustment === 'warmth' ? 50 : adjustment === 'saturation' ? 200 : 140}" value="${composer.adjustments[adjustment]}" data-post-adjust="${adjustment}"><output>${composer.adjustments[adjustment]}</output></label>
+              <label class="post-adjust-slider"><span>${adjustment}</span><input type="range" min="${adjustment === 'warmth' ? -50 : adjustment === 'saturation' ? 0 : 60}" max="${adjustment === 'warmth' ? 50 : adjustment === 'saturation' ? 200 : 140}" value="${composer.adjustments[adjustment]}" data-post-adjust="${adjustment}"><output>${composer.adjustments[adjustment]}</output></label>
             </div>
           ` : `
             <div class="post-details-layout">
@@ -6177,6 +6199,118 @@
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, replace(posts));
   }
 
+  const POST_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+  const POST_VIDEO_MAX_BYTES = 32 * 1024 * 1024;
+
+  function releasePostComposerMedia(composer) {
+    if (!composer) return;
+    composer.uploadController?.abort();
+    unloadPostComposerVideos();
+    const urls = new Set([composer.previewUrl, composer.posterUrl].filter((url) => String(url || '').startsWith('blob:')));
+    composer.previewUrl = '';
+    composer.posterUrl = '';
+    urls.forEach((url) => URL.revokeObjectURL(url));
+  }
+
+  function setPostPublishing(publishing) {
+    state.postPublishing = publishing;
+    const button = document.querySelector('#post-composer-slot [data-action="publish-post"]');
+    if (!button) return;
+    button.disabled = publishing;
+    button.textContent = publishing ? 'Uploading…' : 'Share';
+  }
+
+  function createVideoPoster(previewUrl) {
+    return new Promise((resolve) => {
+      const video = document.createElement('video');
+      let settled = false;
+      let capturing = false;
+      const timeout = setTimeout(() => finish(''), 5000);
+      const finish = (posterUrl) => {
+        if (settled) {
+          if (String(posterUrl || '').startsWith('blob:')) URL.revokeObjectURL(posterUrl);
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        resolve(posterUrl);
+      };
+      const capture = () => {
+        if (settled || capturing || !video.videoWidth || !video.videoHeight) return;
+        capturing = true;
+        const scale = Math.min(1, 240 / Math.max(video.videoWidth, video.videoHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+        canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+        try {
+          canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+          if (canvas.toBlob) {
+            canvas.toBlob((blob) => finish(blob ? URL.createObjectURL(blob) : ''), 'image/jpeg', 0.72);
+          } else {
+            finish(canvas.toDataURL('image/jpeg', 0.72));
+          }
+        } catch {
+          finish('');
+        }
+      };
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'metadata';
+      video.addEventListener('loadeddata', capture, { once: true });
+      video.addEventListener('seeked', capture, { once: true });
+      video.addEventListener('loadedmetadata', () => {
+        if (video.readyState >= 2) capture();
+        else {
+          try { video.currentTime = Math.min(0.1, Number.isFinite(video.duration) ? video.duration / 4 : 0.1); } catch {}
+        }
+      }, { once: true });
+      video.addEventListener('error', () => finish(''), { once: true });
+      video.src = previewUrl;
+      video.load();
+    });
+  }
+
+  function applyPostVideoPoster(composer) {
+    if (!composer?.posterUrl || state.postComposer !== composer) return;
+    document.querySelectorAll('#post-composer-slot [data-video-poster]').forEach((image) => {
+      image.src = composer.posterUrl;
+      image.hidden = false;
+      const placeholder = image.nextElementSibling;
+      if (placeholder?.classList.contains('post-video-filter-placeholder')) placeholder.hidden = true;
+    });
+  }
+
+  async function uploadPostMedia(file, signal) {
+    const headers = {
+      'Content-Type': file.type || 'application/octet-stream',
+      'X-Upload-Name': encodeURIComponent(file.name || 'post-media'),
+      'X-Upload-Last-Modified': file.lastModified ? new Date(file.lastModified).toISOString() : ''
+    };
+    const response = await fetch('/api/post-media', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+      body: file,
+      signal
+    });
+    const type = response.headers.get('content-type') || '';
+    const data = type.includes('application/json') ? await response.json() : await response.text();
+    if (!response.ok) {
+      const error = new Error(data.error || data || response.statusText);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  }
+
+  async function discardPendingPostMedia(fileId) {
+    if (!fileId) return;
+    await api(`/api/post-media/${encodeURIComponent(fileId)}`, { method: 'DELETE' }).catch(() => {});
+  }
+
   async function beginPostComposer(file = null) {
     if (!file) {
       document.getElementById('post-input')?.click();
@@ -6185,14 +6319,21 @@
     if (!String(file.type || '').startsWith('image/') && !String(file.type || '').startsWith('video/')) {
       throw new Error('Choose a photo or video.');
     }
-    const dataUrl = await fileToDataUrl(file);
-    state.postComposer = {
+    const isVideo = String(file.type || '').startsWith('video/');
+    const maximum = isVideo ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES;
+    if (file.size > maximum) throw new Error(`This ${isVideo ? 'video' : 'image'} is too large. Choose one under ${Math.floor(maximum / 1024 / 1024)} MB.`);
+    if (state.postComposer) releasePostComposerMedia(state.postComposer);
+    const previewUrl = URL.createObjectURL(file);
+    const composer = {
       stage: 1,
-      name: file.name || (file.type?.startsWith('video/') ? 'post.mp4' : 'post.jpg'),
-      type: file.type || mimeFromDataUrl(dataUrl),
+      file,
+      previewUrl,
+      posterUrl: '',
+      uploadController: null,
+      name: file.name || (isVideo ? 'post.mp4' : 'post.jpg'),
+      type: file.type,
       lastModified: file.lastModified || null,
-      dataUrl,
-      isVideo: String(file.type || '').startsWith('video/'),
+      isVideo,
       crop: { aspect: 'portrait', zoom: 1, x: 0, y: 0, rotation: 0 },
       filter: 'normal',
       activeAdjustment: 'saturation',
@@ -6204,12 +6345,25 @@
       personTags: [],
       pendingTagPoint: null
     };
+    state.postComposer = composer;
+    state.postPublishing = false;
     updatePostComposerSlot();
+    if (isVideo) {
+      const posterUrl = await createVideoPoster(previewUrl);
+      if (state.postComposer === composer) {
+        composer.posterUrl = posterUrl;
+        applyPostVideoPoster(composer);
+      } else if (String(posterUrl || '').startsWith('blob:')) {
+        URL.revokeObjectURL(posterUrl);
+      }
+    }
   }
 
   function closePostComposer() {
+    const composer = state.postComposer;
     state.postComposer = null;
     state.postPublishing = false;
+    releasePostComposerMedia(composer);
     updatePostComposerSlot();
   }
 
@@ -6220,18 +6374,20 @@
     composer.description = document.getElementById('post-description')?.value.slice(0, 2200) || composer.description;
     composer.hashtags = document.getElementById('post-hashtags')?.value.slice(0, 300) || composer.hashtags;
     composer.allowReposts = document.getElementById('post-allow-reposts')?.checked !== false;
-    state.postPublishing = true;
-    updatePostComposerSlot();
+    const controller = new AbortController();
+    composer.uploadController = controller;
+    setPostPublishing(true);
+    let pendingFileId = '';
     try {
+      const uploaded = await uploadPostMedia(composer.file, controller.signal);
+      pendingFileId = uploaded.file?.id || uploaded.fileId || '';
+      if (!pendingFileId) throw new Error('The video upload did not return a file ID.');
+      if (state.postComposer !== composer) throw new DOMException('Post upload cancelled.', 'AbortError');
       const data = await api('/api/posts', {
         method: 'POST',
+        signal: controller.signal,
         body: {
-          file: {
-            name: composer.name,
-            type: composer.type,
-            dataUrl: composer.dataUrl,
-            lastModified: composer.lastModified ? new Date(composer.lastModified).toISOString() : null
-          },
+          fileId: pendingFileId,
           title: composer.title,
           description: composer.description,
           hashtags: composer.hashtags,
@@ -6243,9 +6399,11 @@
           edits: { crop: composer.crop, filter: composer.filter, adjustments: composer.adjustments }
         }
       });
+      pendingFileId = '';
       if (data.user) state.me = data.user;
       state.postComposer = null;
       state.postPublishing = false;
+      releasePostComposerMedia(composer);
       updatePostComposerSlot();
       await Promise.all([loadFeed(state.feedMode, { render: false }), loadExplore(), loadProfilePosts(state.me, 'posts', { render: false })]);
       state.profileMediaTab = 'posts';
@@ -6253,9 +6411,12 @@
       updateSidebar();
       pushToast({ key: `post-${data.post?.id || Date.now()}`, kind: 'social', title: 'Post shared', body: 'Your photo or video is now live.' });
     } catch (error) {
-      state.postPublishing = false;
-      updatePostComposerSlot();
+      await discardPendingPostMedia(pendingFileId);
+      if (state.postComposer === composer) setPostPublishing(false);
+      if (error?.name === 'AbortError') return;
       throw error;
+    } finally {
+      composer.uploadController = null;
     }
   }
 
@@ -9712,6 +9873,7 @@
       }
       if (action === 'logout') {
         await api('/api/auth/logout', { method: 'POST' });
+        if (state.postComposer) closePostComposer();
         closeCameraCapture({ immediate: true });
         if (state.ws) state.ws.close();
         toastTimers.forEach((timer) => clearTimeout(timer));
@@ -9763,19 +9925,38 @@
       }
       if (action === 'set-post-aspect' && state.postComposer) {
         state.postComposer.crop.aspect = target.dataset.aspect || 'portrait';
-        updatePostComposerSlot();
+        target.parentElement?.querySelectorAll('[data-action="set-post-aspect"]').forEach((button) => button.classList.toggle('active', button === target));
+        const frame = document.querySelector('#post-composer-slot .post-composer-media');
+        if (frame) {
+          Array.from(frame.classList).filter((name) => name.startsWith('aspect-')).forEach((name) => frame.classList.remove(name));
+          frame.classList.add(`aspect-${state.postComposer.crop.aspect}`);
+        }
       }
       if (action === 'rotate-post-media' && state.postComposer) {
         state.postComposer.crop.rotation = (Number(state.postComposer.crop.rotation || 0) + 90) % 360;
-        updatePostComposerSlot();
+        updatePostComposerMediaStyle();
       }
       if (action === 'set-post-filter' && state.postComposer) {
         state.postComposer.filter = target.dataset.filter || 'normal';
-        updatePostComposerSlot();
+        target.parentElement?.querySelectorAll('[data-action="set-post-filter"]').forEach((button) => button.classList.toggle('active', button === target));
+        updatePostComposerMediaStyle();
       }
       if (action === 'select-post-adjustment' && state.postComposer) {
-        state.postComposer.activeAdjustment = target.dataset.adjustment || 'saturation';
-        updatePostComposerSlot();
+        const adjustment = target.dataset.adjustment || 'saturation';
+        state.postComposer.activeAdjustment = adjustment;
+        target.parentElement?.querySelectorAll('[data-action="select-post-adjustment"]').forEach((button) => button.classList.toggle('active', button === target));
+        const slider = document.querySelector('#post-composer-slot .post-adjust-slider');
+        const input = slider?.querySelector('input');
+        if (slider && input) {
+          const minimum = adjustment === 'warmth' ? -50 : adjustment === 'saturation' ? 0 : 60;
+          const maximum = adjustment === 'warmth' ? 50 : adjustment === 'saturation' ? 200 : 140;
+          slider.querySelector('span').textContent = adjustment;
+          input.dataset.postAdjust = adjustment;
+          input.min = String(minimum);
+          input.max = String(maximum);
+          input.value = String(state.postComposer.adjustments[adjustment]);
+          slider.querySelector('output').textContent = input.value;
+        }
       }
       if (action === 'pick-post-tag-position' && state.postComposer?.stage === 3) {
         if (event.target.closest('.post-tag-draft')) return;
@@ -11057,8 +11238,7 @@
     if (event.target.matches('[data-post-crop]') && state.postComposer) {
       const key = event.target.dataset.postCrop;
       state.postComposer.crop[key] = Number(event.target.value);
-      const media = document.querySelector('.post-composer-media > img, .post-composer-media > video');
-      if (media) media.style.cssText = `transform:translate3d(${state.postComposer.crop.x}%,${state.postComposer.crop.y}%,0) scale(${state.postComposer.crop.zoom}) rotate(${state.postComposer.crop.rotation}deg);filter:${composerFilterStyle(state.postComposer)}`;
+      updatePostComposerMediaStyle();
       return;
     }
     if (event.target.matches('[data-post-adjust]') && state.postComposer) {
@@ -11066,8 +11246,7 @@
       state.postComposer.adjustments[key] = Number(event.target.value);
       const output = event.target.closest('label')?.querySelector('output');
       if (output) output.textContent = event.target.value;
-      const media = document.querySelector('.post-composer-media > img, .post-composer-media > video');
-      if (media) media.style.filter = composerFilterStyle(state.postComposer);
+      updatePostComposerMediaStyle();
       return;
     }
     if (event.target.id === 'post-title' && state.postComposer) {
@@ -12403,6 +12582,7 @@
   });
 
   window.addEventListener('pagehide', () => {
+    if (state.postComposer) closePostComposer();
     stopCameraStream();
   });
 

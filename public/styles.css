@@ -11708,7 +11708,6 @@ html.keyboard-open .bottom-tabs {
 .post-composer-media video {
   max-width: none;
   transform-origin: center;
-  will-change: transform;
 }
 
 .post-media-missing {
@@ -12629,11 +12628,33 @@ button.profile-stat:is(:hover, :focus-visible) {
 }
 
 .post-filter-rail button > span {
+  position: relative;
   width: 76px;
   height: 76px;
+  display: grid;
+  place-items: center;
   overflow: hidden;
   border-radius: 12px;
   background: #080b10;
+}
+
+.post-video-filter-poster[hidden],
+.post-video-filter-placeholder[hidden] {
+  display: none;
+}
+
+.post-video-filter-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.82);
+  background: radial-gradient(circle at 50% 42%, rgba(119, 104, 255, 0.34), rgba(5, 8, 13, 0.96));
+}
+
+.post-video-filter-placeholder .ui-icon {
+  width: 24px;
+  height: 24px;
 }
 
 .post-filter-rail small {
