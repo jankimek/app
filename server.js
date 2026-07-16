@@ -2113,16 +2113,33 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { ok: true });
   }
 
-  if (req.method === 'GET' && pathname === '/api/me') {
-    const user = await requireAuth(req, res);
-    if (!user) return;
-    return sendJson(res, 200, {
-      user: publicUser(user, user.id),
-      twoFactorEnabled: Boolean(user.twoFactor?.enabled),
-      pendingRequestCount: pendingIncomingRequests(user.id).length,
-      isModerator: isModerator(user.id)
-    });
+  if (req.method === 'GET' && pathname === '/api/giphy/search') {
+  const user = await requireAuth(req, res);
+  if (!user) return;
+
+  const term = cleanText(query.get('q') || '', 100);
+  if (!term) return sendJson(res, 200, { gifs: [] });
+
+  const key = process.env.GIPHY_API_KEY;
+  if (!key) return sendJson(res, 200, { gifs: [] });
+
+  try {
+    const url = `https://api.giphy.com/v1/gifs/search?api_key=${key}&q=${encodeURIComponent(term)}&limit=30&rating=g`;
+    const r = await fetch(url);
+    const data = await r.json();
+
+    const gifs = (data.data || []).map(g => ({
+      id: g.id,
+      title: g.title || '',
+      url: g.images?.fixed_height?.url || g.images?.original?.url,
+      preview: g.images?.fixed_height_small?.url || g.images?.preview_gif?.url,
+    }));
+
+    return sendJson(res, 200, { gifs });
+  } catch {
+    return sendJson(res, 200, { gifs: [] });
   }
+}
 
   if (req.method === 'PATCH' && pathname === '/api/me/profile') {
     const user = await requireAuth(req, res);
