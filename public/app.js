@@ -155,6 +155,8 @@
     exploreLoading: false,
     clips: [],
     clipMode: 'for_you',
+    clipViewer: null,
+    clipMuted: localStorage.getItem('clipMuted') !== '0',
     notes: [],
     postComposer: null,
     postPublishing: false,
@@ -357,6 +359,11 @@
     return match ? decodeURIComponent(match[1]) : null;
   }
 
+  function sharedPostIdFromLocation() {
+    const params = new URL(location.href).searchParams;
+    return params.get('post') || params.get('clip') || null;
+  }
+
   function profilePath(username) {
     return `/u/${encodeURIComponent(username || '')}`;
   }
@@ -372,7 +379,8 @@
       searchProfileSocialView: state.searchProfileSocialView,
       publicProfileUsername: state.publicProfile?.username || null,
       activePeerId: state.activePeer?.id || null,
-      activeGroupId: state.activeGroup?.id || null
+      activeGroupId: state.activeGroup?.id || null,
+      clipViewer: state.clipViewer ? { ...state.clipViewer } : null
     };
   }
 
@@ -640,7 +648,7 @@
 
   function captureLiveScroll(root) {
     if (!root) return [];
-    return [...root.querySelectorAll('[data-scroll-memory], .messages, .chat-profile-content')]
+    return [...root.querySelectorAll('[data-scroll-memory], .messages, .chat-profile-content, .post-carousel-track')]
       .map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft }));
   }
 
@@ -876,6 +884,7 @@
     state.chatProfileSocialView = view.chatProfileSocialView || null;
     state.searchProfileOpen = Boolean(view.searchProfileOpen);
     state.searchProfileSocialView = view.searchProfileSocialView || null;
+    state.clipViewer = view.clipViewer ? { ...view.clipViewer } : null;
     state.activePeer = entry.activePeer || null;
     state.activeGroup = entry.activeGroup || null;
     state.publicProfile = entry.publicProfile || null;
@@ -993,7 +1002,7 @@
       back: '<svg viewBox="0 0 24 24"><path d="M15 18 9 12l6-6"/></svg>',
       phone: '<svg viewBox="0 0 24 24"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7A2 2 0 0 1 22 16.9Z"/></svg>',
       video: '<svg viewBox="0 0 24 24"><path d="M4 6h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/><path d="m17 10 5-3v10l-5-3"/></svg>',
-      clips: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 3 4 5 4-5M3 9h18"/><path d="m10 13 5 3-5 3Z"/></svg>',
+      clips: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><path d="m10 8 6 4-6 4Z"/></svg>',
       file: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
       sticker: '<svg viewBox="0 0 24 24"><path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5"/><path d="M14 20c0-3.3 2.7-6 6-6"/><path d="M9 9h.01M15 9h.01M8.5 14a5 5 0 0 0 7 0"/></svg>',
       mic: '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg>',
@@ -1087,6 +1096,10 @@
     return Boolean(state.activePeer || state.activeGroup);
   }
 
+  function hasVisibleConversation() {
+    return !state.clipViewer && state.tab === 'chats' && hasActiveConversation();
+  }
+
   function activeConversationKey() {
     return state.activeGroup?.id || state.activePeer?.id || null;
   }
@@ -1157,14 +1170,28 @@
   }
 
   function switchMainTab(nextTab, options = {}) {
-    if (!['home', 'chats', 'search', 'clips', 'profile'].includes(nextTab) || nextTab === state.tab) return;
+    if (!['home', 'chats', 'search', 'clips', 'profile'].includes(nextTab)) return;
+    if (nextTab === state.tab) {
+      if (state.clipViewer) requestNavigationBack();
+      else if (nextTab !== 'chats' && hasActiveConversation()) {
+        rememberActiveConversation();
+        state.activePeer = null;
+        state.activeGroup = null;
+        state.chatLoading = false;
+        state.chatOpenToken += 1;
+        state.chatProfileOpen = false;
+        state.chatProfileSocialView = null;
+        renderApp();
+      }
+      return;
+    }
     const leavingPublicProfile = state.searchProfileOpen;
     const profileReturnScroll = state.profileReturnScroll;
-    const wasChatProfileOpen = state.chatProfileOpen;
     state.lastTab = state.tab;
     state.tabTransition = options.animate !== false;
     state.tabDirection = tabIndex(nextTab) < tabIndex(state.tab) ? 'left' : 'right';
     state.tab = nextTab;
+    state.clipViewer = null;
     if (leavingPublicProfile) {
       state.searchProfileOpen = false;
       state.searchProfileSocialView = null;
@@ -1177,7 +1204,7 @@
         view: captureNavigationView()
       }, '', '/');
     }
-    if (isMobileLayout()) {
+    if (isMobileLayout() || nextTab !== 'chats') {
       rememberActiveConversation();
       state.activePeer = null;
       state.activeGroup = null;
@@ -1194,9 +1221,7 @@
     // second copy of that tab behind it. Otherwise a later Back transition
     // animates to the stale retained shell and visibly hitches at the end.
     discardNavigationForMainTab();
-    const keepDesktopChat = !isMobileLayout() && hasActiveConversation() && !wasChatProfileOpen && !leavingPublicProfile;
-    if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
-    else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
+    if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
     else renderApp();
     if (leavingPublicProfile) state.profileReturnScroll = null;
   }
@@ -1235,6 +1260,7 @@
   function describeMessage(message) {
     if (!message) return '';
     if (message.deletedAt) return 'Deleted message';
+    if (message.kind === 'post') return message.sharedPost?.isClip ? 'Shared a clip' : 'Shared a post';
     if (message.text) return message.text;
     if (message.attachment?.name) return `${message.kind}: ${message.attachment.name}`;
     return message.kind || 'message';
@@ -1244,6 +1270,7 @@
     await loadStickers();
     loadStickerSets();
     const publicName = publicUsernameFromPath();
+    const sharedPostId = sharedPostIdFromLocation();
     try {
       const me = await api('/api/me');
       state.me = me.user;
@@ -1255,6 +1282,7 @@
 
     if (!state.me && publicName) {
       await loadPublicProfile(publicName);
+      if (sharedPostId) await loadSharedLinkPost(sharedPostId, { publicOnly: true });
       renderPublicScreen();
       history.replaceState({ appManaged: true, route: 'profile', username: publicName }, '', location.href);
       return;
@@ -1274,6 +1302,7 @@
       state.searchProfileOpen = Boolean(state.publicProfile);
       if (state.publicProfile) await loadProfilePosts(state.publicProfile, state.searchProfileMediaTab, { render: false }).catch(() => []);
     }
+    if (sharedPostId) await loadSharedLinkPost(sharedPostId);
     renderApp();
     history.replaceState({
       appManaged: true,
@@ -1611,7 +1640,7 @@
     forwardLiveShell?.remove();
     app.innerHTML = `
       ${forwardEntry?.previewHtml && !forwardLiveShell ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
-      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.tab === 'home' && !hasActiveConversation() ? 'home-root' : ''} ${state.tab !== 'chats' && !hasActiveConversation() && !state.searchProfileOpen ? 'social-root' : ''}">
+      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasVisibleConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.clipViewer ? 'clip-viewer-root social-root' : ''} ${state.tab === 'home' && !hasVisibleConversation() && !state.clipViewer ? 'home-root' : ''} ${state.tab !== 'chats' && !hasVisibleConversation() && !state.searchProfileOpen && !state.clipViewer ? 'social-root' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -1639,6 +1668,7 @@
       <input id="note-audio-input" type="file" accept="audio/*" hidden>
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
+    syncActionSheetAccessibility();
     syncCurrentNavigationHistory();
     if (forwardEntry && forwardLiveShell) {
       const preview = document.createElement('div');
@@ -1697,7 +1727,9 @@
   }
 
   function updateActionSheetSlot() {
-    return updateSlot('action-sheet-slot', renderActionSheet());
+    const updated = updateSlot('action-sheet-slot', renderActionSheet());
+    if (updated) syncActionSheetAccessibility();
+    return updated;
   }
 
   function updateMessageFocusSlot() {
@@ -1794,22 +1826,26 @@
   }
 
   function renderSidebar() {
-    const scrollKey = state.searchProfileOpen && state.publicProfile
+    const viewingClip = Boolean(state.clipViewer);
+    const scrollKey = viewingClip
+      ? `clip-viewer:${state.clipViewer.postId}:${state.clipViewer.mediaIndex || 0}`
+      : state.searchProfileOpen && state.publicProfile
       ? `public-profile:${state.publicProfile.username}:${state.searchProfileSocialView || 'main'}`
       : `tab:${state.tab}:${state.tab === 'home' ? state.feedMode : (state.profileSocialView || 'main')}`;
+    const contentTab = viewingClip ? 'clip-viewer' : state.tab;
     return `
       <aside class="sidebar">
-        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}" data-scroll-memory="${esc(scrollKey)}">
-          ${renderTabContent(state.tab)}
+        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(contentTab)}" data-scroll-memory="${esc(scrollKey)}">
+          ${viewingClip ? renderClipsPanel({ viewer: true }) : renderTabContent(state.tab)}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
           <div class="desktop-brand" aria-label="New Around">New Around</div>
           ${navButton('home', 'Home', 'home')}
           ${navButton('search', 'Search', 'search')}
-          <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
           ${navButton('clips', 'Clips', 'clips')}
           ${navButton('chats', 'Messages', 'messages')}
           ${navButton('profile', 'Profile', 'profile')}
+          <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
         </nav>
       </aside>
     `;
@@ -1954,7 +1990,8 @@
       const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
       const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
       const aspect = String(crop.aspect || crop.aspectRatio || '');
-      return `<video class="post-native-video" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline ${options.grid ? 'muted' : 'controls'} preload="metadata" aria-label="${esc(item.altText || `Video by ${postAuthor(post)?.username || 'user'}`)}"></video>`;
+      const label = item.altText || `Open video by ${postAuthor(post)?.username || 'user'}`;
+      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(label)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="Turn sound on">${icon('mute')}</button>`}`;
     }
     return `<img src="${esc(media.url)}" style="${esc(postCropStyle(visual))}" alt="${esc(item.altText || post.title || `Post by ${postAuthor(post)?.username || 'user'}`)}" loading="lazy">`;
   }
@@ -1976,7 +2013,7 @@
     if (options.grid) {
       return `
         <div class="post-media-frame post-media-grid aspect-${esc(aspect.name)}" style="--post-aspect:${aspect.ratio}">
-          ${renderPostVisual(first, post, { grid: true })}
+          ${renderPostVisual(first, post, { grid: true, mediaIndex: 0 })}
           ${isVideo ? `<span class="post-video-mark">${icon('play')}</span>` : ''}
           ${items.length > 1 ? `<span class="post-carousel-mark" aria-label="${items.length} items">${icon('clips')}</span>` : ''}
         </div>
@@ -1985,7 +2022,7 @@
     return `
       <div class="post-media-frame aspect-${esc(aspect.name)} ${items.length > 1 ? 'has-carousel' : ''}" style="--post-aspect:${aspect.ratio}" data-post-carousel="${esc(post.id)}">
         <div class="post-carousel-track" data-post-id="${esc(post.id)}">
-          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post)}${renderPostPersonTags(post, index)}</div>`).join('')}
+          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post, { mediaIndex: index })}${renderPostPersonTags(post, index)}</div>`).join('')}
         </div>
         ${items.length > 1 ? `
           <span class="post-carousel-count" aria-live="polite"><b>1</b>/${items.length}</span>
@@ -2015,7 +2052,8 @@
       slide.setAttribute('aria-hidden', active ? 'false' : 'true');
       slide.toggleAttribute('inert', !active);
       slide.querySelectorAll('video').forEach((video) => {
-        if (active) video.removeAttribute('tabindex');
+        if (active && video.matches('[data-action="open-home-video"]')) video.tabIndex = 0;
+        else if (active) video.removeAttribute('tabindex');
         else {
           video.tabIndex = -1;
           video.pause();
@@ -2157,68 +2195,226 @@
     });
   }
 
-  function renderClipCard(post) {
-    const item = postMediaItems(post)[0];
+  function clipViewerEntries() {
+    const viewer = state.clipViewer;
+    const entries = [];
+    const seen = new Set();
+    if (viewer) {
+      const post = postById(viewer.postId);
+      const mediaIndex = clamp(Number(viewer.mediaIndex || 0), 0, Math.max(0, postMediaItems(post).length - 1));
+      const item = postMediaItems(post)[mediaIndex];
+      if (post && item?.mediaType === 'video') {
+        entries.push({ post, mediaIndex });
+        seen.add(post.id);
+      }
+    }
+    clipPosts().forEach((post) => {
+      if (seen.has(post.id)) return;
+      entries.push({ post, mediaIndex: 0 });
+      seen.add(post.id);
+    });
+    return entries;
+  }
+
+  function renderClipCard(post, options = {}) {
+    const mediaIndex = clamp(Number(options.mediaIndex || 0), 0, Math.max(0, postMediaItems(post).length - 1));
+    const item = postMediaItems(post)[mediaIndex];
     const media = item?.media;
     const author = postAuthor(post);
-    if (!media?.url || !author) return '';
+    if (!media?.url || !author || item.mediaType !== 'video') return '';
     const crop = item.crop || {};
     const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
     const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
-    const aspect = String(crop.aspect || crop.aspectRatio || '');
+    const aspect = postAspect(item);
+    const letterbox = aspect.name === 'mixed' || aspect.ratio > 1.15;
     const liked = Boolean(post.likedByMe);
+    const reposted = Boolean(post.repostedByMe);
     const saved = Boolean(post.savedByMe);
     const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
+    const following = (state.me?.following || []).some((user) => user.id === author.id);
+    const caption = String(post.description || post.caption || '');
     return `
-      <article class="clip-card" data-post-id="${esc(post.id)}">
-        <video class="clip-video" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline controls loop muted preload="metadata" aria-label="${esc(item.altText || `Clip by ${author.username}`)}"></video>
-        <div class="clip-shade" aria-hidden="true"></div>
-        <div class="clip-copy">
-          <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
-          ${post.description ? `<p>${renderMentionText(post.description)}</p>` : ''}
-        </div>
-        <div class="clip-actions">
-          <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}">${icon('heart')}<small data-clip-like-count>${showLikeCount ? Number(post.likeCount || 0).toLocaleString() : '—'}</small></button>
-          <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comments">${icon('comment')}<small data-clip-comment-count>${Number(post.commentCount || 0).toLocaleString()}</small></button>
-          ${post.allowReposts === false ? '' : `<button data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="Repost">${icon('repost')}<small data-clip-repost-count>${Number(post.repostCount || 0).toLocaleString()}</small></button>`}
-          <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
-          <button class="${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}">${icon('bookmark')}</button>
-          <button data-action="view-user-profile" data-username="${esc(author.username)}" aria-label="About ${esc(author.username)}">${icon('more')}</button>
+      <article class="clip-card" data-post-id="${esc(post.id)}" data-media-index="${mediaIndex}">
+        <div class="clip-stage">
+          <div class="clip-viewport ${letterbox ? 'letterbox' : ''}">
+            <video class="clip-video" data-clip-video src="${esc(media.url)}" style="object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline webkit-playsinline loop ${state.clipMuted ? 'muted' : ''} preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" tabindex="0" aria-label="${esc(item.altText || `Clip by ${author.username}. Tap to pause or play.`)}"></video>
+            <div class="clip-shade" aria-hidden="true"></div>
+            <span class="clip-play-indicator" aria-hidden="true">${icon('play')}</span>
+            <span class="clip-like-burst" aria-hidden="true">${icon('heart')}</span>
+            <div class="clip-copy">
+              <div class="clip-author-row">
+                <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
+                ${author.id !== state.me?.id && !following ? `<button class="clip-follow" data-action="send-request" data-user-id="${esc(author.id)}">Follow</button>` : ''}
+              </div>
+              ${caption ? `<p>${renderMentionText(caption)}</p>` : ''}
+              <small class="clip-audio-line">${icon('volume')} Original audio · ${esc(author.username)}</small>
+            </div>
+            <span class="clip-progress" aria-hidden="true"><i></i></span>
+          </div>
+          <aside class="clip-actions" aria-label="Clip actions">
+            <button class="clip-like-action ${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}" aria-pressed="${liked}">${icon('heart')}<small data-clip-like-count>${showLikeCount ? Number(post.likeCount || 0).toLocaleString() : '—'}</small></button>
+            <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comments">${icon('comment')}<small data-clip-comment-count>${Number(post.commentCount || 0).toLocaleString()}</small></button>
+            ${post.allowReposts === false ? '' : `<button class="clip-repost-action ${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="${reposted ? 'Undo repost' : 'Repost'}" aria-pressed="${reposted}">${icon('repost')}<small data-clip-repost-count>${Number(post.repostCount || 0).toLocaleString()}</small></button>`}
+            <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
+            <button class="clip-save-action ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
+            <button data-action="post-options" data-post-id="${esc(post.id)}" aria-label="More options">${icon('more')}</button>
+            <button class="clip-audio-cover" data-action="view-user-profile" data-username="${esc(author.username)}" aria-label="View ${esc(author.username)}">${author.avatar?.url ? `<img src="${esc(author.avatar.url)}" alt="">` : esc(initials(author))}</button>
+          </aside>
         </div>
       </article>
     `;
   }
 
-  function renderClipsPanel() {
-    const posts = clipPosts();
+  function renderClipsPanel(options = {}) {
+    const viewer = Boolean(options.viewer || state.clipViewer);
+    const entries = viewer ? clipViewerEntries() : clipPosts().map((post) => ({ post, mediaIndex: 0 }));
     return `
-      <section class="clips-page" aria-label="Clips">
-        <header class="clips-head"><strong>Clips</strong><div class="clips-tabs" role="tablist"><button class="${state.clipMode === 'for_you' ? 'active' : ''}" data-action="set-clip-mode" data-mode="for_you" role="tab" aria-selected="${state.clipMode === 'for_you'}">For you</button><button class="${state.clipMode === 'friends' ? 'active' : ''}" data-action="set-clip-mode" data-mode="friends" role="tab" aria-selected="${state.clipMode === 'friends'}">Friends</button></div><button data-action="open-post-create" aria-label="Create a clip">${icon('camera')}</button></header>
-        <div class="clips-feed" data-scroll-memory="clips-feed">
-          ${posts.length ? posts.map(renderClipCard).join('') : `<div class="clips-empty">${icon('clips')}<strong>No clips yet</strong><small>Share a video post and it will appear here.</small><button class="primary" data-action="open-post-create">Share a video</button></div>`}
+      <section class="clips-page ${viewer ? 'is-viewer' : ''}" aria-label="Clips">
+        <header class="clips-head">
+          <button class="clips-leading" data-action="${viewer ? 'close-clip-viewer' : 'open-post-create'}" aria-label="${viewer ? 'Back to previous page' : 'Create a clip'}">${icon(viewer ? 'back' : 'plus')}</button>
+          <div class="clips-tabs" role="tablist"><button class="${state.clipMode === 'for_you' ? 'active' : ''}" data-action="set-clip-mode" data-mode="for_you" role="tab" aria-selected="${state.clipMode === 'for_you'}">Clips</button><button class="${state.clipMode === 'friends' ? 'active' : ''}" data-action="set-clip-mode" data-mode="friends" role="tab" aria-selected="${state.clipMode === 'friends'}">Friends</button></div>
+          <button class="clips-sound" data-action="toggle-clip-sound" aria-label="${state.clipMuted ? 'Turn sound on' : 'Mute clips'}" aria-pressed="${state.clipMuted ? 'true' : 'false'}">${icon(state.clipMuted ? 'mute' : 'volume')}</button>
+        </header>
+        <div class="clips-feed" data-scroll-memory="${viewer ? `clip-viewer-feed:${esc(state.clipViewer?.postId || '')}` : 'clips-feed'}">
+          ${entries.length ? entries.map(({ post, mediaIndex }) => renderClipCard(post, { mediaIndex })).join('') : `<div class="clips-empty">${icon('clips')}<strong>No clips yet</strong><small>Share a video post and it will appear here.</small><button class="primary" data-action="open-post-create">Share a video</button></div>`}
         </div>
       </section>
     `;
   }
 
+  function toggleHomeVideoSound(button) {
+    const video = button?.closest('.post-carousel-slide, .post-media-frame')?.querySelector('.post-video-preview');
+    if (!video) return;
+    video.muted = !video.muted;
+    button.innerHTML = icon(video.muted ? 'mute' : 'volume');
+    button.setAttribute('aria-label', video.muted ? 'Turn sound on' : 'Mute video');
+    const cue = video.parentElement?.querySelector('.post-video-open-cue');
+    if (!video.muted) video.play().then(() => { if (cue) cue.hidden = true; }).catch(() => {});
+  }
+
+  function openPostClip(postId, mediaIndex = 0, sourceVideo = null) {
+    const post = postById(postId);
+    const items = postMediaItems(post);
+    const index = clamp(Number(mediaIndex || 0), 0, Math.max(0, items.length - 1));
+    if (!post || items[index]?.mediaType !== 'video') return false;
+    const url = new URL(location.href);
+    url.searchParams.set('clip', post.id);
+    url.searchParams.set('media', String(index));
+    beginDetailNavigation('clip-viewer', url.toString());
+    const sourceTime = Number(sourceVideo?.currentTime || 0);
+    if (sourceVideo && !sourceVideo.muted) {
+      state.clipMuted = false;
+      localStorage.setItem('clipMuted', '0');
+    }
+    sourceVideo?.pause?.();
+    state.clipViewer = { postId: post.id, mediaIndex: index, sourceTab: state.tab, sourceTime };
+    state.actionSheet = null;
+    renderApp();
+    return true;
+  }
+
+  function closeClipViewer() {
+    if (!state.clipViewer) return;
+    navigationBackOr(() => {
+      state.clipViewer = null;
+      const url = new URL(location.href);
+      url.searchParams.delete('clip');
+      url.searchParams.delete('media');
+      history.replaceState({ ...(history.state || {}), view: captureNavigationView() }, '', url.toString());
+      renderApp();
+    });
+  }
+
   let clipPlaybackObserver = null;
+  let clipTapTimer = null;
+
+  function syncClipPlaybackUi(video) {
+    const card = video?.closest('.clip-card');
+    if (!card) return;
+    card.classList.toggle('is-paused', video.paused);
+    card.classList.toggle('is-playing', !video.paused);
+    const progress = Number.isFinite(video.duration) && video.duration > 0 ? clamp(video.currentTime / video.duration, 0, 1) : 0;
+    const line = card.querySelector('.clip-progress i');
+    if (line) line.style.transform = `scaleX(${progress})`;
+  }
+
+  function syncClipSoundUi() {
+    document.querySelectorAll('.clips-sound').forEach((button) => {
+      button.innerHTML = icon(state.clipMuted ? 'mute' : 'volume');
+      button.setAttribute('aria-label', state.clipMuted ? 'Turn sound on' : 'Mute clips');
+      button.setAttribute('aria-pressed', state.clipMuted ? 'true' : 'false');
+    });
+  }
+
+  function toggleClipSound() {
+    state.clipMuted = !state.clipMuted;
+    localStorage.setItem('clipMuted', state.clipMuted ? '1' : '0');
+    const root = currentAppShell()?.querySelector('.clips-feed');
+    root?.querySelectorAll('.clip-video').forEach((video) => { video.muted = state.clipMuted; });
+    syncClipSoundUi();
+    const active = root?.querySelector('.clip-card.is-playing .clip-video') || root?.querySelector('.clip-video');
+    active?.play?.().catch(() => {});
+  }
+
+  function toggleClipPlayback(surface) {
+    const video = surface?.matches?.('.clip-video') ? surface : surface?.querySelector?.('.clip-video');
+    if (!video) return;
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+    syncClipPlaybackUi(video);
+  }
 
   function attachClipPlayback() {
     clipPlaybackObserver?.disconnect();
     clipPlaybackObserver = null;
-    const videos = Array.from(document.querySelectorAll('.clips-feed .clip-video'));
-    if (!videos.length || !('IntersectionObserver' in window)) return;
+    const root = currentAppShell()?.querySelector('.clips-feed');
+    const videos = Array.from(root?.querySelectorAll('.clip-video') || []);
+    if (!videos.length) return;
+    const sourceTime = Number(state.clipViewer?.sourceTime || 0);
+    videos.forEach((video) => {
+      video.muted = state.clipMuted;
+      if (!video._clipPlaybackBound) {
+        video._clipPlaybackBound = true;
+        video.addEventListener('play', () => syncClipPlaybackUi(video));
+        video.addEventListener('pause', () => syncClipPlaybackUi(video));
+        video.addEventListener('timeupdate', () => syncClipPlaybackUi(video));
+        video.addEventListener('loadedmetadata', () => syncClipPlaybackUi(video));
+      }
+      syncClipPlaybackUi(video);
+    });
+    if (sourceTime > 0) {
+      const restoreTime = () => {
+        try { videos[0].currentTime = Math.min(sourceTime, Math.max(0, Number(videos[0].duration || sourceTime))); } catch {}
+      };
+      if (videos[0].readyState >= 1) restoreTime();
+      else videos[0].addEventListener('loadedmetadata', restoreTime, { once: true });
+      // The handoff time is only for the first Home-to-viewer transition.
+      // Subsequent UI refreshes (like/save/comment) must not rewind the clip.
+      if (state.clipViewer) state.clipViewer.sourceTime = 0;
+    }
+    if (!('IntersectionObserver' in window)) {
+      videos[0].play().catch(() => {});
+      return;
+    }
     clipPlaybackObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         const video = entry.target;
         if (entry.isIntersecting && entry.intersectionRatio >= 0.72) {
           videos.filter((item) => item !== video).forEach((item) => item.pause());
-          video.play().catch(() => {});
+          video.muted = state.clipMuted;
+          video.play().catch(() => {
+            video.muted = true;
+            state.clipMuted = true;
+            localStorage.setItem('clipMuted', '1');
+            syncClipSoundUi();
+            video.play().catch(() => {});
+          });
         } else {
           video.pause();
         }
+        syncClipPlaybackUi(video);
       });
-    }, { root: document.querySelector('.clips-feed'), threshold: [0, 0.72, 1] });
+    }, { root, threshold: [0, 0.72, 1] });
     videos.forEach((video) => clipPlaybackObserver.observe(video));
   }
 
@@ -5171,9 +5367,10 @@
     const highlighted = state.highlightMessageId === message.id;
     const stickerMessage = message.kind === 'sticker' && !message.deletedAt;
     const mediaMessage = ['image', 'video', 'gif'].includes(message.kind) && message.attachment && !message.deletedAt;
+    const sharedPostMessage = message.kind === 'post' && !message.deletedAt;
     const sender = message.sender || userById(message.senderId);
     return `
-      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''}" data-message-id="${esc(message.id)}">
+      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''} ${sharedPostMessage ? 'shared-post-message' : ''}" data-message-id="${esc(message.id)}">
         ${message.pinnedAt ? `<span class="message-context-label">${icon('pin')} Pinned</span>` : ''}
         ${state.activeGroup && sender ? `<span class="group-message-sender" title="${esc(sender.displayName || sender.username)}">${avatarHtml(sender)}</span>` : ''}
         <div class="bubble">
@@ -5308,8 +5505,35 @@
     return `${renderSearchProfileActions(user)}<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
   }
 
+  function renderSharedPostMessage(message) {
+    const post = message.sharedPost;
+    if (!post) {
+      return `<div class="shared-post-unavailable">${icon('clips')}<span><strong>Post unavailable</strong><small>It may have been deleted or made private.</small></span></div>`;
+    }
+    const author = postAuthor(post);
+    const item = postMediaItems(post)[0];
+    const media = item?.media;
+    const isVideo = item?.mediaType === 'video' || String(media?.mime || '').startsWith('video/');
+    const label = post.isClip || isVideo ? 'Watch clip' : 'View post';
+    return `
+      <button class="shared-post-card" data-action="open-shared-post" data-post-id="${esc(post.id)}" aria-label="${esc(`${label} by ${author?.username || 'user'}`)}">
+        <span class="shared-post-author">${author ? avatarHtml(author) : ''}<span><strong>${esc(author?.username || 'user')}</strong><small>${post.isClip || isVideo ? 'Clip' : 'Post'}</small></span></span>
+        <span class="shared-post-media">
+          ${media?.url
+            ? (isVideo
+              ? `<video src="${esc(media.url)}" muted playsinline webkit-playsinline preload="metadata" disablepictureinpicture disableremoteplayback aria-hidden="true"></video><i class="shared-post-play">${icon('play')}</i>`
+              : `<img src="${esc(media.url)}" alt="" loading="lazy">`)
+            : `<i class="shared-post-missing">${icon('clips')}</i>`}
+        </span>
+        <span class="shared-post-copy"><strong>${label}</strong>${post.description ? `<small>${esc(String(post.description).slice(0, 100))}</small>` : ''}</span>
+      </button>
+      ${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}
+    `;
+  }
+
   function renderMessageBody(message) {
     if (message.deletedAt) return '<div class="message-text">Message deleted</div>';
+    if (message.kind === 'post') return renderSharedPostMessage(message);
     const attachment = message.attachment;
     if (message.kind === 'gif' && attachment) {
       return `<img class="chat-gif" src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name || 'GIF')}" data-type="${esc(attachment.mime || 'image/gif')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
@@ -5666,12 +5890,63 @@
     `;
   }
 
+  function postShareTargets() {
+    const people = [];
+    const seen = new Set();
+    [...state.chats.map((chat) => chat.peer), ...state.contacts].forEach((user) => {
+      if (!user?.id || user.id === state.me?.id || seen.has(user.id) || user.hasBlocked) return;
+      seen.add(user.id);
+      people.push({ key: `peer:${user.id}`, kind: 'peer', id: user.id, label: user.displayName || user.username, detail: `@${user.username}`, user });
+    });
+    state.groups.forEach((group) => {
+      if (!group?.id) return;
+      people.push({ key: `group:${group.id}`, kind: 'group', id: group.id, label: group.name || 'Group', detail: `${group.memberCount || group.members?.length || 0} members`, group });
+    });
+    return people;
+  }
+
+  function renderPostShareSheet(post, sheet) {
+    if (!post) return '<p class="hint">Post not found.</p>';
+    const selected = new Set(sheet.selectedTargets || []);
+    const query = String(sheet.query || '').trim().toLowerCase();
+    const targets = postShareTargets();
+    const visible = targets.filter((target) => `${target.label} ${target.detail}`.toLowerCase().includes(query));
+    return `
+      <section class="post-share-shell" aria-label="Share post">
+        <header class="post-share-head">
+          <span class="story-sheet-grabber" aria-hidden="true"></span>
+          <strong>Share</strong>
+          <button data-action="close-overlays" aria-label="Close share sheet">${icon('x')}</button>
+        </header>
+        <label class="post-share-search" for="post-share-search">${icon('search')}<input id="post-share-search" value="${esc(sheet.query || '')}" placeholder="Search" autocomplete="off" enterkeyhint="search"></label>
+        <div class="post-share-people" role="list" aria-label="People and groups">
+          ${visible.map((target) => `
+            <button class="post-share-person ${selected.has(target.key) ? 'selected' : ''}" data-action="toggle-post-share-target" data-target-key="${esc(target.key)}" data-share-search="${esc(`${target.label} ${target.detail}`.toLowerCase())}" aria-pressed="${selected.has(target.key)}">
+              <span class="post-share-avatar">${target.kind === 'group' ? groupAvatarHtml(target.group) : avatarHtml(target.user)}<i>${icon('check')}</i></span>
+              <strong>${esc(target.label)}</strong>
+              <small>${esc(target.detail)}</small>
+            </button>
+          `).join('')}
+          <p class="post-share-empty" ${visible.length ? 'hidden' : ''}>No chats found.</p>
+        </div>
+        <footer class="post-share-footer">
+          <div class="post-share-quick" aria-label="More sharing options">
+            <button data-action="copy-post-link" data-post-id="${esc(post.id)}"><span>${icon('link')}</span><small>Copy link</small></button>
+            <button data-action="share-post-external" data-post-id="${esc(post.id)}"><span>${icon('send')}</span><small>Share to</small></button>
+          </div>
+          ${selected.size ? `<button class="post-share-send" data-action="send-shared-post" data-post-id="${esc(post.id)}" ${sheet.sending ? 'disabled' : ''}>${sheet.sending ? '<i class="spinner"></i> Sending…' : `Send separately · ${selected.size}`}</button>` : ''}
+        </footer>
+      </section>
+    `;
+  }
+
   function renderActionSheet() {
     const sheet = state.actionSheet;
     if (!sheet) return '';
     const peer = sheet.peerId ? userById(sheet.peerId) : null;
     const profileUser = sheet.userId ? userById(sheet.userId) : null;
     const message = sheet.messageId ? state.messages.find((item) => item.id === sheet.messageId) : null;
+    const sheetPost = sheet.postId ? postById(sheet.postId) : null;
     let body = '';
     if (sheet.type === 'chat-user' && peer) {
       body = `
@@ -5698,6 +5973,21 @@
         <div class="sheet-note"><strong>Post options</strong><small>Manage this post</small></div>
         <button class="danger-text" data-action="delete-post" data-post-id="${esc(sheet.postId)}">${icon('trash')} Delete post</button>
       `;
+    }
+    if (sheet.type === 'post-options' && sheetPost) {
+      const author = postAuthor(sheetPost);
+      body = `
+        <div class="sheet-note"><strong>Clip options</strong><small>Choose what you want to do.</small></div>
+        <button data-action="toggle-post-save" data-post-id="${esc(sheetPost.id)}">${icon('bookmark')} ${sheetPost.savedByMe ? 'Remove from saved' : 'Save'}</button>
+        <button data-action="copy-post-link" data-post-id="${esc(sheetPost.id)}">${icon('link')} Copy link</button>
+        ${author ? `<button data-action="view-user-profile" data-username="${esc(author.username)}">${icon('profile')} About this account</button>` : ''}
+        ${author?.id === state.me?.id
+          ? `<button class="danger-text" data-action="delete-post" data-post-id="${esc(sheetPost.id)}">${icon('trash')} Delete post</button>`
+          : author ? `<button data-action="open-report" data-report-type="user" data-user-id="${esc(author.id)}">Report</button>` : ''}
+      `;
+    }
+    if (sheet.type === 'post-share') {
+      body = renderPostShareSheet(sheetPost, sheet);
     }
     if (sheet.type === 'group-member' && state.activeGroup) {
       const member = userById(sheet.userId);
@@ -5888,11 +6178,22 @@
         <button class="story-owner-action danger-text" data-action="delete-story" data-story-id="${esc(story.id)}">${icon('trash')}<span>Delete story</span></button>
       ` : '';
     }
-    const compact = ['post-comments', 'story-comments', 'story-owner'].includes(sheet.type);
+    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner'].includes(sheet.type);
     const compactClass = sheet.type === 'post-comments' ? 'story-comments-sheet post-comments-sheet' : `${sheet.type}-sheet`;
+    const dialogLabel = ({
+      'post-share': 'Share post',
+      'post-comments': 'Post comments',
+      'story-comments': 'Story comments',
+      'story-owner': 'Story options',
+      'post-options': 'Clip options',
+      'post-owner': 'Post options',
+      message: 'Message options',
+      report: 'Report',
+      mute: 'Mute options'
+    })[sheet.type] || 'Actions';
     return `
       <div class="overlay ${state.storyViewer ? 'over-story' : ''} ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
-        <section class="action-sheet ${compact ? `compact-sheet ${compactClass}` : ''} ${sheet.refreshing ? 'sheet-refreshing' : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
+        <section class="action-sheet ${compact ? `compact-sheet ${compactClass}` : ''} ${sheet.refreshing ? 'sheet-refreshing' : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close role="dialog" aria-modal="true" aria-label="${esc(dialogLabel)}" tabindex="-1">
           ${body || '<p class="hint">No actions available.</p>'}
           ${compact ? '' : '<button data-action="close-overlays">Cancel</button>'}
         </section>
@@ -6610,6 +6911,7 @@
       ...state.homeFeed,
       ...state.explorePosts,
       ...state.clips,
+      ...state.messages.map((message) => message.sharedPost),
       ...Array.from(state.profilePosts.values()).flat(),
       ...state.accountActivity.reposts.map((item) => item.post || item)
     ].filter(Boolean);
@@ -6622,9 +6924,15 @@
   function replacePost(updatedPost) {
     if (!updatedPost?.id) return;
     const replace = (posts) => (posts || []).map((post) => post.id === updatedPost.id ? { ...post, ...updatedPost } : post);
+    const replaceSharedMessage = (message) => message?.sharedPost?.id === updatedPost.id
+      ? { ...message, sharedPost: { ...message.sharedPost, ...updatedPost } }
+      : message;
     state.homeFeed = replace(state.homeFeed);
     state.explorePosts = replace(state.explorePosts);
     state.clips = replace(state.clips);
+    state.messages = state.messages.map(replaceSharedMessage);
+    state.chats = state.chats.map((chat) => ({ ...chat, lastMessage: replaceSharedMessage(chat.lastMessage) }));
+    state.groups = state.groups.map((group) => ({ ...group, lastMessage: replaceSharedMessage(group.lastMessage) }));
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, replace(posts));
   }
 
@@ -7089,27 +7397,156 @@
     if (action === 'repost') await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
   }
 
-  async function sharePost(postId) {
+  function postShareDetails(postId) {
     const post = postById(postId);
-    if (!post) return;
+    if (!post) return null;
     const author = postAuthor(post);
     const url = new URL(accountProfileHref(author), location.origin);
     url.searchParams.set('post', post.id);
-    const shareData = {
-      title: post.title || `Post by @${author?.username || 'user'}`,
-      text: String(post.description || '').slice(0, 180),
-      url: url.toString()
+    return {
+      post,
+      shareData: {
+        title: post.title || `Post by @${author?.username || 'user'}`,
+        text: String(post.description || '').slice(0, 180),
+        url: url.toString()
+      }
     };
+  }
+
+  function sharePost(postId) {
+    const details = postShareDetails(postId);
+    if (!details) return;
+    currentAppShell()?.querySelector(`.clip-card[data-post-id="${window.CSS?.escape ? CSS.escape(postId) : postId}"] .clip-video`)?.pause?.();
+    openActionSheet({ type: 'post-share', postId, query: '', selectedTargets: [], sending: false });
+  }
+
+  async function copyTextToClipboard(value) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+    const field = document.createElement('textarea');
+    field.value = value;
+    field.setAttribute('readonly', '');
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.append(field);
+    field.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } finally { field.remove(); }
+    if (!copied) throw new Error('Copying is not available in this browser.');
+    return true;
+  }
+
+  async function copyPostLink(postId) {
+    const details = postShareDetails(postId);
+    if (!details) return;
+    await copyTextToClipboard(details.shareData.url);
+    pushToast({ key: `post-link-${details.post.id}`, kind: 'social', title: 'Link copied', body: 'The post link is ready to share.' });
+  }
+
+  async function sharePostExternally(postId) {
+    const details = postShareDetails(postId);
+    if (!details) return;
     if (navigator.share) {
       try {
-        await navigator.share(shareData);
+        await navigator.share(details.shareData);
         return;
       } catch (error) {
         if (error?.name === 'AbortError') return;
       }
     }
-    await navigator.clipboard?.writeText?.(shareData.url);
-    pushToast({ key: `post-link-${post.id}`, kind: 'social', title: 'Link copied', body: 'The post link is ready to share.' });
+    await copyPostLink(postId);
+  }
+
+  async function sendSharedPost(postId) {
+    const sheet = state.actionSheet?.type === 'post-share' && state.actionSheet.postId === postId ? state.actionSheet : null;
+    if (!sheet || sheet.sending || !sheet.selectedTargets?.length) return;
+    sheet.sending = true;
+    updateActionSheetSlot();
+    const delivered = [];
+    const failed = [];
+    await Promise.all(sheet.selectedTargets.map(async (key) => {
+      const [kind, id] = String(key).split(':');
+      const url = kind === 'group'
+        ? `/api/groups/${encodeURIComponent(id)}/messages`
+        : `/api/chats/${encodeURIComponent(id)}/messages`;
+      try {
+        const data = await api(url, { method: 'POST', body: { kind: 'post', postId } });
+        delivered.push({ key, message: data.message });
+        if ((kind === 'group' && state.activeGroup?.id === id) || (kind === 'peer' && state.activePeer?.id === id)) {
+          if (data.message) upsertMessage(data.message);
+        }
+      } catch (error) {
+        failed.push({ key, error });
+      }
+    }));
+    await refreshChatsOnly();
+    if (state.actionSheet === sheet) {
+      state.actionSheet = null;
+      state.overlayClosing = false;
+      updateActionSheetSlot();
+      if (state.clipViewer || state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
+    }
+    if (delivered.length) {
+      pushToast({ key: `post-sent-${postId}-${Date.now()}`, kind: 'social', title: 'Sent', body: `Shared to ${delivered.length} ${delivered.length === 1 ? 'chat' : 'chats'}.` });
+    }
+    if (failed.length) throw new Error(`Could not send to ${failed.length} ${failed.length === 1 ? 'chat' : 'chats'}.`);
+  }
+
+  async function loadSharedLinkPost(postId, options = {}) {
+    try {
+      const data = await api(`/api/posts/${encodeURIComponent(postId)}`);
+      const post = data.post;
+      const items = postMediaItems(post);
+      const first = items[0];
+      if (!post || !first?.media?.url) return null;
+      if (options.publicOnly) {
+        state.mediaViewer = {
+          src: first.media.url,
+          name: post.title || `Post by ${postAuthor(post)?.username || 'user'}`,
+          type: first.media.mime || (first.mediaType === 'video' ? 'video/*' : 'image/*'),
+          deepLinkPostId: post.id
+        };
+        return post;
+      }
+      state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
+      if (first.mediaType === 'video') {
+        if (items.length === 1) state.clips = [post, ...state.clips.filter((item) => item.id !== post.id)];
+        state.mediaViewer = null;
+        state.clipViewer = { postId: post.id, mediaIndex: 0, sourceTab: state.tab, sourceTime: 0 };
+        const url = new URL(location.href);
+        url.searchParams.delete('post');
+        url.searchParams.set('clip', post.id);
+        url.searchParams.set('media', '0');
+        history.replaceState(history.state, '', url.toString());
+      } else {
+        state.mediaViewer = {
+          src: first.media.url,
+          name: post.title || `Post by ${postAuthor(post)?.username || 'user'}`,
+          type: first.media.mime || 'image/*',
+          deepLinkPostId: post.id
+        };
+      }
+      return post;
+    } catch {
+      return null;
+    }
+  }
+
+  async function openSharedPost(postId) {
+    const data = await api(`/api/posts/${encodeURIComponent(postId)}`);
+    const post = data.post;
+    if (!post) throw new Error('This post is no longer available.');
+    state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
+    const first = postMediaItems(post)[0];
+    if (first?.mediaType === 'video') {
+      if (postMediaItems(post).length === 1) state.clips = [post, ...state.clips.filter((item) => item.id !== post.id)];
+      openPostClip(post.id, 0);
+      return;
+    }
+    switchMainTab('home', { animate: false });
+    setTimeout(() => document.querySelector(`.feed-post[data-post-id="${window.CSS?.escape ? CSS.escape(post.id) : post.id}"]`)?.scrollIntoView({ block: 'start' }), 0);
   }
 
   async function commentOnPost(postId, text) {
@@ -7178,14 +7615,20 @@
 
   async function deletePost(postId) {
     await api(`/api/posts/${encodeURIComponent(postId)}`, { method: 'DELETE' });
+    const wasViewing = state.clipViewer?.postId === postId;
     state.actionSheet = null;
     state.homeFeed = state.homeFeed.filter((post) => post.id !== postId);
     state.explorePosts = state.explorePosts.filter((post) => post.id !== postId);
     state.clips = state.clips.filter((post) => post.id !== postId);
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, posts.filter((post) => post.id !== postId));
+    const escapedId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
+    document.querySelectorAll(`[data-post-id="${escapedId}"]`).forEach((element) => {
+      if (element.matches('.feed-post, .clip-card')) element.remove();
+    });
     await loadContactsAndChats();
     updateActionSheetSlot();
-    updateSidebar();
+    if (wasViewing) closeClipViewer();
+    else updateSidebar();
   }
 
   async function toggleFavoriteUser(userId) {
@@ -9371,6 +9814,7 @@
     state.chatProfileSocialView = view?.chatProfileSocialView || null;
     state.searchProfileOpen = Boolean(view?.searchProfileOpen && profileUsername);
     state.searchProfileSocialView = view?.searchProfileSocialView || null;
+    state.clipViewer = view?.clipViewer ? { ...view.clipViewer } : null;
     state.publicProfile = state.searchProfileOpen ? await fetchPublicProfile(profileUsername) : null;
     state.tabTransition = false;
     renderApp({ scrollSnapshot: state.searchProfileOpen ? null : returnScroll });
@@ -9450,6 +9894,7 @@
     rememberViewedProfile(user);
     if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
     if (options.pushHistory !== false) beginDetailNavigation('profile', profilePath(user.username));
+    state.clipViewer = null;
     state.lastTab = state.tab;
     state.tab = 'search';
     state.publicProfile = user;
@@ -10143,6 +10588,8 @@
   }
 
   let overlayCloseTimer = null;
+  let actionSheetReturnFocus = null;
+  let actionSheetWasOpen = false;
   let messageFocusCloseTimer = null;
   let focusedMessageDom = null;
   let activeMessagePress = null;
@@ -10218,11 +10665,32 @@
     }, delay);
   }
 
+  function syncActionSheetAccessibility() {
+    const slot = document.getElementById('action-sheet-slot');
+    const open = Boolean(state.actionSheet && slot?.querySelector('.action-sheet'));
+    Array.from(app.children).forEach((child) => {
+      if (child !== slot) child.inert = open;
+    });
+    if (!open && actionSheetWasOpen) {
+      const returnTarget = actionSheetReturnFocus;
+      actionSheetReturnFocus = null;
+      if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
+    }
+    actionSheetWasOpen = open;
+  }
+
   function openActionSheet(sheet) {
     clearTimeout(overlayCloseTimer);
+    if (!state.actionSheet) actionSheetReturnFocus = document.activeElement;
     state.overlayClosing = false;
     state.actionSheet = sheet;
     updateActionSheetSlot();
+    requestAnimationFrame(() => {
+      if (state.actionSheet !== sheet) return;
+      const dialog = document.querySelector('#action-sheet-slot .action-sheet');
+      const focusTarget = dialog?.querySelector('input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || dialog;
+      focusTarget?.focus?.({ preventScroll: true });
+    });
   }
 
   function openMessageFocus(messageId) {
@@ -10337,6 +10805,7 @@
       state.overlayClosing = false;
       updateActionSheetSlot();
       if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
+      if (state.clipViewer || state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
     }, 190);
   }
 
@@ -10458,7 +10927,7 @@
     const next = template.content.firstElementChild;
     if (!next) return false;
     current.replaceWith(next);
-    currentAppShell()?.classList.toggle('chat-open', hasActiveConversation());
+    currentAppShell()?.classList.toggle('chat-open', hasVisibleConversation());
     resizeComposerInput();
     applyRenderScroll(options.scroll || 'preserve', options.scrollSnapshot || null);
     setTimeout(() => {
@@ -10479,12 +10948,12 @@
     current.replaceWith(next);
     restorePersistentScroll();
     initializePostCarousels(next);
-    if (state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
+    if (state.tab === 'clips' || state.clipViewer) requestAnimationFrame(attachClipPlayback);
     return true;
   }
 
   function renderSidebarState() {
-    if (!isMobileLayout() && hasActiveConversation() && !state.searchProfileOpen && updateSidebar()) return;
+    if (!isMobileLayout() && hasVisibleConversation() && !state.searchProfileOpen && updateSidebar()) return;
     renderApp();
   }
 
@@ -10634,6 +11103,12 @@
     if (Date.now() < state.suppressClickUntil) {
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+    const clipViewport = event.target.closest('.clip-viewport');
+    if (clipViewport && !event.target.closest('button,a,[data-action]')) {
+      clearTimeout(clipTapTimer);
+      clipTapTimer = setTimeout(() => toggleClipPlayback(clipViewport), 180);
       return;
     }
     const target = event.target.closest('[data-action]');
@@ -10849,12 +11324,27 @@
         updatePostComposerSlot();
       }
       if (action === 'publish-post') await publishPost();
+      if (action === 'open-home-video') openPostClip(target.dataset.postId, Number(target.dataset.mediaIndex || 0), target);
+      if (action === 'toggle-home-video-sound') toggleHomeVideoSound(target);
+      if (action === 'close-clip-viewer') closeClipViewer();
+      if (action === 'toggle-clip-sound') toggleClipSound();
       if (action === 'post-carousel-previous') movePostCarousel(target.dataset.postId, -1);
       if (action === 'post-carousel-next') movePostCarousel(target.dataset.postId, 1);
       if (action === 'toggle-post-like') await togglePostAction(target.dataset.postId, 'like');
       if (action === 'toggle-post-save') await togglePostAction(target.dataset.postId, 'save');
       if (action === 'toggle-post-repost') await togglePostAction(target.dataset.postId, 'repost');
       if (action === 'share-post') await sharePost(target.dataset.postId);
+      if (action === 'copy-post-link') await copyPostLink(target.dataset.postId);
+      if (action === 'share-post-external') await sharePostExternally(target.dataset.postId);
+      if (action === 'toggle-post-share-target' && state.actionSheet?.type === 'post-share') {
+        const selected = new Set(state.actionSheet.selectedTargets || []);
+        if (selected.has(target.dataset.targetKey)) selected.delete(target.dataset.targetKey);
+        else selected.add(target.dataset.targetKey);
+        state.actionSheet.selectedTargets = [...selected];
+        updateActionSheetSlot();
+      }
+      if (action === 'send-shared-post') await sendSharedPost(target.dataset.postId);
+      if (action === 'open-shared-post') await openSharedPost(target.dataset.postId);
       if (action === 'expand-post') {
         state.expandedPosts.add(target.dataset.postId);
         updateSidebar();
@@ -10874,6 +11364,7 @@
         }
       }
       if (action === 'post-owner-menu') openActionSheet({ type: 'post-owner', postId: target.dataset.postId });
+      if (action === 'post-options') openActionSheet({ type: 'post-options', postId: target.dataset.postId });
       if (action === 'delete-post') {
         if (confirm('Delete this post forever?')) await deletePost(target.dataset.postId);
       }
@@ -11199,6 +11690,11 @@
         updateMediaViewerSlot();
       }
       if (action === 'close-media') {
+        if (state.mediaViewer?.deepLinkPostId) {
+          const url = new URL(location.href);
+          url.searchParams.delete('post');
+          history.replaceState(history.state, '', url.toString());
+        }
         state.mediaViewer = null;
         updateMediaViewerSlot();
       }
@@ -11703,6 +12199,11 @@
           updateActionSheetSlot();
           updateStoryViewerView();
         }
+        if (state.actionSheet?.type === 'post-options') {
+          state.actionSheet = null;
+          state.overlayClosing = false;
+          updateActionSheetSlot();
+        }
         await openSearchProfile(target.dataset.username);
       }
       if (action === 'close-search-profile') {
@@ -11753,7 +12254,7 @@
         closeOverlays();
       }
       if (action === 'copy-profile-link') {
-        await navigator.clipboard.writeText(target.dataset.link);
+        await copyTextToClipboard(target.dataset.link);
         target.textContent = 'Copied';
       }
       if (action === 'show-profile-link') {
@@ -12121,6 +12622,18 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.id === 'post-share-search' && state.actionSheet?.type === 'post-share') {
+      state.actionSheet.query = event.target.value.slice(0, 80);
+      const term = state.actionSheet.query.trim().toLowerCase();
+      let visible = 0;
+      document.querySelectorAll('.post-share-person').forEach((button) => {
+        button.hidden = Boolean(term && !String(button.dataset.shareSearch || '').includes(term));
+        if (!button.hidden) visible += 1;
+      });
+      const empty = document.querySelector('.post-share-empty');
+      if (empty) empty.hidden = visible > 0;
+      return;
+    }
     if (event.target.matches('[data-post-crop]') && state.postComposer) {
       const key = event.target.dataset.postCrop;
       state.postComposer.crop[key] = Number(event.target.value);
@@ -12506,6 +13019,20 @@
   }, true);
 
   document.addEventListener('dblclick', (event) => {
+    const clipViewport = event.target.closest('.clip-viewport');
+    const clipCard = clipViewport?.closest('.clip-card');
+    if (clipViewport && clipCard && !event.target.closest('button,a,[data-action]')) {
+      event.preventDefault();
+      clearTimeout(clipTapTimer);
+      const burst = clipCard.querySelector('.clip-like-burst');
+      burst?.classList.remove('show');
+      void burst?.offsetWidth;
+      burst?.classList.add('show');
+      setTimeout(() => burst?.classList.remove('show'), 720);
+      const post = postById(clipCard.dataset.postId);
+      if (post && !post.likedByMe) togglePostAction(post.id, 'like').catch((error) => alert(error.message));
+      return;
+    }
     const media = event.target.closest('.feed-post .post-carousel-slide img, .feed-post > .post-media-frame img');
     const card = media?.closest('.feed-post');
     if (!media || !card) return;
@@ -12521,6 +13048,38 @@
   });
 
   document.addEventListener('keydown', async (event) => {
+    if (state.actionSheet && event.key === 'Tab') {
+      const dialog = document.querySelector('#action-sheet-slot .action-sheet');
+      const focusable = Array.from(dialog?.querySelectorAll('input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+        .filter((element) => !element.hidden && element.getClientRects().length);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === first)) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+    }
+    if (event.target.matches('.post-video-preview[data-action="open-home-video"]') && ['Enter', ' '].includes(event.key)) {
+      event.preventDefault();
+      openPostClip(event.target.dataset.postId, Number(event.target.dataset.mediaIndex || 0), event.target);
+      return;
+    }
+    if (event.target.matches('.clip-video') && ['Enter', ' '].includes(event.key)) {
+      event.preventDefault();
+      toggleClipPlayback(event.target);
+      return;
+    }
     if (event.key === 'Escape' && state.postComposer) {
       event.preventDefault();
       closePostComposer();
@@ -12646,8 +13205,9 @@
     // inside it prevents the native history swipe from cancelling our preview.
     const appSwipeStartsAt = 16;
     const isAppBackSwipe = event.clientX >= appSwipeStartsAt && event.clientX < appSwipeStartsAt + 32;
+    const isClipViewerBackSwipe = Boolean(state.clipViewer && event.target.closest('.clip-viewport, .clip-card'));
     if (state.me && isMobileLayout() && backEntry && !state.navigationBusy && !gestureBlocked &&
-      !hasActiveConversation() && isAppBackSwipe && !gestureControl) {
+      (!hasActiveConversation() || state.clipViewer) && (isAppBackSwipe || isClipViewerBackSwipe) && !gestureControl) {
       const surface = currentAppShell();
       cancelForwardNavigationAnimation(surface);
       state.edgeSwipe = {
@@ -12664,7 +13224,7 @@
         liveScroll: captureLiveScroll(surface)
       };
     }
-    if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !hasActiveConversation() &&
+    if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !state.clipViewer && !hasActiveConversation() &&
       !state.searchProfileOpen && !state.profileSocialView && state.tab !== 'notifications' &&
       event.target.closest('.side-content') && !event.target.closest('input,textarea,[contenteditable="true"]')) {
       state.tabSwipe = {
@@ -13586,6 +14146,11 @@
       const username = publicUsernameFromPath();
       if (username) {
         await openSearchProfile(username, { pushHistory: false });
+        const sharedPostId = sharedPostIdFromLocation();
+        if (sharedPostId) {
+          await loadSharedLinkPost(sharedPostId);
+          renderApp();
+        }
         return;
       }
       state.searchProfileOpen = false;

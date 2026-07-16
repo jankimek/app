@@ -947,6 +947,51 @@ function cleanPostEdits(body) {
   };
 }
 
+function publicSharedPost(post, viewerId = null) {
+  if (!post) return null;
+  const value = publicPost(post, viewerId);
+  if (!value) return null;
+  const mediaItems = (value.mediaItems || []).map((item) => ({
+    fileId: item.fileId,
+    media: item.media,
+    file: item.file,
+    mediaType: item.mediaType,
+    edits: item.edits || {},
+    crop: item.crop || {},
+    adjustments: item.adjustments || {},
+    filter: item.filter || 'normal',
+    altText: item.altText || ''
+  }));
+  const isClip = mediaItems.length === 1 && mediaItems[0]?.mediaType === 'video';
+  return {
+    id: value.id,
+    ownerId: value.ownerId,
+    author: value.author,
+    user: value.user,
+    mediaFileIds: value.mediaFileIds,
+    mediaItems,
+    media: value.media,
+    file: value.file,
+    mediaType: value.mediaType,
+    isClip,
+    title: value.title,
+    description: value.description,
+    location: value.location,
+    hashtags: value.hashtags,
+    edits: value.edits,
+    crop: value.crop,
+    adjustments: value.adjustments,
+    filter: value.filter,
+    allowComments: value.allowComments,
+    hideLikeCounts: value.hideLikeCounts,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    likeCount: value.likeCount,
+    repostCount: value.repostCount,
+    commentCount: value.commentCount
+  };
+}
+
 function cleanPostMediaEdits(body, fileIds) {
   const mediaEdits = body?.mediaEdits;
   const mediaItems = Array.isArray(body?.mediaItems) ? body.mediaItems : [];
@@ -1495,15 +1540,45 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-function messagePreview(message) {
+function sharedPostForMessage(message, viewerId = null) {
+  const sharedPostId = message?.sharedPostId || message?.postId || null;
+  if (!sharedPostId || message?.deletedAt) return null;
+  const post = db.posts[sharedPostId];
+  if (!post) return null;
+  if (viewerId) {
+    if (!canViewPost(post, viewerId)) return null;
+  } else {
+    const participantIds = Array.from(new Set(messageParticipantIds(message)));
+    if (!participantIds.length || participantIds.some((userId) => !canViewPost(post, userId))) return null;
+  }
+  return publicSharedPost(post, viewerId);
+}
+
+function validateSharedPostForRecipients(postIdValue, senderId, recipientIds = []) {
+  const postId = cleanText(postIdValue || '', 120);
+  if (!postId) return { status: 400, error: 'Choose a post to share.' };
+  const post = db.posts[postId];
+  if (!canViewPost(post, senderId)) return { status: 404, error: 'Post not found.' };
+  const inaccessible = Array.from(new Set(recipientIds.filter(Boolean)))
+    .some((recipientId) => !canViewPost(post, recipientId));
+  if (inaccessible) {
+    return { status: 403, error: 'This post cannot be shared because one or more recipients cannot view it.' };
+  }
+  return { post };
+}
+
+function messagePreview(message, viewerId = null) {
   if (!message) return null;
   if (message.deletedAt) return { id: message.id, kind: message.kind, deletedAt: message.deletedAt };
+  const sharedPost = sharedPostForMessage(message, viewerId);
   return {
     id: message.id,
     kind: message.kind,
     text: message.text || '',
     senderId: message.senderId,
     createdAt: message.createdAt,
+    sharedPostId: sharedPost?.id || null,
+    sharedPost,
     attachment: message.attachment ? {
       name: message.attachment.name,
       mime: message.attachment.mime,
@@ -1512,14 +1587,23 @@ function messagePreview(message) {
   };
 }
 
-function messageSearchText(message) {
+function messageSearchText(message, viewerId = null) {
   if (!message || message.deletedAt) return '';
   const sender = db.users[message.senderId];
+  const sharedPost = sharedPostForMessage(message, viewerId);
+  const sharedPostAuthor = sharedPost ? db.users[sharedPost.ownerId] : null;
   return [
     message.text || '',
     message.kind || '',
     message.attachment?.name || '',
     message.attachment?.mime || '',
+    sharedPost ? (sharedPost.isClip ? 'shared clip' : 'shared post') : '',
+    sharedPost?.title || '',
+    sharedPost?.description || '',
+    sharedPost?.location || '',
+    ...(sharedPost?.hashtags || []),
+    sharedPostAuthor?.username || '',
+    sharedPostAuthor?.profile?.displayName || '',
     sender?.username || '',
     sender?.profile?.displayName || ''
   ].join(' ');
@@ -1527,15 +1611,23 @@ function messageSearchText(message) {
 
 function messageSnippet(message) {
   if (!message || message.deletedAt) return 'Deleted message';
+  if (message.kind === 'post') {
+    const sharedPost = sharedPostForMessage(message);
+    if (!sharedPost) return 'Shared post';
+    const label = sharedPost.isClip ? 'clip' : 'post';
+    const caption = message.text || sharedPost.title || sharedPost.description || '';
+    return caption ? `Shared a ${label}: ${caption}` : `Shared a ${label}`;
+  }
   if (message.text) return message.text;
   if (message.attachment?.name) return `${message.kind}: ${message.attachment.name}`;
   return message.kind || 'message';
 }
 
-function decorateMessage(message) {
+function decorateMessage(message, viewerId = null) {
   const reply = message.replyTo ? findMessage(message.replyTo)?.message : null;
   const attachment = message.attachment?.id ? publicFile(db.files[message.attachment.id]) : null;
   const reactionEntries = Object.entries(message.reactions || {});
+  const sharedPost = message.deletedAt ? null : sharedPostForMessage(message, viewerId);
   return {
     id: message.id,
     chatId: message.chatId,
@@ -1546,8 +1638,10 @@ function decorateMessage(message) {
     kind: message.kind,
     text: message.deletedAt ? '' : (message.text || ''),
     replyTo: message.replyTo || null,
-    replyPreview: messagePreview(reply),
+    replyPreview: messagePreview(reply, viewerId),
     attachment: message.deletedAt ? null : attachment,
+    sharedPostId: sharedPost?.id || null,
+    sharedPost,
     stickerId: message.deletedAt ? null : (message.stickerId || null),
     reactions: MESSAGE_REACTIONS.size && !message.deletedAt
       ? Array.from(MESSAGE_REACTIONS).map((emoji) => {
@@ -3559,7 +3653,7 @@ async function handleApi(req, res, pathname, query) {
       .filter((group) => (group.memberIds || []).includes(user.id))
       .map((group) => {
         const latest = latestVisibleMessage(db.messages[group.id] || [], user.id);
-        return { ...publicGroup(group, user.id), latest: latest ? decorateMessage(latest) : null };
+        return { ...publicGroup(group, user.id), latest: latest ? decorateMessage(latest, user.id) : null };
       })
       .sort((a, b) => String(b.latest?.createdAt || b.updatedAt || '').localeCompare(String(a.latest?.createdAt || a.updatedAt || '')));
     return sendJson(res, 200, { groups });
@@ -3764,15 +3858,25 @@ async function handleApi(req, res, pathname, query) {
       if (before) visible = visible.filter((message) => String(message.createdAt) < before);
       const hasMore = visible.length > limit;
       return sendJson(res, 200, {
-        messages: visible.slice(Math.max(0, visible.length - limit)).map(decorateMessage),
+        messages: visible.slice(Math.max(0, visible.length - limit)).map((message) => decorateMessage(message, user.id)),
         hasMore,
         group: publicGroup(group, user.id)
       });
     }
     const body = await readJsonBody(req);
-    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(body.kind) ? body.kind : 'text';
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
+    let sharedPost = null;
+    if (kind === 'post') {
+      const validation = validateSharedPostForRecipients(
+        body.postId || body.sharedPostId,
+        user.id,
+        group.memberIds
+      );
+      if (!validation.post) return sendError(res, validation.status, validation.error);
+      sharedPost = validation.post;
+    }
     let file = null;
     if (kind === 'gif' && body.gifId) {
       const gif = db.gifs[cleanText(body.gifId || '', 120)];
@@ -3780,7 +3884,7 @@ async function handleApi(req, res, pathname, query) {
       file = db.files[gif.fileId];
     } else if (kind === 'gif') {
       return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
-    } else if (body.file?.dataUrl) {
+    } else if (kind !== 'post' && body.file?.dataUrl) {
       const incomingMime = mimeFromDataUrl(body.file.dataUrl);
       if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
       if (kind === 'image' && isAnimatedImageDataUrl(body.file.dataUrl)) return sendError(res, 403, 'Animated images must be approved in the shared GIF pool before they can be sent.');
@@ -3801,6 +3905,7 @@ async function handleApi(req, res, pathname, query) {
       text,
       replyTo: body.replyTo && list.some((item) => item.id === body.replyTo) ? body.replyTo : null,
       attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      sharedPostId: sharedPost?.id || null,
       stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
       hiddenFor: [],
       reactions: {},
@@ -3841,7 +3946,7 @@ async function handleApi(req, res, pathname, query) {
     if (!group) return sendError(res, 404, 'Group not found.');
     const messages = (db.messages[group.id] || [])
       .filter((message) => !(message.hiddenFor || []).includes(user.id))
-      .map(decorateMessage);
+      .map((message) => decorateMessage(message, user.id));
     const created = new Date().toISOString().replace(/[:.]/g, '-');
     const safeName = group.name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'group';
     const format = query.get('format') === 'html' ? 'html' : 'json';
@@ -3873,12 +3978,12 @@ async function handleApi(req, res, pathname, query) {
       const chatId = chatIdFor(user.id, peer.id);
       for (const message of db.messages[chatId] || []) {
         if ((message.hiddenFor || []).includes(user.id)) continue;
-        if (!messageSearchText(message).toLowerCase().includes(term)) continue;
+        if (!messageSearchText(message, user.id).toLowerCase().includes(term)) continue;
         results.push({
           chatId,
           peer: publicUser(peer, user.id),
           sender: basicPublicUser(db.users[message.senderId]),
-          message: decorateMessage(message),
+          message: decorateMessage(message, user.id),
           snippet: messageSnippet(message)
         });
       }
@@ -3887,12 +3992,12 @@ async function handleApi(req, res, pathname, query) {
       if (!(group.memberIds || []).includes(user.id)) continue;
       for (const message of db.messages[group.id] || []) {
         if ((message.hiddenFor || []).includes(user.id)) continue;
-        if (!messageSearchText(message).toLowerCase().includes(term)) continue;
+        if (!messageSearchText(message, user.id).toLowerCase().includes(term)) continue;
         results.push({
           chatId: group.id,
           group: publicGroup(group, user.id),
           sender: basicPublicUser(db.users[message.senderId]),
-          message: decorateMessage(message),
+          message: decorateMessage(message, user.id),
           snippet: messageSnippet(message)
         });
       }
@@ -3913,7 +4018,7 @@ async function handleApi(req, res, pathname, query) {
         return {
           id: chatId,
           peer: publicUser(peer, user.id),
-          latest: latest ? decorateMessage(latest) : null
+          latest: latest ? decorateMessage(latest, user.id) : null
         };
       })
       .filter(Boolean)
@@ -3930,7 +4035,7 @@ async function handleApi(req, res, pathname, query) {
     const chatId = chatIdFor(user.id, peer.id);
     const messages = (db.messages[chatId] || [])
       .filter((message) => !(message.hiddenFor || []).includes(user.id))
-      .map(decorateMessage);
+      .map((message) => decorateMessage(message, user.id));
     const created = new Date().toISOString().replace(/[:.]/g, '-');
     const baseName = `chat-${peer.username}-${created}`;
     const format = query.get('format') === 'html' ? 'html' : 'json';
@@ -3994,7 +4099,7 @@ async function handleApi(req, res, pathname, query) {
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     if (before) visible = visible.filter((message) => String(message.createdAt) < before);
     const hasMore = visible.length > limit;
-    const page = visible.slice(Math.max(0, visible.length - limit)).map(decorateMessage);
+    const page = visible.slice(Math.max(0, visible.length - limit)).map((message) => decorateMessage(message, user.id));
     return sendJson(res, 200, { messages: page, hasMore, peer: publicUser(peer, user.id) });
   }
 
@@ -4007,9 +4112,20 @@ async function handleApi(req, res, pathname, query) {
     const body = await readJsonBody(req);
     const chatId = chatIdFor(user.id, peer.id);
     const list = ensureChatMessages(chatId);
-    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(body.kind) ? body.kind : 'text';
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
+
+    let sharedPost = null;
+    if (kind === 'post') {
+      const validation = validateSharedPostForRecipients(
+        body.postId || body.sharedPostId,
+        user.id,
+        [peer.id]
+      );
+      if (!validation.post) return sendError(res, validation.status, validation.error);
+      sharedPost = validation.post;
+    }
 
     let file = null;
     if (kind === 'gif' && body.gifId) {
@@ -4018,7 +4134,7 @@ async function handleApi(req, res, pathname, query) {
       file = db.files[gif.fileId];
     } else if (kind === 'gif') {
       return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
-    } else if (body.file?.dataUrl) {
+    } else if (kind !== 'post' && body.file?.dataUrl) {
       const incomingMime = mimeFromDataUrl(body.file.dataUrl);
       if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
       if (kind === 'image' && isAnimatedImageDataUrl(body.file.dataUrl)) return sendError(res, 403, 'Animated images must be approved in the shared GIF pool before they can be sent.');
@@ -4047,6 +4163,7 @@ async function handleApi(req, res, pathname, query) {
         mime: file.mime,
         size: file.size
       } : null,
+      sharedPostId: sharedPost?.id || null,
       stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
       hiddenFor: [],
       reactions: {},
@@ -4221,6 +4338,16 @@ async function handleApi(req, res, pathname, query) {
     const targetGroup = body.groupId ? groupForMember(cleanText(body.groupId, 120), user.id) : null;
     const peer = targetGroup ? null : db.users[cleanText(body.recipientId || '', 120)];
     if (!targetGroup && (!peer || !canChat(user.id, peer.id))) return sendError(res, 404, 'Chat not found.');
+    let sharedPost = null;
+    if (source.kind === 'post') {
+      const validation = validateSharedPostForRecipients(
+        source.sharedPostId || source.postId,
+        user.id,
+        targetGroup?.memberIds || [peer.id]
+      );
+      if (!validation.post) return sendError(res, validation.status, validation.error);
+      sharedPost = validation.post;
+    }
     const chatId = targetGroup?.id || chatIdFor(user.id, peer.id);
     const list = ensureChatMessages(chatId);
     const sourceFile = source.attachment?.id ? db.files[source.attachment.id] : null;
@@ -4238,6 +4365,7 @@ async function handleApi(req, res, pathname, query) {
       text: source.text || '',
       replyTo: null,
       attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      sharedPostId: sharedPost?.id || null,
       stickerId: source.stickerId || null,
       hiddenFor: [],
       reactions: {},
@@ -4296,8 +4424,16 @@ async function handleApi(req, res, pathname, query) {
     message.deletedAt = message.deletedAt || nowIso();
     message.deletedBy = user.id;
     await saveMessages();
-    pushToUsers(participantsForChatId(chatId), { type: 'message:deleted', chatId, messageId: message.id, deletedAt: message.deletedAt, deletedBy: user.id });
-    return sendJson(res, 200, { ok: true });
+    const decorated = decorateMessage(message);
+    pushToUsers(participantsForChatId(chatId), {
+      type: 'message:deleted',
+      chatId,
+      messageId: message.id,
+      deletedAt: message.deletedAt,
+      deletedBy: user.id,
+      message: decorated
+    });
+    return sendJson(res, 200, { ok: true, message: decorated });
   }
 
   const fileDownloadMatch = /^\/api\/files\/([^/]+)\/download$/.exec(pathname);

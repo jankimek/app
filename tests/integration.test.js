@@ -167,7 +167,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /const appSwipeStartsAt = 16/);
   assert.match(clientSource, /const gestureControl = event\.target\.closest\('button, a, input, textarea, select/);
   assert.match(clientSource, /event\.clientX >= appSwipeStartsAt && event\.clientX < appSwipeStartsAt \+ 32/);
-  assert.match(clientSource, /!hasActiveConversation\(\) && isAppBackSwipe/);
+  assert.match(clientSource, /\(!hasActiveConversation\(\) \|\| state\.clipViewer\) && \(isAppBackSwipe \|\| isClipViewerBackSwipe\)/);
   assert.match(clientSource, /if \(!swipe\.moved\) \{[\s\S]*?state\.edgeSwipe = null;[\s\S]*?return;/);
   assert.match(clientSource, /function renderMessageFocus/);
   assert.match(clientSource, /function capturePersistentScroll/);
@@ -210,7 +210,25 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /state\.navigationStack = \[\];[\s\S]*?state\.forwardNavigationEntries\.clear\(\)/);
   assert.match(clientSource, /navigationGeneration: Number\.isInteger\(history\.state\?\.navGeneration\)/);
   assert.match(clientSource, /targetGeneration !== state\.navigationGeneration/);
-  assert.match(clientSource, /discardNavigationForMainTab\(\);[\s\S]*?const keepDesktopChat/);
+  assert.match(clientSource, /if \(isMobileLayout\(\) \|\| nextTab !== 'chats'\) \{[\s\S]*?state\.activePeer = null;[\s\S]*?state\.activeGroup = null;/);
+  assert.doesNotMatch(clientSource, /const keepDesktopChat/);
+  assert.match(clientSource, /clipViewer: state\.clipViewer \? \{ \.\.\.state\.clipViewer \} : null/);
+  assert.match(clientSource, /data-action="toggle-clip-sound"/);
+  assert.match(clientSource, /data-action="open-home-video"/);
+  assert.match(clientSource, /data-action="toggle-post-share-target"/);
+  assert.match(clientSource, /class="shared-post-card"/);
+  assert.match(clientSource, /if \(active && video\.matches\('\[data-action="open-home-video"\]'\)\) video\.tabIndex = 0/);
+  assert.match(clientSource, /const letterbox = aspect\.name === 'mixed' \|\| aspect\.ratio > 1\.15/);
+  assert.match(clientSource, /role="dialog" aria-modal="true"/);
+  assert.match(clientSource, /function sharedPostIdFromLocation/);
+  assert.match(styleSource, /grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
+  const navSidebarSource = sourceSection(clientSource, 'function renderSidebar()', 'function renderTabContent');
+  const mobileNavOrder = ["navButton('home'", "navButton('search'", "navButton('clips'", "navButton('chats'", "navButton('profile'", 'bottom-tab-create'];
+  mobileNavOrder.reduce((previousIndex, marker) => {
+    const index = navSidebarSource.indexOf(marker);
+    assert.ok(index > previousIndex, `${marker} must keep its requested navigation position`);
+    return index;
+  }, -1);
   assert.match(clientSource, /function beginSwipeNavigationBack/);
   assert.match(clientSource, /function restoreForwardNavigationEntry/);
   assert.match(clientSource, /cancelForwardNavigationAnimation\(current\)/);
@@ -347,11 +365,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(sidebarSource, /navButton\('clips', 'Clips', 'clips'\)/);
   assert.match(sidebarSource, /class="bottom-tab bottom-tab-create"[^>]*data-action="open-post-create"[^>]*aria-label="Create post"/);
   assert.doesNotMatch(sidebarSource, /navButton\('create'/);
-  assert.match(styleSource, /--social-icon-blue: #2f7895;/);
-  assert.match(styleSource, /\.bottom-tab-create \{[\s\S]*?border-radius: 8px;[\s\S]*?var\(--social-icon-blue\)/);
+  assert.match(styleSource, /\.bottom-tab-create \{[\s\S]*?order: 6;[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/);
+  assert.doesNotMatch(styleSource, /\.bottom-tab-create \{[^}]*linear-gradient/);
   assert.match(styleSource, /@media \(min-width: 861px\) \{[\s\S]*?\.app-shell\.home-root \{[\s\S]*?grid-template-columns: 360px minmax\(0, 1fr\);[\s\S]*?\.app-shell\.home-root > \.sidebar > \.bottom-tabs \{[\s\S]*?width: 360px;/);
   const swipeTabSource = sourceSection(clientSource, 'function tabSwipeTarget', 'function ensureTabSwipePreview');
-  for (const tab of ['home', 'search', 'chats', 'profile']) assert.match(swipeTabSource, new RegExp(`['"]${tab}['"]`));
+  for (const tab of ['home', 'search', 'clips', 'chats', 'profile']) assert.match(swipeTabSource, new RegExp(`['"]${tab}['"]`));
   assert.doesNotMatch(swipeTabSource, /create|notifications/);
 
   const homeStorySource = sourceSection(clientSource, 'function homeStoryUsers', 'function postAuthor');
@@ -369,6 +387,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(homePanelSource, /function renderClipsPanel/);
   assert.match(homePanelSource, /data-action="set-clip-mode"/);
   assert.match(styleSource, /\.clips-feed \{[\s\S]*?scroll-snap-type: y mandatory;/);
+  const clipCardSource = sourceSection(clientSource, 'function renderClipCard', 'function renderClipsPanel');
+  assert.doesNotMatch(clipCardSource, /\scontrols(?:\s|>)/);
+  assert.match(clipCardSource, /playsinline webkit-playsinline/);
+  assert.match(clipCardSource, /disablepictureinpicture disableremoteplayback/);
+  const postVisualSource = sourceSection(clientSource, 'function renderPostVisual', 'function renderPostPersonTags');
+  assert.doesNotMatch(postVisualSource, /\scontrols(?:\s|>)/);
   const postCardSource = sourceSection(clientSource, 'function renderPostComments', 'function renderHomePanel');
   assert.match(postCardSource, /const topComment = comments\.at\(-1\)/);
   assert.match(postCardSource, /class="post-comment-preview" data-action="open-post-comments"/);
@@ -1683,6 +1707,168 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
     body: { identifier: 'alice_test', password: PASSWORD, twoFactorCode: totp(setup.data.secret) }
   });
   assert.equal(validLogin.status, 200);
+});
+
+test('posts and clips can be shared safely as first-class chat messages', async (t) => {
+  const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-app-post-share-test-'));
+  const dataDir = path.join(runtime, 'data');
+  const uploadDir = path.join(runtime, 'uploads');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const port = 38000 + Math.floor(Math.random() * 1000);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, UPLOAD_DIR: uploadDir },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let serverError = '';
+  child.stderr.on('data', (chunk) => { serverError += chunk.toString('utf8'); });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill();
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) return resolve();
+      child.once('exit', resolve);
+      setTimeout(resolve, 1500);
+    });
+    fs.rmSync(runtime, { recursive: true, force: true });
+  });
+
+  await waitForServer(baseUrl, child);
+  assert.equal(serverError, '');
+  const sender = new ApiClient(baseUrl);
+  const recipient = new ApiClient(baseUrl);
+  const groupMember = new ApiClient(baseUrl);
+  const senderUser = await register(sender, 'share_sender');
+  const recipientUser = await register(recipient, 'share_recipient');
+  const groupMemberUser = await register(groupMember, 'share_group_member');
+
+  async function connect(requester, accepter, accepterUsername) {
+    const request = await requester.request(`/api/contacts/${accepterUsername}`, { method: 'POST' });
+    assert.equal(request.status, 201);
+    assert.equal((await accepter.request(`/api/requests/${request.data.request.id}/accept`, { method: 'POST' })).status, 200);
+  }
+
+  await connect(sender, recipient, recipientUser.username);
+  await connect(sender, groupMember, groupMemberUser.username);
+
+  const clipResponse = await sender.request('/api/posts', {
+    method: 'POST',
+    body: {
+      file: { name: 'shareable-clip.mp4', type: 'video/mp4', dataUrl: VIDEO_DATA },
+      title: 'Shareable launch clip',
+      description: 'A clip whose title is searchable from chat.'
+    }
+  });
+  assert.equal(clipResponse.status, 201);
+  const clip = clipResponse.data.post;
+
+  const missingPostId = await sendMessage(sender, recipientUser.id, { kind: 'post' });
+  assert.equal(missingPostId.status, 400);
+  const invalidPost = await sendMessage(sender, recipientUser.id, { kind: 'post', postId: 'post_missing' });
+  assert.equal(invalidPost.status, 404);
+
+  const directShare = await sendMessage(sender, recipientUser.id, {
+    kind: 'post',
+    postId: clip.id,
+    text: 'Watch this one'
+  });
+  assert.equal(directShare.status, 201);
+  assert.equal(directShare.data.message.kind, 'post');
+  assert.equal(directShare.data.message.sharedPostId, clip.id);
+  assert.equal(directShare.data.message.sharedPost.id, clip.id);
+  assert.equal(directShare.data.message.sharedPost.title, 'Shareable launch clip');
+  assert.equal(directShare.data.message.sharedPost.isClip, true);
+  assert.equal(directShare.data.message.sharedPost.mediaType, 'video');
+  assert.equal(directShare.data.message.sharedPost.mediaItems.length, 1);
+  assert.equal(directShare.data.message.sharedPost.comments, undefined);
+  assert.equal(directShare.data.message.attachment, null);
+  assert.equal((await recipient.request(directShare.data.message.sharedPost.media.url)).status, 200);
+
+  const recipientHistory = await recipient.request(`/api/chats/${senderUser.id}/messages?limit=200`);
+  const receivedShare = recipientHistory.data.messages.find((message) => message.id === directShare.data.message.id);
+  assert.equal(receivedShare.sharedPostId, clip.id);
+  assert.equal(receivedShare.sharedPost.author.id, senderUser.id);
+
+  const reply = await sendMessage(recipient, senderUser.id, {
+    kind: 'text',
+    text: 'This looks good',
+    replyTo: directShare.data.message.id
+  });
+  assert.equal(reply.status, 201);
+  assert.equal(reply.data.message.replyPreview.sharedPostId, clip.id);
+  assert.equal(reply.data.message.replyPreview.sharedPost.id, clip.id);
+
+  const search = await recipient.request('/api/chats/search?q=shareable%20launch');
+  const searchResult = search.data.results.find((result) => result.message.id === directShare.data.message.id);
+  assert.ok(searchResult);
+  assert.match(searchResult.snippet, /Shared a clip/i);
+
+  const createdGroup = await sender.request('/api/groups', {
+    method: 'POST',
+    body: { name: 'Share testers', memberIds: [recipientUser.id, groupMemberUser.id] }
+  });
+  assert.equal(createdGroup.status, 201);
+  const group = createdGroup.data.group;
+  const groupShare = await sender.request(`/api/groups/${group.id}/messages`, {
+    method: 'POST',
+    body: { kind: 'post', postId: clip.id }
+  });
+  assert.equal(groupShare.status, 201);
+  assert.equal(groupShare.data.message.sharedPostId, clip.id);
+  assert.equal(groupShare.data.message.sharedPost.isClip, true);
+
+  const forwarded = await recipient.request(`/api/messages/${directShare.data.message.id}/forward`, {
+    method: 'POST',
+    body: { groupId: group.id }
+  });
+  assert.equal(forwarded.status, 201);
+  assert.equal(forwarded.data.message.kind, 'post');
+  assert.equal(forwarded.data.message.forwardedFrom, directShare.data.message.id);
+  assert.equal(forwarded.data.message.sharedPostId, clip.id);
+  assert.equal(forwarded.data.message.sharedPost.id, clip.id);
+
+  const deleted = await sender.request(`/api/messages/${groupShare.data.message.id}`, { method: 'DELETE' });
+  assert.equal(deleted.status, 200);
+  assert.ok(deleted.data.message.deletedAt);
+  assert.equal(deleted.data.message.sharedPostId, null);
+  assert.equal(deleted.data.message.sharedPost, null);
+  const groupHistory = await groupMember.request(`/api/groups/${group.id}/messages?limit=200`);
+  const deletedGroupShare = groupHistory.data.messages.find((message) => message.id === groupShare.data.message.id);
+  assert.ok(deletedGroupShare.deletedAt);
+  assert.equal(deletedGroupShare.sharedPostId, null);
+  assert.equal(deletedGroupShare.sharedPost, null);
+
+  assert.equal((await sender.request('/api/me/profile', {
+    method: 'PATCH',
+    body: { socialPublic: false }
+  })).status, 200);
+  assert.equal((await sender.request(`/api/followers/${recipientUser.id}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await sender.request(`/api/followers/${groupMemberUser.id}`, { method: 'DELETE' })).status, 200);
+  const privateDirectShare = await sendMessage(sender, recipientUser.id, { kind: 'post', postId: clip.id });
+  assert.equal(privateDirectShare.status, 403);
+  const privateGroupShare = await sender.request(`/api/groups/${group.id}/messages`, {
+    method: 'POST',
+    body: { kind: 'post', postId: clip.id }
+  });
+  assert.equal(privateGroupShare.status, 403);
+  const privateForward = await sender.request(`/api/messages/${directShare.data.message.id}/forward`, {
+    method: 'POST',
+    body: { groupId: group.id }
+  });
+  assert.equal(privateForward.status, 403);
+
+  const recipientAfterPrivacy = await recipient.request(`/api/chats/${senderUser.id}/messages?limit=200`);
+  const unavailableShare = recipientAfterPrivacy.data.messages.find((message) => message.id === directShare.data.message.id);
+  assert.equal(unavailableShare.sharedPostId, null);
+  assert.equal(unavailableShare.sharedPost, null);
+  const senderAfterPrivacy = await sender.request(`/api/chats/${recipientUser.id}/messages?limit=200`);
+  const senderVisibleShare = senderAfterPrivacy.data.messages.find((message) => message.id === directShare.data.message.id);
+  assert.equal(senderVisibleShare.sharedPostId, clip.id);
+  assert.equal(senderVisibleShare.sharedPost.id, clip.id);
+  assert.ok(!(await recipient.request('/api/chats/search?q=shareable%20launch')).data.results
+    .some((result) => result.message.id === directShare.data.message.id));
+  assert.equal(serverError, '');
 });
 
 test('group invitations, history, admin controls, rich messages, and leaving', async (t) => {
