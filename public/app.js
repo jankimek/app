@@ -1843,9 +1843,9 @@
           ${navButton('home', 'Home', 'home')}
           ${navButton('search', 'Search', 'search')}
           ${navButton('clips', 'Clips', 'clips')}
+          <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
           ${navButton('chats', 'Messages', 'messages')}
           ${navButton('profile', 'Profile', 'profile')}
-          <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
         </nav>
       </aside>
     `;

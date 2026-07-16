@@ -223,7 +223,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function sharedPostIdFromLocation/);
   assert.match(styleSource, /grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
   const navSidebarSource = sourceSection(clientSource, 'function renderSidebar()', 'function renderTabContent');
-  const mobileNavOrder = ["navButton('home'", "navButton('search'", "navButton('clips'", "navButton('chats'", "navButton('profile'", 'bottom-tab-create'];
+  const mobileNavOrder = ["navButton('home'", "navButton('search'", "navButton('clips'", 'bottom-tab-create', "navButton('chats'", "navButton('profile'"];
   mobileNavOrder.reduce((previousIndex, marker) => {
     const index = navSidebarSource.indexOf(marker);
     assert.ok(index > previousIndex, `${marker} must keep its requested navigation position`);
@@ -365,7 +365,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(sidebarSource, /navButton\('clips', 'Clips', 'clips'\)/);
   assert.match(sidebarSource, /class="bottom-tab bottom-tab-create"[^>]*data-action="open-post-create"[^>]*aria-label="Create post"/);
   assert.doesNotMatch(sidebarSource, /navButton\('create'/);
-  assert.match(styleSource, /\.bottom-tab-create \{[\s\S]*?order: 6;[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/);
+  assert.match(styleSource, /\.bottom-tab-create \{[\s\S]*?order: 0;[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/);
   assert.doesNotMatch(styleSource, /\.bottom-tab-create \{[^}]*linear-gradient/);
   assert.match(styleSource, /@media \(min-width: 861px\) \{[\s\S]*?\.app-shell\.home-root \{[\s\S]*?grid-template-columns: 360px minmax\(0, 1fr\);[\s\S]*?\.app-shell\.home-root > \.sidebar > \.bottom-tabs \{[\s\S]*?width: 360px;/);
   const swipeTabSource = sourceSection(clientSource, 'function tabSwipeTarget', 'function ensureTabSwipePreview');

@@ -9380,8 +9380,8 @@ html.keyboard-open .bottom-tabs {
   .app-shell.social-root .bottom-tab[data-tab="home"] { order: 1; }
   .app-shell.social-root .bottom-tab[data-tab="search"] { order: 2; }
   .app-shell.social-root .bottom-tab[data-tab="clips"] { order: 3; }
-  .app-shell.social-root .bottom-tab[data-tab="chats"] { order: 4; }
-  .app-shell.social-root .bottom-tab-create { order: 5; }
+  .app-shell.social-root .bottom-tab-create { order: 4; }
+  .app-shell.social-root .bottom-tab[data-tab="chats"] { order: 5; }
   .app-shell.social-root .bottom-tab[data-tab="profile"] { order: 6; margin-top: auto; }
   .app-shell.social-root .desktop-brand { order: 0; }
 
@@ -12771,7 +12771,7 @@ html.keyboard-open .bottom-tabs {
 }
 
 .bottom-tab-create {
-  order: 6;
+  order: 0;
   width: auto;
   height: auto;
   min-width: 44px;
