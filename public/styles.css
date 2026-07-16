@@ -825,6 +825,9 @@ html.keyboard-open .bottom-tabs {
   width: max-content;
   min-width: 0;
   touch-action: pan-y;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -9314,6 +9317,13 @@ html.keyboard-open .bottom-tabs {
   .sticker-creator-shell {
     animation-duration: 0.01ms !important;
   }
+
+  .message .bubble,
+  .message-focus-actions,
+  .message-focus-overlay.closing .message-reaction-bar,
+  .message-focus-overlay.closing .message-action-menu {
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Refined message focus, comments, sticker sets, and page gestures */
@@ -9323,7 +9333,33 @@ html.keyboard-open .bottom-tabs {
   background-attachment: fixed;
   background-size: 100vw var(--visual-height);
   background-position: 0 var(--visual-top);
-  transition: border-color 0.14s ease;
+  transition: border-color 140ms ease, box-shadow 150ms cubic-bezier(.2, .8, .2, 1), filter 150ms cubic-bezier(.2, .8, .2, 1), transform 150ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.message .bubble {
+  transform-origin: left center;
+  transition: border-color 140ms ease, box-shadow 150ms cubic-bezier(.2, .8, .2, 1), filter 150ms cubic-bezier(.2, .8, .2, 1), transform 150ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.message.mine .bubble {
+  transform-origin: right center;
+}
+
+.message.message-press-pending .bubble {
+  filter: brightness(.98);
+  transform: scale(.985);
+}
+
+.message.message-press-held .bubble {
+  filter: brightness(1.06) saturate(1.03);
+  transform: translateY(-1px) scale(1.025);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .2), 0 16px 38px rgba(0, 0, 0, .42);
+}
+
+.message.media-message.message-press-held .bubble,
+.message.sticker-message.message-press-held .bubble {
+  filter: brightness(1.06) saturate(1.03) drop-shadow(0 14px 24px rgba(0, 0, 0, .42));
+  box-shadow: none;
 }
 
 .chat-pane.chat-opening {
@@ -11145,6 +11181,24 @@ html.keyboard-open .bottom-tabs {
   animation: instagramCommentSpin .65s linear infinite;
 }
 
+.post-comments-sheet .post-comment-row + .post-comment-row {
+  margin-top: 18px;
+}
+
+.post-comments-sheet .story-comment-quick-reactions {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.post-comments-sheet .story-comment-field {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.profile-media-section.is-loading .profile-post-grid,
+.profile-media-section.is-loading .profile-media-empty {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .story-comments-sheet .story-replies-off.comments-disabled {
   min-height: 72px;
   display: grid;
@@ -11285,6 +11339,8 @@ html.keyboard-open .bottom-tabs {
   --social-violet: #7768ff;
   --social-violet-soft: rgba(119, 104, 255, 0.16);
   --social-teal: var(--accent-2);
+  --social-icon-blue: #2f7895;
+  --social-icon-blue-soft: rgba(47, 120, 149, 0.14);
   --social-surface: #0a0f18;
   --social-surface-raised: #101824;
   --social-hairline: rgba(244, 247, 251, 0.09);
@@ -11361,7 +11417,7 @@ html.keyboard-open .bottom-tabs {
   min-width: 44px;
   min-height: 44px;
   justify-self: stretch;
-  border-radius: 14px;
+  border-radius: 8px;
 }
 
 .bottom-tab-create {
@@ -11373,16 +11429,16 @@ html.keyboard-open .bottom-tabs {
   justify-self: center;
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 16px;
-  color: #071016;
-  background: linear-gradient(145deg, var(--social-violet), var(--social-teal));
-  box-shadow: 0 8px 22px rgba(71, 76, 169, 0.26);
+  border-radius: 8px;
+  color: #f7f9fc;
+  background: linear-gradient(145deg, #514db8, var(--social-icon-blue));
+  box-shadow: 0 8px 22px rgba(36, 71, 112, 0.3);
   transition: transform 150ms ease, box-shadow 150ms ease, filter 150ms ease;
 }
 
 .bottom-tab-create:is(:hover, :focus-visible) {
   filter: brightness(1.08);
-  box-shadow: 0 10px 28px rgba(79, 210, 194, 0.22);
+  box-shadow: 0 10px 28px rgba(47, 120, 149, 0.28);
 }
 
 .bottom-tab-create:active {
@@ -11444,7 +11500,7 @@ html.keyboard-open .bottom-tabs {
   align-items: center;
   gap: 7px;
   padding: 0 8px;
-  border-radius: 12px;
+  border-radius: 7px;
   color: var(--text);
   background: transparent;
   font-size: 19px;
@@ -11455,7 +11511,7 @@ html.keyboard-open .bottom-tabs {
 .feed-picker .ui-icon {
   width: 16px;
   height: 16px;
-  color: var(--social-teal);
+  color: var(--social-icon-blue);
   transition: transform 150ms ease;
 }
 
@@ -11472,7 +11528,7 @@ html.keyboard-open .bottom-tabs {
   overflow: hidden;
   padding: 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 16px;
+  border-radius: 8px;
   background: rgba(15, 22, 33, 0.98);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.46);
   backdrop-filter: blur(20px);
@@ -11487,7 +11543,7 @@ html.keyboard-open .bottom-tabs {
   justify-content: space-between;
   gap: 10px;
   padding: 0 12px;
-  border-radius: 11px;
+  border-radius: 6px;
   color: var(--soft);
   background: transparent;
   text-align: left;
@@ -11502,7 +11558,7 @@ html.keyboard-open .bottom-tabs {
 .feed-picker-menu .ui-icon {
   width: 17px;
   height: 17px;
-  color: var(--social-teal);
+  color: var(--social-icon-blue);
 }
 
 .home-head-actions {
@@ -11594,8 +11650,8 @@ html.keyboard-open .bottom-tabs {
   place-items: center;
   border: 2px solid var(--bg);
   border-radius: 50%;
-  color: #061014;
-  background: var(--social-teal);
+  color: #f7f9fc;
+  background: var(--social-icon-blue);
   font-size: 16px;
   font-style: normal;
   font-weight: 900;
@@ -11792,7 +11848,7 @@ html.keyboard-open .bottom-tabs {
 }
 
 .post-action-row button.active {
-  color: var(--social-teal);
+  color: var(--social-icon-blue);
 }
 
 .post-action-row button:first-child.active {
@@ -11866,21 +11922,74 @@ html.keyboard-open .bottom-tabs {
 
 .post-comments {
   display: grid;
-  gap: 1px;
-  margin-top: 5px;
+  gap: 5px;
+  margin-top: 7px;
 }
 
-.post-comments p {
-  margin: 0;
+.post-comment-preview {
+  width: 100%;
+  min-height: 44px !important;
+  display: block;
+  padding: 0 !important;
+  border: 0;
+  color: var(--text) !important;
+  background: transparent;
+  text-align: left;
 }
 
-.post-comments p > button {
-  color: var(--text);
-  font-weight: 750;
+.post-comment-preview .highlight-comment-preview-card {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 8px;
+  background: rgba(17, 23, 32, 0.92);
+  box-shadow: none;
+  animation: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+.post-comment-preview:is(:hover, :focus-visible) .highlight-comment-preview-card {
+  background: #171f2a;
+}
+
+.post-comment-preview:active .highlight-comment-preview-card {
+  transform: scale(0.985);
+}
+
+.post-counts {
+  display: flex !important;
+  align-items: center;
+  gap: 5px;
+}
+
+.post-counts button {
+  min-height: 28px;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
 }
 
 .post-comments-more {
   justify-self: start;
+  min-height: 28px !important;
+  padding: 0 !important;
+}
+
+.post-action-row button.is-pending {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.post-action-row button.post-action-pop .ui-icon {
+  animation: postActionPop 300ms cubic-bezier(.18, .89, .32, 1.28);
+}
+
+@keyframes postActionPop {
+  0% { transform: scale(.82); }
+  55% { transform: scale(1.22); }
+  100% { transform: scale(1); }
 }
 
 .post-comment-form {
@@ -12230,7 +12339,7 @@ button.profile-stat:is(:hover, :focus-visible) {
   gap: 7px;
   padding: 0 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 11px;
+  border-radius: 7px;
   color: var(--text);
   background: var(--panel-2);
   font-size: 12px;
@@ -12240,7 +12349,7 @@ button.profile-stat:is(:hover, :focus-visible) {
 .profile-owner-actions .ui-icon {
   width: 17px;
   height: 17px;
-  color: var(--social-teal);
+  color: var(--social-icon-blue);
 }
 
 .highlight-strip {
@@ -12250,6 +12359,7 @@ button.profile-stat:is(:hover, :focus-visible) {
 .profile-media-section {
   width: calc(100% + 28px);
   max-width: none;
+  min-height: calc(var(--visual-height) - 64px);
   margin: 16px -14px 0;
   border-top: 1px solid var(--social-hairline);
 }
@@ -12351,7 +12461,7 @@ button.profile-stat:is(:hover, :focus-visible) {
 
 .search-profile-actions .mini-btn {
   min-height: 44px;
-  border-radius: 11px;
+  border-radius: 7px;
 }
 
 /* Full visual-viewport, three-stage publishing flow. */
@@ -12403,7 +12513,7 @@ button.profile-stat:is(:hover, :focus-visible) {
   align-items: center;
   justify-content: center;
   padding: 0 9px;
-  border-radius: 12px;
+  border-radius: 7px;
   color: var(--text);
   background: transparent;
 }
@@ -12591,7 +12701,7 @@ button.profile-stat:is(:hover, :focus-visible) {
   min-height: 44px;
   padding: 0 13px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 11px;
+  border-radius: 7px;
   color: var(--muted);
   background: #111927;
   font-size: 11px;
@@ -12631,7 +12741,7 @@ button.profile-stat:is(:hover, :focus-visible) {
   gap: 7px;
   padding: 5px;
   border: 1px solid transparent;
-  border-radius: 15px;
+  border-radius: 8px;
   color: var(--muted);
   background: transparent;
   scroll-snap-align: start;
@@ -12751,9 +12861,9 @@ button.profile-stat:is(:hover, :focus-visible) {
 .post-tag-picker button {
   min-height: 44px;
   padding: 0 15px;
-  border-radius: 11px;
-  color: #061014;
-  background: var(--social-teal);
+  border-radius: 7px;
+  color: #f7f9fc;
+  background: var(--social-icon-blue);
   font-size: 12px;
   font-weight: 800;
 }
@@ -12918,8 +13028,8 @@ button.note-item,
   place-items: center;
   border: 2px solid var(--bg);
   border-radius: 50%;
-  color: #061014;
-  background: var(--social-teal);
+  color: #f7f9fc;
+  background: var(--social-icon-blue);
   font-size: 14px;
   font-style: normal;
 }
@@ -13116,7 +13226,7 @@ button.note-item,
   gap: 10px;
   padding: 9px 10px;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 13px;
+  border-radius: 8px;
   color: var(--text);
   background: rgba(255, 255, 255, 0.03);
   text-align: left;
@@ -13124,8 +13234,8 @@ button.note-item,
 }
 
 .settings-menu-grid > button:is(:hover, :focus-visible) {
-  border-color: rgba(79, 210, 194, 0.24);
-  background: rgba(79, 210, 194, 0.065);
+  border-color: rgba(47, 120, 149, 0.36);
+  background: rgba(47, 120, 149, 0.09);
 }
 
 .settings-menu-grid > button:active {
@@ -13136,9 +13246,9 @@ button.note-item,
   width: 38px;
   height: 38px;
   padding: 9px;
-  border-radius: 11px;
-  color: var(--social-teal);
-  background: rgba(79, 210, 194, 0.09);
+  border-radius: 7px;
+  color: var(--social-icon-blue);
+  background: var(--social-icon-blue-soft);
 }
 
 .settings-menu-grid > button > .ui-icon:last-child {
@@ -13248,8 +13358,8 @@ button.note-item,
 
 .profile-edit-save {
   min-height: 44px;
-  border-radius: 11px;
-  background: linear-gradient(135deg, var(--social-violet), #3d9fa1);
+  border-radius: 7px;
+  background: linear-gradient(135deg, #514db8, var(--social-icon-blue));
 }
 
 .profile-empty-bio {
@@ -13267,7 +13377,7 @@ button.note-item,
 
 .settings-user-list .mini-btn {
   min-height: 44px;
-  border-radius: 10px;
+  border-radius: 7px;
 }
 
 .settings-activity-list {
@@ -13441,19 +13551,37 @@ button.note-item,
 
 /* Desktop home is a centered reading column; mobile keeps the route shell. */
 @media (min-width: 861px) {
+  .app-shell > .sidebar > .bottom-tabs {
+    width: 360px;
+  }
+
   .app-shell.home-root {
-    grid-template-columns: minmax(0, 680px);
-    justify-content: center;
+    grid-template-columns: 360px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
     background:
       radial-gradient(circle at 50% -22%, rgba(119, 104, 255, 0.15), transparent 38%),
       #020305;
   }
 
   .app-shell.home-root > .sidebar {
-    width: 100%;
+    display: contents;
+  }
+
+  .app-shell.home-root > .sidebar > .side-content {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    width: min(680px, 100%);
+    justify-self: center;
     border-right: 1px solid var(--social-hairline);
     border-left: 1px solid var(--social-hairline);
+    background: var(--bg);
     box-shadow: 0 0 70px rgba(0, 0, 0, 0.36);
+  }
+
+  .app-shell.home-root > .sidebar > .bottom-tabs {
+    grid-column: 1;
+    grid-row: 2;
+    width: 360px;
   }
 
   .app-shell.home-root > .chat-pane {
