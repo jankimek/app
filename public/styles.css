@@ -8251,6 +8251,32 @@ html.keyboard-open .bottom-tabs {
   animation-delay: 40ms;
 }
 
+@media (min-width: 861px) and (max-width: 1099px) {
+  .overlay:has(.post-comments-sheet) {
+    box-sizing: border-box;
+    padding-left: 76px;
+  }
+}
+
+@media (min-width: 1100px) {
+  .overlay:has(.post-comments-sheet) {
+    align-items: center;
+    justify-items: end;
+    box-sizing: border-box;
+    padding: 18px;
+  }
+
+  .action-sheet.compact-sheet.story-comments-sheet.post-comments-sheet {
+    width: clamp(320px, 30vw, 430px);
+    height: min(84vh, 760px);
+    min-height: min(560px, calc(var(--visual-height) - 36px));
+    max-height: calc(var(--visual-height) - 36px);
+    justify-self: end;
+    border-radius: 16px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .route-page-preview,
   .route-page-entering,
@@ -12533,6 +12559,57 @@ html.keyboard-open .bottom-tabs {
 
 .post-comments-sheet .post-comment-row + .post-comment-row {
   margin-top: 18px;
+}
+
+.post-comments-sheet .post-comment-row.is-pinned {
+  padding-top: 2px;
+}
+
+.post-comments-sheet .story-comment-meta {
+  flex-wrap: wrap;
+  gap: 7px 11px;
+}
+
+.post-comments-sheet .post-comment-pinned,
+.post-comments-sheet .post-comment-creator-like {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #a8a8a8;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.post-comments-sheet .post-comment-pinned .ui-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.post-comments-sheet .post-comment-creator-like {
+  width: max-content;
+  margin-top: 6px;
+}
+
+.post-comments-sheet .post-comment-creator-like .ui-icon {
+  width: 12px;
+  height: 12px;
+  color: #ff3040;
+}
+
+.post-comments-sheet .post-comment-creator-like svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.post-comments-sheet .post-comment-delete {
+  color: #ed4956;
+}
+
+.post-comments-sheet [data-action="toggle-post-comment-pin"].is-pending,
+.post-comments-sheet [data-action="delete-post-comment"].is-pending {
+  opacity: .45;
+  pointer-events: none;
 }
 
 .post-comments-sheet .story-comment-quick-reactions {

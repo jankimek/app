@@ -400,6 +400,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(postCardSource, /focus-post-comment|toggle-post-comments|class="post-comment-form"/);
   assert.match(clientSource, /function renderPostCommentsSheet/);
   assert.match(clientSource, /story-comments-sheet post-comments-sheet/);
+  assert.match(clientSource, /data-action="toggle-post-comment-like"/);
+  assert.match(clientSource, /data-action="toggle-post-comment-pin"/);
+  assert.match(clientSource, /data-action="delete-post-comment"/);
+  assert.match(clientSource, /Liked by creator/);
+  assert.match(clientSource, /data-action="follow-user"[^>]*>Follow<\/button>/);
+  assert.doesNotMatch(clientSource, /class="clip-follow" data-action="send-request"/);
+  assert.match(styleSource, /@media \(min-width: 1100px\) \{[\s\S]*?\.overlay:has\(\.post-comments-sheet\)[\s\S]*?justify-items: end;/);
   const postActionSource = sourceSection(clientSource, 'async function togglePostAction', 'async function deletePost');
   assert.match(postActionSource, /syncPostEngagement\(data\.post, action\)/);
   assert.match(postActionSource, /syncPostEngagement\(data\.post\)/);
@@ -874,6 +881,35 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   assert.equal(commentActivity.status, 200);
   assert.deepEqual(commentActivity.data.items.map((item) => item.comment.id), [comment.data.comment.id]);
   assert.ok((await alice.request('/api/notifications')).data.notifications.some((note) => note.type === 'post_tag' || note.type === 'mention' || note.type === 'post_comment'));
+
+  const regularCommentLike = await charlie.request(`/api/posts/${post.id}/comments/${comment.data.comment.id}/like`, { method: 'POST' });
+  assert.equal(regularCommentLike.status, 200);
+  assert.equal(regularCommentLike.data.comment.likedByMe, true);
+  assert.equal(regularCommentLike.data.comment.likeCount, 1);
+  assert.equal(regularCommentLike.data.comment.likedByCreator, false);
+  const creatorCommentLike = await alice.request(`/api/posts/${post.id}/comments/${comment.data.comment.id}/like`, { method: 'POST' });
+  assert.equal(creatorCommentLike.status, 200);
+  assert.equal(creatorCommentLike.data.comment.likeCount, 2);
+  assert.equal(creatorCommentLike.data.comment.likedByCreator, true);
+  assert.equal((await bob.request(`/api/posts/${post.id}`)).data.post.comments[0].likedByCreator, true);
+  assert.equal((await bob.request(`/api/posts/${post.id}/comments/${comment.data.comment.id}/pin`, { method: 'POST' })).status, 403);
+  const pinnedComment = await alice.request(`/api/posts/${post.id}/comments/${comment.data.comment.id}/pin`, { method: 'POST' });
+  assert.equal(pinnedComment.status, 200);
+  assert.equal(pinnedComment.data.comment.pinned, true);
+
+  const ownerModeratedComment = await charlie.request(`/api/posts/${post.id}/comments`, {
+    method: 'POST',
+    body: { text: 'The post owner can moderate this.' }
+  });
+  assert.equal(ownerModeratedComment.status, 201);
+  assert.equal(ownerModeratedComment.data.post.comments[0].id, comment.data.comment.id);
+  assert.equal((await bob.request(`/api/posts/${post.id}/comments/${ownerModeratedComment.data.comment.id}`, { method: 'DELETE' })).status, 403);
+  const ownerDeletedComment = await alice.request(`/api/posts/${post.id}/comments/${ownerModeratedComment.data.comment.id}`, { method: 'DELETE' });
+  assert.equal(ownerDeletedComment.status, 200);
+  assert.equal(ownerDeletedComment.data.post.commentCount, 1);
+  const selfDeletedComment = await bob.request(`/api/posts/${post.id}/comments/${comment.data.comment.id}`, { method: 'DELETE' });
+  assert.equal(selfDeletedComment.status, 200);
+  assert.equal(selfDeletedComment.data.post.commentCount, 0);
 
   assert.equal((await bob.request(`/api/follows/${aliceUser.id}`, { method: 'POST' })).status, 200);
   assert.equal((await bob.request(`/api/favorites/${aliceUser.id}`, { method: 'POST' })).status, 200);

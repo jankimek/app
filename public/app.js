@@ -2231,7 +2231,15 @@
     const reposted = Boolean(post.repostedByMe);
     const saved = Boolean(post.savedByMe);
     const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
-    const following = (state.me?.following || []).some((user) => user.id === author.id);
+    const knownAuthor = userById(author.id) || author;
+    const following = Boolean(knownAuthor.isFollowing || (state.me?.following || []).some((user) => user.id === author.id));
+    const followControl = author.id === state.me?.id || following
+      ? ''
+      : knownAuthor.outgoingRequest
+        ? '<button class="clip-follow" disabled>Requested</button>'
+        : knownAuthor.socialPublic === false && !knownAuthor.isContact
+          ? `<button class="clip-follow" data-action="add-contact" data-username="${esc(author.username)}" aria-label="Request to follow ${esc(author.username)}">Follow</button>`
+          : `<button class="clip-follow" data-action="follow-user" data-user-id="${esc(author.id)}" aria-label="Follow ${esc(author.username)}">Follow</button>`;
     const caption = String(post.description || post.caption || '');
     return `
       <article class="clip-card" data-post-id="${esc(post.id)}" data-media-index="${mediaIndex}">
@@ -2244,7 +2252,7 @@
             <div class="clip-copy">
               <div class="clip-author-row">
                 <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
-                ${author.id !== state.me?.id && !following ? `<button class="clip-follow" data-action="send-request" data-user-id="${esc(author.id)}">Follow</button>` : ''}
+                ${followControl}
               </div>
               ${caption ? `<p>${renderMentionText(caption)}</p>` : ''}
               <small class="clip-audio-line">${icon('volume')} Original audio · ${esc(author.username)}</small>
@@ -5842,16 +5850,25 @@
     if (!post) return '<p class="hint">Post not found.</p>';
     const comments = (post.comments || []).filter((comment) => comment?.user && String(comment.text || '').trim());
     const posting = Boolean(sheet.commentPosting);
+    const creator = postAuthor(post);
     const rows = comments.map((comment, index) => {
       const username = comment.user.username || 'user';
+      const likeLabel = comment.likeCount === 1 ? '1 like' : `${comment.likeCount || 0} likes`;
       return `
-        <article class="story-comment-row post-comment-row ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(index, 12)}">
+        <article class="story-comment-row post-comment-row ${comment.pinned ? 'is-pinned' : ''} ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(index, 12)}">
           <button class="story-comment-avatar" data-action="view-user-profile" data-username="${esc(username)}" aria-label="View ${esc(username)}'s profile">${avatarHtml(comment.user)}</button>
           <div class="story-comment-content">
             <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(username)}">${esc(username)}</button> <span>${renderMentionText(comment.text || '')}</span></p>
-            <div class="story-comment-meta"><time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(compactRelativeTime(comment.createdAt))}</time></div>
+            <div class="story-comment-meta">
+              <time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(compactRelativeTime(comment.createdAt))}</time>
+              <span class="story-comment-like-count ${comment.likeCount ? '' : 'is-empty'}" data-post-comment-like-count="${esc(comment.id)}">${esc(likeLabel)}</span>
+              ${comment.pinned ? `<span class="post-comment-pinned">${icon('pin')} Pinned</span>` : ''}
+              ${comment.canPin ? `<button data-action="toggle-post-comment-pin" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}">${comment.pinned ? 'Unpin' : 'Pin'}</button>` : ''}
+              ${comment.canDelete ? `<button class="post-comment-delete" data-action="delete-post-comment" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}">Delete</button>` : ''}
+            </div>
+            ${comment.likedByCreator ? `<span class="post-comment-creator-like" title="Liked by ${esc(creator?.username || 'the creator')}">${icon('heart')} Liked by creator</span>` : ''}
           </div>
-          <span aria-hidden="true"></span>
+          <button class="story-comment-like post-comment-like ${comment.likedByMe ? 'active' : ''}" data-action="toggle-post-comment-like" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}" aria-label="${comment.likedByMe ? 'Unlike' : 'Like'} comment" aria-pressed="${comment.likedByMe ? 'true' : 'false'}">${icon('heart')}</button>
         </article>
       `;
     }).join('');
@@ -7611,6 +7628,70 @@
     input.focus({ preventScroll: true });
     const caret = Math.min(next.length, start + emoji.length);
     input.setSelectionRange?.(caret, caret);
+  }
+
+  function updatePostCommentsSheet(options = {}) {
+    if (state.actionSheet?.type !== 'post-comments') return;
+    const list = document.querySelector('.post-comment-list');
+    const scrollTop = list?.scrollTop || 0;
+    const draft = document.getElementById('post-comment-input')?.value ?? state.actionSheet.commentDraft ?? '';
+    state.actionSheet.commentDraft = draft;
+    state.actionSheet.refreshing = true;
+    updateActionSheetSlot();
+    state.actionSheet.refreshing = false;
+    requestAnimationFrame(() => {
+      const nextList = document.querySelector('.post-comment-list');
+      if (nextList) nextList.scrollTop = scrollTop;
+      if (options.commentId) {
+        const escapedId = window.CSS?.escape ? CSS.escape(options.commentId) : String(options.commentId).replace(/"/g, '\\"');
+        const row = document.querySelector(`.post-comment-row[data-comment-id="${escapedId}"]`);
+        row?.scrollIntoView({ block: 'nearest', behavior: options.smooth ? 'smooth' : 'auto' });
+        if (options.heart) {
+          const button = row?.querySelector('.post-comment-like');
+          button?.classList.add('heart-pop');
+          setTimeout(() => button?.classList.remove('heart-pop'), 520);
+        }
+      }
+    });
+  }
+
+  async function mutatePostComment(postId, commentId, action) {
+    const escapedId = window.CSS?.escape ? CSS.escape(commentId) : String(commentId).replace(/"/g, '\\"');
+    const row = document.querySelector(`.post-comment-row[data-comment-id="${escapedId}"]`);
+    const control = row?.querySelector(`[data-action="${action}"]`);
+    if (control?.classList.contains('is-pending')) return;
+    control?.classList.add('is-pending');
+    let data;
+    try {
+      const endpoint = action === 'delete-post-comment'
+        ? `/api/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`
+        : `/api/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}/${action === 'toggle-post-comment-pin' ? 'pin' : 'like'}`;
+      data = await api(endpoint, { method: action === 'delete-post-comment' ? 'DELETE' : 'POST' });
+    } catch (error) {
+      control?.classList.remove('is-pending');
+      throw error;
+    }
+    replacePost(data.post);
+    syncPostEngagement(data.post);
+    if (state.actionSheet?.type === 'post-comments' && state.actionSheet.postId === postId) {
+      updatePostCommentsSheet({
+        commentId: action === 'delete-post-comment' ? null : commentId,
+        smooth: action === 'toggle-post-comment-pin',
+        heart: action === 'toggle-post-comment-like'
+      });
+    }
+  }
+
+  async function togglePostCommentLike(postId, commentId) {
+    return mutatePostComment(postId, commentId, 'toggle-post-comment-like');
+  }
+
+  async function togglePostCommentPin(postId, commentId) {
+    return mutatePostComment(postId, commentId, 'toggle-post-comment-pin');
+  }
+
+  async function deletePostComment(postId, commentId) {
+    return mutatePostComment(postId, commentId, 'delete-post-comment');
   }
 
   async function deletePost(postId) {
@@ -11354,6 +11435,15 @@
       }
       if (action === 'add-post-comment-emoji') {
         addPostCommentEmoji(target.dataset.emoji || '', target);
+      }
+      if (action === 'toggle-post-comment-like') {
+        await togglePostCommentLike(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'toggle-post-comment-pin') {
+        await togglePostCommentPin(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'delete-post-comment') {
+        if (confirm('Delete this comment?')) await deletePostComment(target.dataset.postId, target.dataset.commentId);
       }
       if (action === 'open-explore-post' || action === 'open-profile-post') {
         const post = postById(target.dataset.postId);

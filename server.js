@@ -783,6 +783,7 @@ function postRepostsAllowed(post) {
 function postActor(user, viewerId = null) {
   if (!user) return null;
   const avatar = user.profile?.avatarFileId ? db.files[user.profile.avatarFileId] : null;
+  const relation = viewerId ? relationFor(viewerId, user.id) : {};
   return {
     id: user.id,
     username: user.username,
@@ -791,18 +792,30 @@ function postActor(user, viewerId = null) {
     avatar: publicFile(avatar),
     url: `/u/${encodeURIComponent(user.username)}`,
     socialPublic: user.profile?.socialPublic !== false,
-    isFavorite: Boolean(viewerId && favoriteUserIdsFor(db.users[viewerId]).includes(user.id))
+    isFavorite: Boolean(viewerId && favoriteUserIdsFor(db.users[viewerId]).includes(user.id)),
+    isFollowing: Boolean(viewerId && isFollowing(viewerId, user.id)),
+    outgoingRequest: relation.outgoingRequest || null,
+    incomingRequest: relation.incomingRequest || null,
+    isContact: Boolean(viewerId && (db.contacts[viewerId] || []).includes(user.id))
   };
 }
 
-function publicPostComment(comment, viewerId) {
+function publicPostComment(comment, viewerId, post = null) {
   if (!comment || comment.deletedAt) return null;
+  const likes = Array.isArray(comment.likes) ? comment.likes.filter((userId) => db.users[userId]) : [];
   return {
     id: comment.id,
     text: comment.text || '',
     createdAt: comment.createdAt,
     user: postActor(db.users[comment.userId], viewerId),
-    isMine: comment.userId === viewerId
+    isMine: comment.userId === viewerId,
+    likeCount: likes.length,
+    likedByMe: Boolean(viewerId && likes.includes(viewerId)),
+    likedByCreator: Boolean(post?.ownerId && likes.includes(post.ownerId)),
+    pinned: Boolean(comment.pinnedAt),
+    pinnedAt: comment.pinnedAt || null,
+    canDelete: Boolean(viewerId && (comment.userId === viewerId || post?.ownerId === viewerId)),
+    canPin: Boolean(viewerId && post?.ownerId === viewerId)
   };
 }
 
@@ -882,7 +895,11 @@ function publicPost(post, viewerId = null) {
     repostCount: reposts.length,
     repostedByMe: Boolean(viewerId && reposts.includes(viewerId)),
     commentCount: comments.length,
-    comments: comments.slice(-100).map((comment) => publicPostComment(comment, viewerId)).filter(Boolean),
+    comments: comments.slice(-100).sort((a, b) => {
+      if (Boolean(a.pinnedAt) !== Boolean(b.pinnedAt)) return a.pinnedAt ? -1 : 1;
+      if (a.pinnedAt && b.pinnedAt) return String(b.pinnedAt).localeCompare(String(a.pinnedAt));
+      return String(a.createdAt).localeCompare(String(b.createdAt));
+    }).map((comment) => publicPostComment(comment, viewerId, post)).filter(Boolean),
     canDelete: post.ownerId === viewerId
   };
 }
@@ -2753,7 +2770,7 @@ async function handleApi(req, res, pathname, query) {
     const body = await readJsonBody(req);
     const text = cleanText(body.text || '', 1000);
     if (!text) return sendError(res, 400, 'Write a comment first.');
-    const comment = { id: id('comment'), userId: user.id, text, createdAt: nowIso(), deletedAt: null };
+    const comment = { id: id('comment'), userId: user.id, text, likes: [], pinnedAt: null, createdAt: nowIso(), deletedAt: null };
     if (!Array.isArray(post.comments)) post.comments = [];
     post.comments.push(comment);
     post.comments = post.comments.slice(-500);
@@ -2764,7 +2781,71 @@ async function handleApi(req, res, pathname, query) {
     }
     await Promise.all([savePosts(), saveNotifications()]);
     if (notification) pushToUser(post.ownerId, { type: 'notification:new', notification: publicNotification(notification, post.ownerId) });
-    return sendJson(res, 201, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id) });
+    return sendJson(res, 201, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id, post) });
+  }
+
+  const postCommentActionMatch = /^\/api\/posts\/([^/]+)\/comments\/([^/]+)\/(like|pin)$/.exec(pathname);
+  if (req.method === 'POST' && postCommentActionMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postCommentActionMatch[1])];
+    if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    const comment = (post.comments || []).find((item) => item.id === decodeURIComponent(postCommentActionMatch[2]) && !item.deletedAt);
+    if (!comment) return sendError(res, 404, 'Comment not found.');
+    const action = postCommentActionMatch[3];
+    let notification = null;
+    if (action === 'like') {
+      if (!Array.isArray(comment.likes)) comment.likes = [];
+      const wasLiked = comment.likes.includes(user.id);
+      comment.likes = wasLiked ? comment.likes.filter((userId) => userId !== user.id) : [...comment.likes, user.id];
+      if (!wasLiked && comment.userId !== user.id) {
+        const creatorLike = user.id === post.ownerId;
+        notification = addNotification(
+          comment.userId,
+          creatorLike ? 'post_comment_creator_like' : 'post_comment_like',
+          user.id,
+          null,
+          creatorLike ? `${user.username} liked your comment on their post.` : `${user.username} liked your comment.`,
+          { postId: post.id, commentId: comment.id }
+        );
+      }
+    } else {
+      if (post.ownerId !== user.id) return sendError(res, 403, 'Only the post owner can pin comments.');
+      if (comment.pinnedAt) comment.pinnedAt = null;
+      else {
+        const pinnedCount = (post.comments || []).filter((item) => !item.deletedAt && item.pinnedAt).length;
+        if (pinnedCount >= 3) return sendError(res, 409, 'You can pin up to 3 comments.');
+        comment.pinnedAt = nowIso();
+        if (comment.userId !== user.id) {
+          notification = addNotification(comment.userId, 'post_comment_pinned', user.id, null, `${user.username} pinned your comment.`, {
+            postId: post.id,
+            commentId: comment.id
+          });
+        }
+      }
+    }
+    post.updatedAt = nowIso();
+    await Promise.all([savePosts(), notification ? saveNotifications() : Promise.resolve()]);
+    if (notification) pushToUser(comment.userId, { type: 'notification:new', notification: publicNotification(notification, comment.userId) });
+    return sendJson(res, 200, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id, post) });
+  }
+
+  const postCommentDeleteMatch = /^\/api\/posts\/([^/]+)\/comments\/([^/]+)$/.exec(pathname);
+  if (req.method === 'DELETE' && postCommentDeleteMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postCommentDeleteMatch[1])];
+    if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    const comment = (post.comments || []).find((item) => item.id === decodeURIComponent(postCommentDeleteMatch[2]) && !item.deletedAt);
+    if (!comment) return sendError(res, 404, 'Comment not found.');
+    if (comment.userId !== user.id && post.ownerId !== user.id) {
+      return sendError(res, 403, 'You can only delete your own comments or comments on your post.');
+    }
+    comment.deletedAt = nowIso();
+    comment.pinnedAt = null;
+    post.updatedAt = nowIso();
+    await savePosts();
+    return sendJson(res, 200, { ok: true, commentId: comment.id, post: publicPost(post, user.id) });
   }
 
   if (req.method === 'DELETE' && postMatch) {
@@ -2847,7 +2928,7 @@ async function handleApi(req, res, pathname, query) {
         if (!canViewPost(post, user.id)) continue;
         for (const comment of post.comments || []) {
           if (comment.userId !== user.id || comment.deletedAt) continue;
-          items.push({ id: comment.id, type: 'comment', createdAt: comment.createdAt, comment: publicPostComment(comment, user.id), post: publicPost(post, user.id) });
+          items.push({ id: comment.id, type: 'comment', createdAt: comment.createdAt, comment: publicPostComment(comment, user.id, post), post: publicPost(post, user.id) });
         }
       }
     } else {
