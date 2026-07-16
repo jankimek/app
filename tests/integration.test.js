@@ -384,12 +384,24 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(postUploadSource, /URL\.createObjectURL\(file\)/);
   assert.match(postUploadSource, /file,[\s\S]{0,100}?previewUrl/);
   assert.match(postUploadSource, /fetch\('\/api\/post-media'/);
+  assert.match(postUploadSource, /'X-File-Name'/);
+  assert.match(postUploadSource, /'X-File-Last-Modified'/);
   assert.match(postUploadSource, /body: file/);
   assert.match(postUploadSource, /fileId: pendingFileId/);
   assert.match(postUploadSource, /URL\.revokeObjectURL\(url\)/);
   assert.match(postUploadSource, /releasePostComposerMedia\(composer\)/);
+  assert.match(postUploadSource, /function postMediaType\(file\)/);
+  assert.match(postUploadSource, /mov: 'video\/quicktime'/);
+  assert.match(postUploadSource, /sizeError: file\.size > maximum/);
   assert.doesNotMatch(postUploadSource, /fileToDataUrl\(file\)|dataUrl: composer/);
   assert.match(clientSource, /window\.addEventListener\('pagehide',[\s\S]{0,120}?closePostComposer\(\)/);
+
+  const renderAppSource = sourceSection(clientSource, 'function renderApp(options = {})', 'function updateSlot');
+  assert.match(clientSource, /const postMediaInput = document\.createElement\('input'\)[\s\S]{0,300}?document\.body\.appendChild\(postMediaInput\)/);
+  assert.match(clientSource, /function openPostMediaPicker\(\)[\s\S]{0,120}?postMediaInput\.value = ''[\s\S]{0,120}?postMediaInput\.click\(\)/);
+  assert.doesNotMatch(renderAppSource, /id="post-input"/);
+  assert.match(serverSource, /MAX_POST_VIDEO_BYTES[\s\S]{0,120}?128 \* 1024 \* 1024/);
+  assert.match(serverSource, /'video\/quicktime': '\.mov'/);
 
   const ownProfileSource = sourceSection(clientSource, 'function renderProfilePanel()', 'function profilePostKey');
   assert.match(ownProfileSource, /<h1>\$\{esc\(state\.me\.displayName\)\}<\/h1>/);
@@ -435,7 +447,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(settingsSource, /state\.accountActivity\.reposts/);
   assert.match(settingsSource, /data-action="toggle-global-reposts"/);
 
-  assert.match(clientSource, /event\.target\.id === 'post-input'[\s\S]{0,140}?event\.target\.value = ''[\s\S]{0,140}?beginPostComposer\(file\)/);
+  assert.match(clientSource, /event\.target\.id === 'post-input'[\s\S]{0,180}?event\.target\.value = ''[\s\S]{0,300}?beginPostComposer\(file\)/);
   assert.match(clientSource, /event\.target\.id === 'note-audio-input'[\s\S]{0,140}?event\.target\.value = ''[\s\S]{0,140}?chooseNoteAudio\(file\)/);
   assert.match(clientSource, /event\.key === 'Escape' && state\.postComposer[\s\S]{0,140}?closePostComposer\(\)/);
   assert.match(clientSource, /event\.key === 'Escape' && state\.noteComposer[\s\S]{0,220}?stopNoteRecording\(\)[\s\S]{0,220}?state\.noteComposer = null/);

@@ -1,5 +1,20 @@
 (function () {
   const app = document.getElementById('app');
+  // Keep the native post picker outside #app. Mobile pickers can stay open
+  // long enough for a WebSocket or full-app refresh to rebuild #app; if the file
+  // input lived inside that tree, its eventual change event was lost.
+  const postMediaInput = document.createElement('input');
+  postMediaInput.id = 'post-input';
+  postMediaInput.type = 'file';
+  postMediaInput.accept = 'image/*,video/*';
+  postMediaInput.hidden = true;
+  postMediaInput.tabIndex = -1;
+  document.body.appendChild(postMediaInput);
+
+  function openPostMediaPicker() {
+    postMediaInput.value = '';
+    postMediaInput.click();
+  }
 
   if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
@@ -1609,7 +1624,6 @@
       <div id="group-composer-slot">${renderGroupComposer()}</div>
       <input id="avatar-input" type="file" accept="image/*" hidden>
       <input id="story-input" type="file" accept="image/*,video/*" hidden>
-      <input id="post-input" type="file" accept="image/*,video/*" hidden>
       <input id="note-audio-input" type="file" accept="audio/*" hidden>
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
@@ -2022,9 +2036,12 @@
           <header class="post-composer-head">
             <button data-action="${stage === 1 ? 'close-post-composer' : 'post-composer-back'}" aria-label="${stage === 1 ? 'Close' : 'Back'}">${stage === 1 ? icon('x') : icon('back')}</button>
             <span><strong>${stage === 1 ? 'Crop' : stage === 2 ? 'Look' : 'Share'}</strong><small>Step ${stage} of 3</small></span>
-            ${stage < 3 ? `<button class="post-next" data-action="post-composer-next">Next</button>` : `<button class="post-next" data-action="publish-post" ${state.postPublishing ? 'disabled' : ''}>${state.postPublishing ? 'Sharing…' : 'Share'}</button>`}
+            ${stage < 3 ? `<button class="post-next" data-action="post-composer-next">Next</button>` : `<button class="post-next" data-action="publish-post" ${state.postPublishing || composer.sizeError ? 'disabled' : ''}>${state.postPublishing ? 'Sharing…' : composer.sizeError ? 'Too large' : 'Share'}</button>`}
           </header>
-          <div class="post-stage-dots">${[1, 2, 3].map((step) => `<i class="${step <= stage ? 'active' : ''}"></i>`).join('')}</div>
+          <div class="post-stage-meta">
+            <div class="post-stage-dots">${[1, 2, 3].map((step) => `<i class="${step <= stage ? 'active' : ''}"></i>`).join('')}</div>
+            ${composer.sizeError ? `<p class="post-media-warning" role="alert">${esc(composer.sizeError)}</p>` : ''}
+          </div>
           ${stage === 1 ? `
             <div class="post-editor-body">
               ${renderPostComposerMedia(composer)}
@@ -6200,7 +6217,7 @@
   }
 
   const POST_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
-  const POST_VIDEO_MAX_BYTES = 32 * 1024 * 1024;
+  const POST_VIDEO_MAX_BYTES = 128 * 1024 * 1024;
 
   function releasePostComposerMedia(composer) {
     if (!composer) return;
@@ -6283,11 +6300,11 @@
     });
   }
 
-  async function uploadPostMedia(file, signal) {
+  async function uploadPostMedia(file, mime, signal) {
     const headers = {
-      'Content-Type': file.type || 'application/octet-stream',
-      'X-Upload-Name': encodeURIComponent(file.name || 'post-media'),
-      'X-Upload-Last-Modified': file.lastModified ? new Date(file.lastModified).toISOString() : ''
+      'Content-Type': mime || file.type || 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(file.name || 'post-media'),
+      'X-File-Last-Modified': file.lastModified ? new Date(file.lastModified).toISOString() : ''
     };
     const response = await fetch('/api/post-media', {
       method: 'POST',
@@ -6311,17 +6328,38 @@
     await api(`/api/post-media/${encodeURIComponent(fileId)}`, { method: 'DELETE' }).catch(() => {});
   }
 
+  function showPostSelectionError(error) {
+    console.error(error);
+    pushToast({
+      key: 'post-selection-error',
+      kind: 'social',
+      title: 'Could not open that file',
+      body: error?.message || 'Choose a different photo or video and try again.'
+    });
+  }
+
+  function postMediaType(file) {
+    const declared = String(file?.type || '').trim().toLowerCase();
+    if (declared.startsWith('image/') || declared.startsWith('video/')) return declared;
+    if (declared && declared !== 'application/octet-stream') return declared;
+    const extension = String(file?.name || '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';
+    return {
+      jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif',
+      mp4: 'video/mp4', mov: 'video/quicktime', m4v: 'video/x-m4v', webm: 'video/webm', '3gp': 'video/3gpp', '3g2': 'video/3gpp2'
+    }[extension] || declared;
+  }
+
   async function beginPostComposer(file = null) {
     if (!file) {
-      document.getElementById('post-input')?.click();
+      openPostMediaPicker();
       return;
     }
-    if (!String(file.type || '').startsWith('image/') && !String(file.type || '').startsWith('video/')) {
+    const type = postMediaType(file);
+    if (!type.startsWith('image/') && !type.startsWith('video/')) {
       throw new Error('Choose a photo or video.');
     }
-    const isVideo = String(file.type || '').startsWith('video/');
+    const isVideo = type.startsWith('video/');
     const maximum = isVideo ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES;
-    if (file.size > maximum) throw new Error(`This ${isVideo ? 'video' : 'image'} is too large. Choose one under ${Math.floor(maximum / 1024 / 1024)} MB.`);
     if (state.postComposer) releasePostComposerMedia(state.postComposer);
     const previewUrl = URL.createObjectURL(file);
     const composer = {
@@ -6330,8 +6368,11 @@
       previewUrl,
       posterUrl: '',
       uploadController: null,
+      sizeError: file.size > maximum
+        ? `This ${isVideo ? 'video' : 'image'} is ${Math.ceil(file.size / 1024 / 1024)} MB. You can edit it, but choose one under ${Math.floor(maximum / 1024 / 1024)} MB to share.`
+        : '',
       name: file.name || (isVideo ? 'post.mp4' : 'post.jpg'),
-      type: file.type,
+      type,
       lastModified: file.lastModified || null,
       isVideo,
       crop: { aspect: 'portrait', zoom: 1, x: 0, y: 0, rotation: 0 },
@@ -6370,6 +6411,7 @@
   async function publishPost() {
     const composer = state.postComposer;
     if (!composer || state.postPublishing) return;
+    if (composer.sizeError) throw new Error(composer.sizeError);
     composer.title = document.getElementById('post-title')?.value.slice(0, 100) || composer.title;
     composer.description = document.getElementById('post-description')?.value.slice(0, 2200) || composer.description;
     composer.hashtags = document.getElementById('post-hashtags')?.value.slice(0, 300) || composer.hashtags;
@@ -6379,7 +6421,7 @@
     setPostPublishing(true);
     let pendingFileId = '';
     try {
-      const uploaded = await uploadPostMedia(composer.file, controller.signal);
+      const uploaded = await uploadPostMedia(composer.file, composer.type, controller.signal);
       pendingFileId = uploaded.file?.id || uploaded.fileId || '';
       if (!pendingFileId) throw new Error('The video upload did not return a file ID.');
       if (state.postComposer !== composer) throw new DOMException('Post upload cancelled.', 'AbortError');
@@ -9912,7 +9954,7 @@
       }
       if (action === 'open-post-create') {
         state.feedMenuOpen = false;
-        document.getElementById('post-input')?.click();
+        openPostMediaPicker();
       }
       if (action === 'close-post-composer') closePostComposer();
       if (action === 'post-composer-back' && state.postComposer) {
@@ -11193,7 +11235,14 @@
       if (event.target.id === 'post-input') {
         const file = event.target.files[0];
         event.target.value = '';
-        if (file) await beginPostComposer(file);
+        if (file) {
+          try {
+            await beginPostComposer(file);
+          } catch (error) {
+            showPostSelectionError(error);
+          }
+        }
+        return;
       }
       if (event.target.id === 'note-audio-input') {
         const file = event.target.files[0];

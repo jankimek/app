@@ -11,6 +11,8 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(ROOT, 'data'));
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || path.join(ROOT, 'uploads'));
 const PORT = Number(process.env.PORT || 3000);
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 35 * 1024 * 1024);
+const MAX_POST_IMAGE_BYTES = Math.max(1, Number(process.env.MAX_POST_IMAGE_BYTES) || 20 * 1024 * 1024);
+const MAX_POST_VIDEO_BYTES = Math.max(1, Number(process.env.MAX_POST_VIDEO_BYTES) || 128 * 1024 * 1024);
 const COOKIE_NAME = 'chat_sid';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const REPORT_EMAIL = process.env.REPORT_EMAIL || 'newcomearound@gmail.com';
@@ -1692,7 +1694,11 @@ function extensionForMime(mime) {
     'image/webp': '.webp',
     'image/svg+xml': '.svg',
     'video/mp4': '.mp4',
+    'video/quicktime': '.mov',
+    'video/x-m4v': '.m4v',
     'video/webm': '.webm',
+    'video/3gpp': '.3gp',
+    'video/3gpp2': '.3g2',
     'audio/webm': '.webm',
     'audio/ogg': '.ogg',
     'audio/mpeg': '.mp3',
@@ -2300,7 +2306,7 @@ async function handleApi(req, res, pathname, query) {
       if (!req.destroyed) req.resume();
       return sendError(res, 400, 'Posts must contain an image or video.');
     }
-    const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
+    const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
     const file = await saveStreamUpload(req, {
       ownerId: user.id,
       scope: 'post-pending',
@@ -2396,14 +2402,14 @@ async function handleApi(req, res, pathname, query) {
       }
       mime = String(file.mime || '').toLowerCase();
       if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
-      const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
+      const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
       if (!file.size || file.size > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
     } else {
       if (!upload?.dataUrl) return sendError(res, 400, 'Choose one photo or video to post.');
       mime = mimeFromDataUrl(upload.dataUrl);
       if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
       const decoded = dataUrlToBuffer(upload.dataUrl);
-      const maximum = mime.startsWith('video/') ? 32 * 1024 * 1024 : 20 * 1024 * 1024;
+      const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
       if (decoded.buffer.length > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
     }
     const title = cleanText(body.title || '', 100);
