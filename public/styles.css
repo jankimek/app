@@ -7736,17 +7736,23 @@ html.keyboard-open .bottom-tabs {
 .story-comment-gif-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;                    /* tighter like IG */
-  background: #0f1117;         /* optional: fills tiny lines */
+  gap: 2px;                    /* was 3px — now tighter */
+  background: #0f1117;
   border-radius: 8px;
   overflow: hidden;
+  padding: 0;
 }
 
 .chat-gif-grid button,
 .story-gif-grid button,
 .story-comment-gif-grid button {
-  background: transparent;     /* removes extra box look */
-  border-radius: 0;            /* or keep 3-4px if you prefer */
+  aspect-ratio: 1;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: hidden;
 }
 
 .chat-gif-grid img,
@@ -7758,23 +7764,28 @@ html.keyboard-open .bottom-tabs {
   display: block;
 }
 
-.chat-gif-grid p {
-  grid-column: 1 / -1;
-  margin: 32px 0;
-  color: var(--muted);
-  text-align: center;
-  font-size: 11px;
+/* Story sheets & GIF submit areas — reduce big gaps */
+.story-gif-sheet,
+.story-audio-sheet,
+.story-sticker-sheet {
+  padding: 8px 12px 12px;
+  gap: 6px;
 }
 
-.chat-gif {
-  display: block;
-  width: min(280px, 72vw);
-  max-height: 360px;
-  border: 1px solid rgba(255, 255, 255, 0.045);
-  border-radius: 8px;
-  object-fit: contain;
-  background: rgba(0, 0, 0, 0.2);
-  cursor: zoom-in;
+.story-gif-submit {
+  margin: 4px 0 8px;
+  gap: 4px;
+  padding: 6px;
+}
+
+.story-gif-grid,
+.story-comment-gif-grid {
+  margin-top: 4px;
+}
+
+/* General tighter spacing in story tools */
+.story-sheet-grabber + header {
+  margin-bottom: 4px;
 }
 
 .sticker-creator-page {
