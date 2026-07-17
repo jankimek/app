@@ -7,11 +7,16 @@
   postMediaInput.id = 'post-input';
   postMediaInput.type = 'file';
   postMediaInput.accept = 'image/*,video/*';
+  postMediaInput.multiple = true;
   postMediaInput.hidden = true;
   postMediaInput.tabIndex = -1;
   document.body.appendChild(postMediaInput);
 
+  let postMediaPickerMode = 'replace';
+
   function openPostMediaPicker() {
+    const options = arguments[0] || {};
+    postMediaPickerMode = options.append ? 'append' : 'replace';
     postMediaInput.value = '';
     postMediaInput.click();
   }
@@ -148,9 +153,14 @@
     feedLoading: false,
     explorePosts: [],
     exploreLoading: false,
+    clips: [],
+    clipMode: 'for_you',
+    clipViewer: null,
+    clipMuted: localStorage.getItem('clipMuted') !== '0',
     notes: [],
     postComposer: null,
     postPublishing: false,
+    musicPicker: null,
     profileMediaTab: 'posts',
     searchProfileMediaTab: 'posts',
     profilePosts: new Map(),
@@ -174,6 +184,11 @@
     lastMessageTap: null,
     storyPublishing: false,
     gifPool: [],
+    chatGifResults: [],
+    chatGifLoading: false,
+    chatGifProvider: '',
+    chatGifError: '',
+    sendingGifId: null,
     pendingGifs: [],
     gifLoading: false,
     overlayClosing: false,
@@ -218,6 +233,8 @@
     storyStickerGesture: null,
     storyDraw: null,
     storyVideoTrimDrag: null,
+    postCropDrag: null,
+    postCropGesture: null,
     commentSheetDrag: null,
     edgeSwipe: null,
     tabSwipe: null,
@@ -229,6 +246,7 @@
   };
 
   const cropPointers = new Map();
+  const postCropPointers = new Map();
   const storyTextPointers = new Map();
   const storyMediaPointers = new Map();
   const storyStickerPointers = new Map();
@@ -347,6 +365,11 @@
     return match ? decodeURIComponent(match[1]) : null;
   }
 
+  function sharedPostIdFromLocation() {
+    const params = new URL(location.href).searchParams;
+    return params.get('post') || params.get('clip') || null;
+  }
+
   function profilePath(username) {
     return `/u/${encodeURIComponent(username || '')}`;
   }
@@ -362,7 +385,8 @@
       searchProfileSocialView: state.searchProfileSocialView,
       publicProfileUsername: state.publicProfile?.username || null,
       activePeerId: state.activePeer?.id || null,
-      activeGroupId: state.activeGroup?.id || null
+      activeGroupId: state.activeGroup?.id || null,
+      clipViewer: state.clipViewer ? { ...state.clipViewer } : null
     };
   }
 
@@ -630,7 +654,7 @@
 
   function captureLiveScroll(root) {
     if (!root) return [];
-    return [...root.querySelectorAll('[data-scroll-memory], .messages, .chat-profile-content')]
+    return [...root.querySelectorAll('[data-scroll-memory], .messages, .chat-profile-content, .post-carousel-track')]
       .map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft }));
   }
 
@@ -866,6 +890,7 @@
     state.chatProfileSocialView = view.chatProfileSocialView || null;
     state.searchProfileOpen = Boolean(view.searchProfileOpen);
     state.searchProfileSocialView = view.searchProfileSocialView || null;
+    state.clipViewer = view.clipViewer ? { ...view.clipViewer } : null;
     state.activePeer = entry.activePeer || null;
     state.activeGroup = entry.activeGroup || null;
     state.publicProfile = entry.publicProfile || null;
@@ -983,6 +1008,7 @@
       back: '<svg viewBox="0 0 24 24"><path d="M15 18 9 12l6-6"/></svg>',
       phone: '<svg viewBox="0 0 24 24"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7A2 2 0 0 1 22 16.9Z"/></svg>',
       video: '<svg viewBox="0 0 24 24"><path d="M4 6h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/><path d="m17 10 5-3v10l-5-3"/></svg>',
+      clips: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><path d="m10 8 6 4-6 4Z"/></svg>',
       file: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
       sticker: '<svg viewBox="0 0 24 24"><path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5"/><path d="M14 20c0-3.3 2.7-6 6-6"/><path d="M9 9h.01M15 9h.01M8.5 14a5 5 0 0 0 7 0"/></svg>',
       mic: '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg>',
@@ -1050,6 +1076,7 @@
     return `
       <button class="bottom-tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" title="${esc(label)}" aria-label="${esc(label)}">
         ${symbol}
+        <span class="nav-label">${esc(label)}</span>
         ${unreadDot ? '<span class="red-dot tab-dot"></span>' : ''}
       </button>
     `;
@@ -1068,11 +1095,15 @@
   }
 
   function tabIndex(tab) {
-    return { home: 0, notifications: 0, search: 1, chats: 2, profile: 3 }[tab] ?? 0;
+    return { home: 0, notifications: 0, search: 1, clips: 2, chats: 3, profile: 4 }[tab] ?? 0;
   }
 
   function hasActiveConversation() {
     return Boolean(state.activePeer || state.activeGroup);
+  }
+
+  function hasVisibleConversation() {
+    return !state.clipViewer && state.tab === 'chats' && hasActiveConversation();
   }
 
   function activeConversationKey() {
@@ -1145,14 +1176,28 @@
   }
 
   function switchMainTab(nextTab, options = {}) {
-    if (!['home', 'chats', 'search', 'profile'].includes(nextTab) || nextTab === state.tab) return;
+    if (!['home', 'chats', 'search', 'clips', 'profile'].includes(nextTab)) return;
+    if (nextTab === state.tab) {
+      if (state.clipViewer) requestNavigationBack();
+      else if (nextTab !== 'chats' && hasActiveConversation()) {
+        rememberActiveConversation();
+        state.activePeer = null;
+        state.activeGroup = null;
+        state.chatLoading = false;
+        state.chatOpenToken += 1;
+        state.chatProfileOpen = false;
+        state.chatProfileSocialView = null;
+        renderApp();
+      }
+      return;
+    }
     const leavingPublicProfile = state.searchProfileOpen;
     const profileReturnScroll = state.profileReturnScroll;
-    const wasChatProfileOpen = state.chatProfileOpen;
     state.lastTab = state.tab;
     state.tabTransition = options.animate !== false;
     state.tabDirection = tabIndex(nextTab) < tabIndex(state.tab) ? 'left' : 'right';
     state.tab = nextTab;
+    state.clipViewer = null;
     if (leavingPublicProfile) {
       state.searchProfileOpen = false;
       state.searchProfileSocialView = null;
@@ -1165,7 +1210,7 @@
         view: captureNavigationView()
       }, '', '/');
     }
-    if (isMobileLayout()) {
+    if (isMobileLayout() || nextTab !== 'chats') {
       rememberActiveConversation();
       state.activePeer = null;
       state.activeGroup = null;
@@ -1182,15 +1227,13 @@
     // second copy of that tab behind it. Otherwise a later Back transition
     // animates to the stale retained shell and visibly hitches at the end.
     discardNavigationForMainTab();
-    const keepDesktopChat = !isMobileLayout() && hasActiveConversation() && !wasChatProfileOpen && !leavingPublicProfile;
-    if (keepDesktopChat && updateSidebar()) state.tabTransition = false;
-    else if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
+    if (leavingPublicProfile) renderApp({ scrollSnapshot: profileReturnScroll });
     else renderApp();
     if (leavingPublicProfile) state.profileReturnScroll = null;
   }
 
   function tabSwipeTarget(dx) {
-    const tabs = ['home', 'search', 'chats', 'profile'];
+    const tabs = ['home', 'search', 'clips', 'chats', 'profile'];
     const index = tabIndex(state.tab);
     const targetIndex = index + (dx < 0 ? 1 : -1);
     return tabs[targetIndex] || null;
@@ -1223,6 +1266,7 @@
   function describeMessage(message) {
     if (!message) return '';
     if (message.deletedAt) return 'Deleted message';
+    if (message.kind === 'post') return message.sharedPost?.isClip ? 'Shared a clip' : 'Shared a post';
     if (message.text) return message.text;
     if (message.attachment?.name) return `${message.kind}: ${message.attachment.name}`;
     return message.kind || 'message';
@@ -1232,6 +1276,7 @@
     await loadStickers();
     loadStickerSets();
     const publicName = publicUsernameFromPath();
+    const sharedPostId = sharedPostIdFromLocation();
     try {
       const me = await api('/api/me');
       state.me = me.user;
@@ -1243,6 +1288,7 @@
 
     if (!state.me && publicName) {
       await loadPublicProfile(publicName);
+      if (sharedPostId) await loadSharedLinkPost(sharedPostId, { publicOnly: true });
       renderPublicScreen();
       history.replaceState({ appManaged: true, route: 'profile', username: publicName }, '', location.href);
       return;
@@ -1262,6 +1308,7 @@
       state.searchProfileOpen = Boolean(state.publicProfile);
       if (state.publicProfile) await loadProfilePosts(state.publicProfile, state.searchProfileMediaTab, { render: false }).catch(() => []);
     }
+    if (sharedPostId) await loadSharedLinkPost(sharedPostId);
     renderApp();
     history.replaceState({
       appManaged: true,
@@ -1599,7 +1646,7 @@
     forwardLiveShell?.remove();
     app.innerHTML = `
       ${forwardEntry?.previewHtml && !forwardLiveShell ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
-      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasActiveConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.tab === 'home' && !hasActiveConversation() ? 'home-root' : ''}">
+      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasVisibleConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.clipViewer ? 'clip-viewer-root social-root' : ''} ${state.tab === 'home' && !hasVisibleConversation() && !state.clipViewer ? 'home-root' : ''} ${state.tab !== 'chats' && !hasVisibleConversation() && !state.searchProfileOpen && !state.clipViewer ? 'social-root' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -1617,6 +1664,7 @@
       <div id="highlight-composer-slot">${renderHighlightComposer()}</div>
       <div id="post-composer-slot">${renderPostComposer()}</div>
       <div id="note-composer-slot">${renderNoteComposer()}</div>
+      <div id="music-picker-slot">${renderMusicPicker()}</div>
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
       <div id="chat-customization-slot">${renderChatCustomization()}</div>
       <div id="sticker-creator-slot">${renderStickerCreator()}</div>
@@ -1627,6 +1675,7 @@
       <input id="note-audio-input" type="file" accept="audio/*" hidden>
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
+    syncActionSheetAccessibility();
     syncCurrentNavigationHistory();
     if (forwardEntry && forwardLiveShell) {
       const preview = document.createElement('div');
@@ -1661,6 +1710,8 @@
       attachCameraStream();
       attachStoryEditorVideo();
       attachStoryViewerVideo();
+      initializePostCarousels();
+      attachClipPlayback();
       state.chatReturnAnimation = false;
       state.chatOpening = false;
     }, 0);
@@ -1683,11 +1734,15 @@
   }
 
   function updateActionSheetSlot() {
-    return updateSlot('action-sheet-slot', renderActionSheet());
+    const updated = updateSlot('action-sheet-slot', renderActionSheet());
+    if (updated) syncActionSheetAccessibility();
+    return updated;
   }
 
   function updateMessageFocusSlot() {
-    return updateSlot('message-focus-slot', renderMessageFocus());
+    const updated = updateSlot('message-focus-slot', renderMessageFocus());
+    syncMessageFocusAccessibility();
+    return updated;
   }
 
   function updateProfileModalSlots() {
@@ -1743,11 +1798,30 @@
 
   function updatePostComposerSlot() {
     unloadPostComposerVideos();
-    return updateSlot('post-composer-slot', renderPostComposer());
+    const updated = updateSlot('post-composer-slot', renderPostComposer());
+    if (updated) requestAnimationFrame(attachPostComposerPreview);
+    return updated;
   }
 
   function updateNoteComposerSlot() {
+    document.getElementById('note-composer-audio')?.pause?.();
     return updateSlot('note-composer-slot', renderNoteComposer());
+  }
+
+  function updateMusicPickerSlot() {
+    const currentInput = document.getElementById('music-search');
+    const preserveSearchFocus = document.activeElement === currentInput;
+    const selectionStart = currentInput?.selectionStart || 0;
+    document.querySelector('#music-picker-slot audio')?.pause?.();
+    const updated = updateSlot('music-picker-slot', renderMusicPicker());
+    syncMusicPickerAccessibility();
+    if (updated && preserveSearchFocus && state.musicPicker && !state.musicPicker.selected) {
+      const nextInput = document.getElementById('music-search');
+      nextInput?.focus({ preventScroll: true });
+      const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
+      nextInput?.setSelectionRange?.(cursor, cursor);
+    }
+    return updated;
   }
 
   function updateMediaViewerSlot() {
@@ -1780,17 +1854,23 @@
   }
 
   function renderSidebar() {
-    const scrollKey = state.searchProfileOpen && state.publicProfile
+    const viewingClip = Boolean(state.clipViewer);
+    const scrollKey = viewingClip
+      ? `clip-viewer:${state.clipViewer.postId}:${state.clipViewer.mediaIndex || 0}`
+      : state.searchProfileOpen && state.publicProfile
       ? `public-profile:${state.publicProfile.username}:${state.searchProfileSocialView || 'main'}`
       : `tab:${state.tab}:${state.tab === 'home' ? state.feedMode : (state.profileSocialView || 'main')}`;
+    const contentTab = viewingClip ? 'clip-viewer' : state.tab;
     return `
       <aside class="sidebar">
-        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(state.tab)}" data-scroll-memory="${esc(scrollKey)}">
-          ${renderTabContent(state.tab)}
+        <div class="side-content tab-content ${state.tabTransition ? `animate-tab ${state.tabDirection === 'right' ? 'from-right' : 'from-left'}` : ''}" data-tab="${esc(contentTab)}" data-scroll-memory="${esc(scrollKey)}">
+          ${viewingClip ? renderClipsPanel({ viewer: true }) : renderTabContent(state.tab)}
         </div>
         <nav class="bottom-tabs" aria-label="Main navigation">
+          <div class="desktop-brand" aria-label="New Around">New Around</div>
           ${navButton('home', 'Home', 'home')}
           ${navButton('search', 'Search', 'search')}
+          ${navButton('clips', 'Clips', 'clips')}
           <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
           ${navButton('chats', 'Messages', 'messages')}
           ${navButton('profile', 'Profile', 'profile')}
@@ -1803,6 +1883,7 @@
     if (tab === 'home') return renderHomePanel();
     if (tab === 'chats') return renderChatsPanel();
     if (tab === 'search') return renderSearchPanel();
+    if (tab === 'clips') return renderClipsPanel();
     if (tab === 'notifications') return renderNotificationsPage();
     return renderProfilePanel();
   }
@@ -1848,7 +1929,35 @@
   }
 
   function postMedia(post) {
-    return post?.media || post?.file || post?.attachment || null;
+    return postMediaItems(post)[0]?.media || null;
+  }
+
+  function postMediaItems(post) {
+    const rawItems = Array.isArray(post?.mediaItems) && post.mediaItems.length
+      ? post.mediaItems
+      : [{
+          fileId: post?.media?.id || post?.file?.id || '',
+          media: post?.media || post?.file || post?.attachment || null,
+          edits: post?.edits || {},
+          crop: post?.crop,
+          adjustments: post?.adjustments,
+          filter: post?.filter
+        }];
+    return rawItems.map((item, index) => {
+      const media = item?.media || item?.file || (index === 0 ? (post?.media || post?.file || post?.attachment) : null);
+      const edits = item?.edits || (index === 0 ? post?.edits : {}) || {};
+      return {
+        id: item?.fileId || media?.id || `${post?.id || 'post'}-${index}`,
+        fileId: item?.fileId || media?.id || '',
+        media,
+        edits,
+        crop: item?.crop || edits.crop || (index === 0 ? post?.crop : {}) || {},
+        adjustments: item?.adjustments || edits.adjustments || (index === 0 ? post?.adjustments : {}) || {},
+        filter: item?.filter || edits.filter || (index === 0 ? post?.filter : 'normal') || 'normal',
+        altText: String(item?.altText || (index === 0 ? post?.altText : '') || ''),
+        mediaType: item?.mediaType || (String(media?.mime || '').startsWith('video/') ? 'video' : 'image')
+      };
+    }).filter((item) => item.media?.url);
   }
 
   function postFilterStyle(post) {
@@ -1873,30 +1982,126 @@
 
   function postCropStyle(post) {
     const crop = post?.crop || post?.edits?.crop || post?.edits || {};
-    const zoom = clamp(Number(crop.zoom ?? 1), 1, 3);
-    const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -50, 50);
-    const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -50, 50);
-    const rotation = clamp(Number(crop.rotation ?? 0), -180, 180);
-    return `transform:translate3d(${x}%,${y}%,0) scale(${zoom}) rotate(${rotation}deg);filter:${postFilterStyle(post)}`;
+    const aspect = String(crop.aspect || crop.aspectRatio || '');
+    const zoom = clamp(Number(crop.zoom ?? 1), 1, 5);
+    const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
+    const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
+    const rotation = clamp(Number(crop.rotation ?? 0), -360, 360);
+    return `object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;transform:scale(${zoom}) rotate(${rotation}deg);filter:${postFilterStyle(post)}`;
+  }
+
+  function postAspect(postOrItem) {
+    const crop = postOrItem?.crop || postOrItem?.edits?.crop || postOrItem?.edits || {};
+    const raw = String(crop.aspect || crop.aspectRatio || 'portrait').toLowerCase();
+    if (raw.startsWith('mixed:')) {
+      const ratio = clamp(Number(raw.split(':')[1]), 0.75, 1.91);
+      return { name: 'mixed', ratio: Number.isFinite(ratio) ? ratio : 1 };
+    }
+    if (raw.startsWith('original:')) {
+      const ratio = clamp(Number(raw.split(':')[1]), 0.75, 1.91);
+      return { name: 'original', ratio: Number.isFinite(ratio) ? ratio : 1 };
+    }
+    if (raw === 'square' || raw === '1:1') return { name: 'square', ratio: 1 };
+    if (raw === 'landscape' || raw === '1.91:1') return { name: 'landscape', ratio: 1.91 };
+    if (raw === 'portrait34' || raw === '3:4') return { name: 'portrait34', ratio: 3 / 4 };
+    if (raw === 'original') return { name: 'original', ratio: 1 };
+    return { name: 'portrait', ratio: 4 / 5 };
+  }
+
+  function renderPostVisual(item, post, options = {}) {
+    const media = item?.media;
+    if (!media?.url) return '<div class="post-media-missing">Media unavailable</div>';
+    const isVideo = item.mediaType === 'video' || String(media.mime || '').startsWith('video/');
+    const visual = { ...post, ...item, edits: item.edits, crop: item.crop, adjustments: item.adjustments, filter: item.filter };
+    if (isVideo) {
+      const crop = item.crop || {};
+      const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
+      const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
+      const aspect = String(crop.aspect || crop.aspectRatio || '');
+      const label = item.altText || `Open video by ${postAuthor(post)?.username || 'user'}`;
+      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(label)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="Turn sound on">${icon('mute')}</button>`}`;
+    }
+    return `<img src="${esc(media.url)}" style="${esc(postCropStyle(visual))}" alt="${esc(item.altText || post.title || `Post by ${postAuthor(post)?.username || 'user'}`)}" loading="lazy">`;
+  }
+
+  function renderPostPersonTags(post, mediaIndex) {
+    const tags = post.personTags || post.peopleTags || [];
+    return tags.filter((tag) => Number(tag.mediaIndex || 0) === mediaIndex).map((tag) => {
+      const tagged = tag.user || tag.person || null;
+      return `<button class="post-person-tag" style="left:${clamp(Number(tag.x || 50), 2, 98)}%;top:${clamp(Number(tag.y || 50), 2, 98)}%" data-action="view-user-profile" data-username="${esc(tagged?.username || tag.username || '')}">@${esc(tagged?.username || tag.username || '')}</button>`;
+    }).join('');
   }
 
   function renderPostMedia(post, options = {}) {
-    const media = postMedia(post);
-    if (!media?.url) return '<div class="post-media-missing">Media unavailable</div>';
-    const isVideo = String(media.mime || '').startsWith('video/');
-    const tags = post.personTags || post.peopleTags || [];
+    const items = postMediaItems(post);
+    if (!items.length) return '<div class="post-media-missing">Media unavailable</div>';
+    const first = items[0];
+    const isVideo = first.mediaType === 'video';
+    const aspect = postAspect(first);
+    if (options.grid) {
+      return `
+        <div class="post-media-frame post-media-grid aspect-${esc(aspect.name)}" style="--post-aspect:${aspect.ratio}">
+          ${renderPostVisual(first, post, { grid: true, mediaIndex: 0 })}
+          ${isVideo ? `<span class="post-video-mark">${icon('play')}</span>` : ''}
+          ${items.length > 1 ? `<span class="post-carousel-mark" aria-label="${items.length} items">${icon('clips')}</span>` : ''}
+        </div>
+      `;
+    }
     return `
-      <div class="post-media-frame ${options.grid ? 'post-media-grid' : ''}">
-        ${isVideo
-          ? `<video src="${esc(media.url)}" style="${esc(postCropStyle(post))}" autoplay muted playsinline loop preload="metadata" ${options.grid ? '' : 'controls'}></video>`
-          : `<img src="${esc(media.url)}" style="${esc(postCropStyle(post))}" alt="${esc(post.title || 'Post')}" loading="lazy">`}
-        ${options.grid ? '' : tags.map((tag) => {
-          const tagged = tag.user || tag.person || null;
-          return `<button class="post-person-tag" style="left:${clamp(Number(tag.x || 50), 2, 98)}%;top:${clamp(Number(tag.y || 50), 2, 98)}%" data-action="view-user-profile" data-username="${esc(tagged?.username || tag.username || '')}">@${esc(tagged?.username || tag.username || '')}</button>`;
-        }).join('')}
-        ${isVideo && options.grid ? `<span class="post-video-mark">${icon('play')}</span>` : ''}
+      <div class="post-media-frame aspect-${esc(aspect.name)} ${items.length > 1 ? 'has-carousel' : ''}" style="--post-aspect:${aspect.ratio}" data-post-carousel="${esc(post.id)}">
+        <div class="post-carousel-track" data-post-id="${esc(post.id)}">
+          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post, { mediaIndex: index })}${renderPostPersonTags(post, index)}</div>`).join('')}
+        </div>
+        ${items.length > 1 ? `
+          <span class="post-carousel-count" aria-live="polite"><b>1</b>/${items.length}</span>
+          <button class="post-carousel-arrow previous" data-action="post-carousel-previous" data-post-id="${esc(post.id)}" aria-label="Previous item" disabled>${icon('back')}</button>
+          <button class="post-carousel-arrow next" data-action="post-carousel-next" data-post-id="${esc(post.id)}" aria-label="Next item">${icon('back')}</button>
+          <div class="post-carousel-dots" aria-hidden="true">${items.map((_, index) => `<i class="${index === 0 ? 'active' : ''}"></i>`).join('')}</div>
+        ` : ''}
       </div>
     `;
+  }
+
+  function syncPostCarousel(track) {
+    if (!track?.matches?.('.post-carousel-track')) return;
+    const slides = Array.from(track.children);
+    if (!slides.length) return;
+    const index = clamp(Math.round(track.scrollLeft / Math.max(1, track.clientWidth)), 0, slides.length - 1);
+    const frame = track.closest('.post-media-frame');
+    const count = frame?.querySelector('.post-carousel-count b');
+    if (count) count.textContent = String(index + 1);
+    frame?.querySelectorAll('.post-carousel-dots i').forEach((dot, dotIndex) => dot.classList.toggle('active', dotIndex === index));
+    const previous = frame?.querySelector('.post-carousel-arrow.previous');
+    const next = frame?.querySelector('.post-carousel-arrow.next');
+    if (previous) previous.disabled = index === 0;
+    if (next) next.disabled = index === slides.length - 1;
+    slides.forEach((slide, slideIndex) => {
+      const active = slideIndex === index;
+      slide.setAttribute('aria-hidden', active ? 'false' : 'true');
+      slide.toggleAttribute('inert', !active);
+      slide.querySelectorAll('video').forEach((video) => {
+        if (active && video.matches('[data-action="open-home-video"]')) video.tabIndex = 0;
+        else if (active) video.removeAttribute('tabindex');
+        else {
+          video.tabIndex = -1;
+          video.pause();
+        }
+      });
+    });
+  }
+
+  function initializePostCarousels(root = document) {
+    root.querySelectorAll?.('.post-carousel-track').forEach(syncPostCarousel);
+  }
+
+  function movePostCarousel(postId, direction) {
+    const selectorId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
+    const track = document.querySelector(`.post-carousel-track[data-post-id="${selectorId}"]`);
+    if (!track) return;
+    const index = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+    const nextIndex = clamp(index + direction, 0, track.children.length - 1);
+    track.scrollTo({ left: nextIndex * track.clientWidth, behavior: 'smooth' });
+    setTimeout(() => syncPostCarousel(track), 280);
   }
 
   function renderPostComments(post) {
@@ -1928,13 +2133,14 @@
     const hashtags = post.hashtags || post.tags || [];
     const liked = Boolean(post.likedByMe);
     const saved = Boolean(post.savedByMe);
+    const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
     const reposted = Boolean(post.repostedByMe);
     return `
       <article class="feed-post" data-post-id="${esc(post.id)}">
         <header class="post-head">
           <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">
             ${avatarHtml(author)}
-            <span><strong>${esc(author.displayName || author.username)}</strong><small>@${esc(author.username)} · ${esc(shortTime(post.createdAt))}</small></span>
+            <span><strong>${esc(author.username)}</strong><small>${post.location ? `${esc(post.location)} · ` : ''}${esc(shortTime(post.createdAt))}</small></span>
           </a>
           ${author.id === state.me?.id ? `<button data-action="post-owner-menu" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>` : ''}
         </header>
@@ -1943,15 +2149,17 @@
           <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}" aria-pressed="${liked}">${icon('heart')}</button>
           <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comment">${icon('comment')}</button>
           ${post.allowReposts === false ? '' : `<button class="${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="${reposted ? 'Undo repost' : 'Repost'}" aria-pressed="${reposted}">${icon('repost')}</button>`}
+          <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
           <button class="post-save ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
         </div>
         <div class="post-copy">
-          <strong data-post-like-count>${Number(post.likeCount || 0).toLocaleString()} likes</strong>
+          <strong data-post-like-count>${showLikeCount ? `${Number(post.likeCount || 0).toLocaleString()} likes` : 'Like count hidden'}</strong>
           ${post.title ? `<h3>${esc(post.title)}</h3>` : ''}
           ${description ? `<p>${expanded ? renderMentionText(description) : renderMentionText(`${description.slice(0, 135).trim()}…`)} ${expanded ? '' : `<button data-action="expand-post" data-post-id="${esc(post.id)}">read more</button>`}</p>` : ''}
           ${hashtags.length ? `<p class="post-hashtags">${hashtags.map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}
           <small class="post-counts"><button data-action="open-post-comments" data-post-id="${esc(post.id)}" data-post-comment-count>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments</button><span>·</span><span data-post-repost-count>${Number(post.repostCount || 0)} reposts</span></small>
           ${renderPostComments(post)}
+          ${post.allowComments === false ? '<small class="post-comments-off">Comments are turned off.</small>' : ''}
         </div>
       </article>
     `;
@@ -1959,11 +2167,12 @@
 
   function renderHomePanel() {
     const feed = state.homeFeed || [];
+    const suggestions = visibleRecommendations().slice(0, 5);
     return `
       <section class="home-page">
         <header class="home-topbar">
           <div class="feed-picker-wrap">
-            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}">${esc(feedModeLabel())}${icon('chevron')}</button>
+            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}" aria-label="Choose feed"><span class="home-brand">New Around</span>${icon('chevron')}</button>
             ${state.feedMenuOpen ? `
               <div class="feed-picker-menu">
                 ${['for_you', 'following', 'favorites'].map((mode) => `<button class="${state.feedMode === mode ? 'active' : ''}" data-action="set-feed-mode" data-mode="${mode}">${esc(feedModeLabel(mode))}${state.feedMode === mode ? icon('check') : ''}</button>`).join('')}
@@ -1973,47 +2182,566 @@
           <div class="home-head-actions">
             <button class="icon-btn" data-action="open-post-create" aria-label="Create post">${icon('plus')}</button>
             <button class="icon-btn notification-btn" data-action="open-notifications" aria-label="Notifications">${icon('bell')}${state.pendingRequestCount ? '<span class="red-dot"></span>' : ''}</button>
+            <button class="icon-btn notification-btn" data-action="tab" data-tab="chats" aria-label="Messages">${icon('messages')}${hasUnreadMessages() ? '<span class="red-dot"></span>' : ''}</button>
           </div>
         </header>
-        ${renderHomeStories()}
-        ${renderNotificationPermissionPrompt()}
-        <section class="home-feed" aria-live="polite">
-          ${state.feedLoading
-            ? '<div class="feed-loading"><i></i><i></i><i></i></div>'
-            : feed.length
-              ? feed.map(renderPostCard).join('')
-              : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${state.feedMode === 'favorites' ? 'Favorite an account from their profile to build this feed.' : 'Share the first post or follow more accounts.'}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
-        </section>
+        <div class="home-layout">
+          <main class="home-primary">
+            ${renderHomeStories()}
+            ${renderNotificationPermissionPrompt()}
+            <section class="home-feed" aria-live="polite">
+              ${state.feedLoading
+                ? '<div class="feed-loading"><i></i><i></i><i></i></div>'
+                : feed.length
+                  ? feed.map(renderPostCard).join('')
+                  : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${state.feedMode === 'favorites' ? 'Favorite an account from their profile to build this feed.' : 'Share the first post or follow more accounts.'}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
+            </section>
+          </main>
+          <aside class="home-suggestions" aria-label="Suggested accounts">
+            <button class="home-current-user" data-action="tab" data-tab="profile">
+              ${avatarHtml(state.me)}
+              <span><strong>${esc(state.me?.username || '')}</strong><small>${esc(state.me?.displayName || '')}</small></span>
+              <b>Profile</b>
+            </button>
+            <header><strong>Suggested for you</strong><button data-action="tab" data-tab="search">See all</button></header>
+            ${suggestions.map((user) => `<div class="home-suggestion-row">${avatarHtml(user)}<button class="home-suggestion-name" data-action="view-user-profile" data-username="${esc(user.username)}"><strong>${esc(user.username)}</strong><small>${esc(user.displayName || 'Suggested for you')}</small></button><button class="home-follow-link" data-action="${user.requested ? 'cancel-request' : 'send-request'}" data-user-id="${esc(user.id)}">${user.requested ? 'Requested' : 'Follow'}</button></div>`).join('')}
+            <small class="home-legal">About · Help · Privacy · Terms<br>© ${new Date().getFullYear()} New Around</small>
+          </aside>
+        </div>
       </section>
     `;
+  }
+
+  function clipPosts() {
+    const seen = new Set();
+    const friends = new Set([state.me?.id, ...(state.me?.following || []).map((user) => user.id)].filter(Boolean));
+    return [...(state.clips || []), ...(state.explorePosts || []), ...(state.homeFeed || [])].filter((post) => {
+      if (!post?.id || seen.has(post.id)) return false;
+      seen.add(post.id);
+      const items = postMediaItems(post);
+      return items.length === 1 && items[0].mediaType === 'video' && (state.clipMode !== 'friends' || friends.has(post.ownerId || postAuthor(post)?.id));
+    });
+  }
+
+  function clipViewerEntries() {
+    const viewer = state.clipViewer;
+    const entries = [];
+    const seen = new Set();
+    if (viewer) {
+      const post = postById(viewer.postId);
+      const mediaIndex = clamp(Number(viewer.mediaIndex || 0), 0, Math.max(0, postMediaItems(post).length - 1));
+      const item = postMediaItems(post)[mediaIndex];
+      if (post && item?.mediaType === 'video') {
+        entries.push({ post, mediaIndex });
+        seen.add(post.id);
+      }
+    }
+    clipPosts().forEach((post) => {
+      if (seen.has(post.id)) return;
+      entries.push({ post, mediaIndex: 0 });
+      seen.add(post.id);
+    });
+    return entries;
+  }
+
+  function renderClipCard(post, options = {}) {
+    const mediaIndex = clamp(Number(options.mediaIndex || 0), 0, Math.max(0, postMediaItems(post).length - 1));
+    const item = postMediaItems(post)[mediaIndex];
+    const media = item?.media;
+    const author = postAuthor(post);
+    if (!media?.url || !author || item.mediaType !== 'video') return '';
+    const crop = item.crop || {};
+    const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
+    const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
+    const aspect = postAspect(item);
+    const letterbox = aspect.name === 'mixed' || aspect.ratio > 1.15;
+    const liked = Boolean(post.likedByMe);
+    const reposted = Boolean(post.repostedByMe);
+    const saved = Boolean(post.savedByMe);
+    const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
+    const knownAuthor = userById(author.id) || author;
+    const following = Boolean(knownAuthor.isFollowing || (state.me?.following || []).some((user) => user.id === author.id));
+    const followControl = author.id === state.me?.id || following
+      ? ''
+      : knownAuthor.outgoingRequest
+        ? '<button class="clip-follow" disabled>Requested</button>'
+        : knownAuthor.socialPublic === false && !knownAuthor.isContact
+          ? `<button class="clip-follow" data-action="add-contact" data-username="${esc(author.username)}" aria-label="Request to follow ${esc(author.username)}">Follow</button>`
+          : `<button class="clip-follow" data-action="follow-user" data-user-id="${esc(author.id)}" aria-label="Follow ${esc(author.username)}">Follow</button>`;
+    const caption = String(post.description || post.caption || '');
+    const music = post.music || null;
+    return `
+      <article class="clip-card" data-post-id="${esc(post.id)}" data-media-index="${mediaIndex}">
+        <div class="clip-stage">
+          <div class="clip-viewport ${letterbox ? 'letterbox' : ''}">
+            <video class="clip-video" data-clip-video src="${esc(media.url)}" style="object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline webkit-playsinline loop ${state.clipMuted || music ? 'muted' : ''} preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" tabindex="0" aria-label="${esc(item.altText || `Clip by ${author.username}. Tap to pause or play.`)}"></video>
+            ${music?.audioUrl ? `<audio class="clip-music" src="${esc(music.audioUrl)}" preload="metadata" data-start="${Number(music.start || 0)}" data-end="${Number(music.start || 0) + Number(music.clipDuration || 30)}"></audio>` : ''}
+            <div class="clip-shade" aria-hidden="true"></div>
+            <span class="clip-play-indicator" aria-hidden="true">${icon('play')}</span>
+            <span class="clip-like-burst" aria-hidden="true">${icon('heart')}</span>
+            <div class="clip-copy">
+              <div class="clip-author-row">
+                <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
+                ${followControl}
+              </div>
+              ${caption ? `<p>${renderMentionText(caption)}</p>` : ''}
+              <small class="clip-audio-line">${icon('music')} ${music ? `${esc(music.title)} · ${esc(music.artist)}` : `Original audio · ${esc(author.username)}`}</small>
+            </div>
+            <span class="clip-progress" aria-hidden="true"><i></i></span>
+          </div>
+          <aside class="clip-actions" aria-label="Clip actions">
+            <button class="clip-like-action ${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}" aria-pressed="${liked}">${icon('heart')}<small data-clip-like-count>${showLikeCount ? Number(post.likeCount || 0).toLocaleString() : '—'}</small></button>
+            <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comments">${icon('comment')}<small data-clip-comment-count>${Number(post.commentCount || 0).toLocaleString()}</small></button>
+            ${post.allowReposts === false ? '' : `<button class="clip-repost-action ${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="${reposted ? 'Undo repost' : 'Repost'}" aria-pressed="${reposted}">${icon('repost')}<small data-clip-repost-count>${Number(post.repostCount || 0).toLocaleString()}</small></button>`}
+            <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
+            <button class="clip-save-action ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
+            <button data-action="post-options" data-post-id="${esc(post.id)}" aria-label="More options">${icon('more')}</button>
+            <button class="clip-audio-cover" data-action="view-user-profile" data-username="${esc(author.username)}" aria-label="View ${esc(author.username)}">${music?.artworkUrl ? `<img src="${esc(music.artworkUrl)}" alt="${esc(music.title)} artwork">` : author.avatar?.url ? `<img src="${esc(author.avatar.url)}" alt="">` : esc(initials(author))}</button>
+          </aside>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderClipsPanel(options = {}) {
+    const viewer = Boolean(options.viewer || state.clipViewer);
+    const entries = viewer ? clipViewerEntries() : clipPosts().map((post) => ({ post, mediaIndex: 0 }));
+    return `
+      <section class="clips-page ${viewer ? 'is-viewer' : ''}" aria-label="Clips">
+        <header class="clips-head">
+          <button class="clips-leading" data-action="${viewer ? 'close-clip-viewer' : 'open-post-create'}" aria-label="${viewer ? 'Back to previous page' : 'Create a clip'}">${icon(viewer ? 'back' : 'plus')}</button>
+          <div class="clips-tabs" role="tablist"><button class="${state.clipMode === 'for_you' ? 'active' : ''}" data-action="set-clip-mode" data-mode="for_you" role="tab" aria-selected="${state.clipMode === 'for_you'}">Clips</button><button class="${state.clipMode === 'friends' ? 'active' : ''}" data-action="set-clip-mode" data-mode="friends" role="tab" aria-selected="${state.clipMode === 'friends'}">Friends</button></div>
+          <button class="clips-sound" data-action="toggle-clip-sound" aria-label="${state.clipMuted ? 'Turn sound on' : 'Mute clips'}" aria-pressed="${state.clipMuted ? 'true' : 'false'}">${icon(state.clipMuted ? 'mute' : 'volume')}</button>
+        </header>
+        <div class="clips-feed" data-scroll-memory="${viewer ? `clip-viewer-feed:${esc(state.clipViewer?.postId || '')}` : 'clips-feed'}">
+          ${entries.length ? entries.map(({ post, mediaIndex }) => renderClipCard(post, { mediaIndex })).join('') : `<div class="clips-empty">${icon('clips')}<strong>No clips yet</strong><small>Share a video post and it will appear here.</small><button class="primary" data-action="open-post-create">Share a video</button></div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function toggleHomeVideoSound(button) {
+    const video = button?.closest('.post-carousel-slide, .post-media-frame')?.querySelector('.post-video-preview');
+    if (!video) return;
+    video.muted = !video.muted;
+    button.innerHTML = icon(video.muted ? 'mute' : 'volume');
+    button.setAttribute('aria-label', video.muted ? 'Turn sound on' : 'Mute video');
+    const cue = video.parentElement?.querySelector('.post-video-open-cue');
+    if (!video.muted) video.play().then(() => { if (cue) cue.hidden = true; }).catch(() => {});
+  }
+
+  function openPostClip(postId, mediaIndex = 0, sourceVideo = null) {
+    const post = postById(postId);
+    const items = postMediaItems(post);
+    const index = clamp(Number(mediaIndex || 0), 0, Math.max(0, items.length - 1));
+    if (!post || items[index]?.mediaType !== 'video') return false;
+    const url = new URL(location.href);
+    url.searchParams.set('clip', post.id);
+    url.searchParams.set('media', String(index));
+    beginDetailNavigation('clip-viewer', url.toString());
+    const sourceTime = Number(sourceVideo?.currentTime || 0);
+    if (sourceVideo && !sourceVideo.muted) {
+      state.clipMuted = false;
+      localStorage.setItem('clipMuted', '0');
+    }
+    sourceVideo?.pause?.();
+    state.clipViewer = { postId: post.id, mediaIndex: index, sourceTab: state.tab, sourceTime };
+    state.actionSheet = null;
+    renderApp();
+    return true;
+  }
+
+  function closeClipViewer() {
+    if (!state.clipViewer) return;
+    navigationBackOr(() => {
+      state.clipViewer = null;
+      const url = new URL(location.href);
+      url.searchParams.delete('clip');
+      url.searchParams.delete('media');
+      history.replaceState({ ...(history.state || {}), view: captureNavigationView() }, '', url.toString());
+      renderApp();
+    });
+  }
+
+  let clipPlaybackObserver = null;
+  let clipTapTimer = null;
+
+  function syncClipMusic(video) {
+    const audio = video?.closest('.clip-card')?.querySelector('.clip-music');
+    if (!audio) return;
+    const start = Math.max(0, Number(audio.dataset.start || 0));
+    const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+    const sectionLength = Math.max(1, end - start);
+    const targetTime = start + (Math.max(0, Number(video.currentTime || 0)) % sectionLength);
+    audio.muted = state.clipMuted;
+    if (video.paused || state.clipMuted) {
+      audio.pause();
+      return;
+    }
+    const synchronize = () => {
+      if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end || Math.abs(audio.currentTime - targetTime) > .45) {
+        try { audio.currentTime = targetTime; } catch {}
+      }
+      if (audio.paused) {
+        audio.play().catch(() => {
+          audio.pause();
+          if (!state.clipMuted) {
+            state.clipMuted = true;
+            localStorage.setItem('clipMuted', '1');
+            syncClipSoundUi();
+          }
+        });
+      }
+    };
+    if (audio.readyState >= 1) synchronize();
+    else if (!audio._clipMetadataBound) {
+      audio._clipMetadataBound = true;
+      audio.addEventListener('loadedmetadata', () => {
+        audio._clipMetadataBound = false;
+        syncClipMusic(video);
+      }, { once: true });
+    }
+  }
+
+  function syncClipPlaybackUi(video) {
+    const card = video?.closest('.clip-card');
+    if (!card) return;
+    card.classList.toggle('is-paused', video.paused);
+    card.classList.toggle('is-playing', !video.paused);
+    const progress = Number.isFinite(video.duration) && video.duration > 0 ? clamp(video.currentTime / video.duration, 0, 1) : 0;
+    const line = card.querySelector('.clip-progress i');
+    if (line) line.style.transform = `scaleX(${progress})`;
+    syncClipMusic(video);
+  }
+
+  function syncClipSoundUi() {
+    document.querySelectorAll('.clips-sound').forEach((button) => {
+      button.innerHTML = icon(state.clipMuted ? 'mute' : 'volume');
+      button.setAttribute('aria-label', state.clipMuted ? 'Turn sound on' : 'Mute clips');
+      button.setAttribute('aria-pressed', state.clipMuted ? 'true' : 'false');
+    });
+  }
+
+  function toggleClipSound() {
+    state.clipMuted = !state.clipMuted;
+    localStorage.setItem('clipMuted', state.clipMuted ? '1' : '0');
+    const root = currentAppShell()?.querySelector('.clips-feed');
+    root?.querySelectorAll('.clip-video').forEach((video) => {
+      video.muted = Boolean(video.closest('.clip-card')?.querySelector('.clip-music')) || state.clipMuted;
+      syncClipMusic(video);
+    });
+    syncClipSoundUi();
+    const active = root?.querySelector('.clip-card.is-playing .clip-video') || root?.querySelector('.clip-video');
+    active?.play?.().catch(() => {});
+  }
+
+  function toggleClipPlayback(surface) {
+    const video = surface?.matches?.('.clip-video') ? surface : surface?.querySelector?.('.clip-video');
+    if (!video) return;
+    if (video.paused) video.play().then(() => syncClipMusic(video)).catch(() => {});
+    else {
+      video.pause();
+      video.closest('.clip-card')?.querySelector('.clip-music')?.pause?.();
+    }
+    syncClipPlaybackUi(video);
+  }
+
+  function attachClipPlayback() {
+    clipPlaybackObserver?.disconnect();
+    clipPlaybackObserver = null;
+    const root = currentAppShell()?.querySelector('.clips-feed');
+    const videos = Array.from(root?.querySelectorAll('.clip-video') || []);
+    if (!videos.length) return;
+    const sourceTime = Number(state.clipViewer?.sourceTime || 0);
+    videos.forEach((video) => {
+      video.muted = Boolean(video.closest('.clip-card')?.querySelector('.clip-music')) || state.clipMuted;
+      const audio = video.closest('.clip-card')?.querySelector('.clip-music');
+      if (audio && !audio._clipBoundaryBound) {
+        audio._clipBoundaryBound = true;
+        const clampAudioSection = () => {
+          const start = Math.max(0, Number(audio.dataset.start || 0));
+          const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+          if (audio.currentTime >= end || audio.ended) {
+            audio.pause();
+            try { audio.currentTime = start; } catch {}
+            if (!video.paused && !state.clipMuted) syncClipMusic(video);
+          }
+        };
+        audio.addEventListener('timeupdate', clampAudioSection);
+        audio.addEventListener('ended', clampAudioSection);
+        audio.addEventListener('error', () => {
+          if (!state.clipMuted) {
+            state.clipMuted = true;
+            localStorage.setItem('clipMuted', '1');
+            syncClipSoundUi();
+          }
+        });
+      }
+      if (!video._clipPlaybackBound) {
+        video._clipPlaybackBound = true;
+        video.addEventListener('play', () => syncClipPlaybackUi(video));
+        video.addEventListener('pause', () => {
+          video.closest('.clip-card')?.querySelector('.clip-music')?.pause?.();
+          syncClipPlaybackUi(video);
+        });
+        video.addEventListener('timeupdate', () => syncClipPlaybackUi(video));
+        video.addEventListener('loadedmetadata', () => syncClipPlaybackUi(video));
+      }
+      syncClipPlaybackUi(video);
+    });
+    if (sourceTime > 0) {
+      const restoreTime = () => {
+        try { videos[0].currentTime = Math.min(sourceTime, Math.max(0, Number(videos[0].duration || sourceTime))); } catch {}
+      };
+      if (videos[0].readyState >= 1) restoreTime();
+      else videos[0].addEventListener('loadedmetadata', restoreTime, { once: true });
+      // The handoff time is only for the first Home-to-viewer transition.
+      // Subsequent UI refreshes (like/save/comment) must not rewind the clip.
+      if (state.clipViewer) state.clipViewer.sourceTime = 0;
+    }
+    if (!('IntersectionObserver' in window)) {
+      videos[0].play().catch(() => {});
+      return;
+    }
+    clipPlaybackObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        const video = entry.target;
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.72) {
+          videos.filter((item) => item !== video).forEach((item) => {
+            item.pause();
+            item.closest('.clip-card')?.querySelector('.clip-music')?.pause?.();
+          });
+          video.muted = Boolean(video.closest('.clip-card')?.querySelector('.clip-music')) || state.clipMuted;
+          video.play().catch(() => {
+            video.muted = true;
+            state.clipMuted = true;
+            localStorage.setItem('clipMuted', '1');
+            syncClipSoundUi();
+            video.play().catch(() => {});
+          });
+        } else {
+          video.pause();
+        }
+        syncClipPlaybackUi(video);
+      });
+    }, { root, threshold: [0, 0.72, 1] });
+    videos.forEach((video) => clipPlaybackObserver.observe(video));
   }
 
   function composerFilterStyle(composer) {
     return postFilterStyle({ filter: composer.filter, adjustments: composer.adjustments });
   }
 
+  function activePostComposerItem(composer = state.postComposer) {
+    if (!composer?.items?.length) return null;
+    return composer.items[clamp(Number(composer.activeIndex || 0), 0, composer.items.length - 1)] || composer.items[0];
+  }
+
+  function syncPostComposerAliases(composer = state.postComposer) {
+    const item = activePostComposerItem(composer);
+    if (!composer || !item) return null;
+    Object.assign(composer, {
+      file: item.file,
+      previewUrl: item.previewUrl,
+      posterUrl: item.posterUrl,
+      name: item.name,
+      type: item.type,
+      isVideo: item.isVideo,
+      crop: item.crop,
+      filter: item.filter,
+      activeAdjustment: item.activeAdjustment,
+      adjustments: item.adjustments
+    });
+    composer.sizeError = composer.items.map((entry) => entry.sizeError).filter(Boolean).join(' ');
+    return item;
+  }
+
+  function postComposerAspectRatio(composer = state.postComposer) {
+    const item = activePostComposerItem(composer);
+    const name = item?.crop?.aspect || composer?.aspect || 'portrait';
+    if (name === 'square') return 1;
+    if (name === 'landscape') return 1.91;
+    if (name === 'portrait34') return 3 / 4;
+    if (name === 'mixed') return clamp(Number(composer?.items?.[0]?.naturalAspect || 1), 0.75, 1.91);
+    if (name === 'original') return clamp(Number(composer?.originalAspect || composer?.items?.[0]?.naturalAspect || 1), 0.75, 1.91);
+    return 4 / 5;
+  }
+
+  function syncPostComposerAspectFromOrder(composer = state.postComposer) {
+    if (!composer?.items?.length) return;
+    composer.originalAspect = clamp(Number(composer.items[0]?.naturalAspect || 1), 0.25, 4);
+    if (composer.aspect === 'original') {
+      const aspectRatio = `original:${clamp(composer.originalAspect, 0.75, 1.91).toFixed(4)}`;
+      composer.items.forEach((item) => Object.assign(item.crop, { aspect: 'original', aspectRatio }));
+    }
+    syncPostComposerAliases(composer);
+  }
+
   function postComposerMediaStyle(composer) {
-    return `transform:translate3d(${composer.crop.x}%,${composer.crop.y}%,0) scale(${composer.crop.zoom}) rotate(${composer.crop.rotation}deg);filter:${composerFilterStyle(composer)}`;
+    const fit = composer.crop.aspect === 'mixed' ? 'contain' : 'cover';
+    if (composer.isVideo) {
+      const x = clamp(Number(composer.crop.x || 0), -100, 100);
+      const y = clamp(Number(composer.crop.y || 0), -100, 100);
+      return `object-fit:${fit};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${composerFilterStyle(composer)}`;
+    }
+    const zoom = clamp(Number(composer.crop.zoom || 1), 1, 3);
+    const x = clamp(Number(composer.crop.x || 0), -100, 100);
+    const y = clamp(Number(composer.crop.y || 0), -100, 100);
+    return `object-fit:${fit};object-position:${50 + x / 2}% ${50 + y / 2}%;transform:scale(${zoom}) rotate(${composer.crop.rotation}deg);filter:${composerFilterStyle(composer)}`;
   }
 
   function updatePostComposerMediaStyle() {
     if (!state.postComposer) return;
+    syncPostComposerAliases(state.postComposer);
     const style = postComposerMediaStyle(state.postComposer);
     document.querySelectorAll('#post-composer-slot .post-composer-media > img, #post-composer-slot .post-composer-media > video').forEach((media) => {
       media.style.cssText = style;
     });
   }
 
+  function syncPostCropControls() {
+    const crop = state.postComposer?.crop;
+    if (!crop) return;
+    document.querySelectorAll('#post-composer-slot [data-post-crop]').forEach((input) => {
+      const value = crop[input.dataset.postCrop];
+      if (Number.isFinite(Number(value))) input.value = String(value);
+    });
+  }
+
+  function syncPostPreviewUi(video) {
+    const controls = video?.closest('.post-composer-media')?.querySelector('.post-preview-controls');
+    if (!controls || !video) return;
+    const play = controls.querySelector('[data-action="toggle-post-preview-play"]');
+    const progress = controls.querySelector('[data-post-preview-progress]');
+    const ratio = Number.isFinite(video.duration) && video.duration > 0 ? clamp(video.currentTime / video.duration, 0, 1) : 0;
+    if (progress) {
+      progress.value = String(Math.round(ratio * 1000));
+      progress.setAttribute('aria-valuetext', `${Math.round(ratio * 100)}% played`);
+    }
+    if (play) {
+      play.innerHTML = icon(video.paused ? 'play' : 'pause');
+      play.setAttribute('aria-label', video.paused ? 'Play preview' : 'Pause preview');
+      play.setAttribute('aria-pressed', video.paused ? 'false' : 'true');
+    }
+  }
+
+  function syncPostPreviewMusic(video) {
+    const audio = video?.closest('.post-composer-media')?.querySelector('.post-preview-music');
+    if (!audio || !state.postComposer?.music) return;
+    const start = Math.max(0, Number(audio.dataset.start || 0));
+    const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+    const sectionLength = Math.max(1, end - start);
+    const muted = Boolean(state.postComposer.previewMuted);
+    audio.muted = muted;
+    if (video.paused || muted) {
+      audio.pause();
+      return;
+    }
+    const synchronize = () => {
+      const target = start + (Math.max(0, Number(video.currentTime || 0)) % sectionLength);
+      if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end || Math.abs(audio.currentTime - target) > .35) {
+        try { audio.currentTime = target; } catch {}
+      }
+      if (audio.paused) {
+        audio.play().catch(() => {
+          audio.pause();
+          if (state.postComposer) state.postComposer.previewMuted = true;
+          syncPostPreviewUi(video);
+        });
+      }
+    };
+    if (audio.readyState >= 1) synchronize();
+    else audio.addEventListener('loadedmetadata', synchronize, { once: true });
+  }
+
+  function attachPostComposerPreview() {
+    const media = document.querySelector('#post-composer-slot .post-composer-media');
+    const video = media?.querySelector('video');
+    if (!video || video._postPreviewBound) return;
+    video._postPreviewBound = true;
+    const audio = media.querySelector('.post-preview-music');
+    const sync = () => {
+      syncPostPreviewUi(video);
+      syncPostPreviewMusic(video);
+    };
+    video.addEventListener('loadedmetadata', sync);
+    video.addEventListener('play', sync);
+    video.addEventListener('pause', () => {
+      audio?.pause();
+      syncPostPreviewUi(video);
+    });
+    video.addEventListener('timeupdate', sync);
+    video.addEventListener('ended', () => {
+      audio?.pause();
+      syncPostPreviewUi(video);
+    });
+    audio?.addEventListener('timeupdate', () => {
+      const start = Math.max(0, Number(audio.dataset.start || 0));
+      const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+      if (audio.currentTime >= end) {
+        audio.pause();
+        try { audio.currentTime = start + (Math.max(0, Number(video.currentTime || 0)) % Math.max(1, end - start)); } catch {}
+        if (!video.paused && !state.postComposer?.previewMuted) syncPostPreviewMusic(video);
+      }
+    });
+    audio?.addEventListener('ended', () => { if (!video.paused && !state.postComposer?.previewMuted) syncPostPreviewMusic(video); });
+    syncPostPreviewUi(video);
+  }
+
   function renderPostComposerMedia(composer, taggable = false) {
+    syncPostComposerAliases(composer);
     const style = postComposerMediaStyle(composer);
+    const cropGesture = !taggable && Number(composer.stage || 1) === 1;
     const media = composer.isVideo
-      ? `<video src="${esc(composer.previewUrl)}" ${composer.posterUrl ? `poster="${esc(composer.posterUrl)}"` : ''} style="${esc(style)}" muted playsinline controls preload="metadata"></video>`
+      ? `<video src="${esc(composer.previewUrl)}" ${composer.posterUrl ? `poster="${esc(composer.posterUrl)}"` : ''} style="${esc(style)}" ${composer.music || composer.previewMuted !== false ? 'muted' : ''} playsinline webkit-playsinline preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback"></video>`
       : `<img src="${esc(composer.previewUrl)}" style="${esc(style)}" alt="Post preview">`;
     return `
-      <div class="post-composer-media aspect-${esc(composer.crop.aspect || 'portrait')} ${taggable ? 'taggable' : ''}" ${taggable ? 'data-action="pick-post-tag-position"' : ''}>
+      <div class="post-composer-media aspect-${esc(composer.crop.aspect || 'portrait')} ${taggable ? 'taggable' : ''}" style="--post-aspect:${postComposerAspectRatio(composer)}" ${taggable ? 'data-action="pick-post-tag-position"' : cropGesture ? 'data-post-crop-surface' : ''}>
         ${media}
-        ${(composer.personTags || []).map((tag, index) => `<button class="post-tag-draft" style="left:${tag.x}%;top:${tag.y}%" data-action="remove-post-tag" data-tag-index="${index}">@${esc(tag.username)}</button>`).join('')}
-        ${composer.pendingTagPoint ? `<span class="post-tag-target" style="left:${composer.pendingTagPoint.x}%;top:${composer.pendingTagPoint.y}%"></span>` : ''}
+        ${composer.isVideo && composer.music?.audioUrl ? `<audio class="post-preview-music" src="${esc(composer.music.audioUrl)}" preload="metadata" data-start="${Number(composer.music.start || 0)}" data-end="${Number(composer.music.start || 0) + Number(composer.music.clipDuration || 30)}"></audio>` : ''}
+        ${cropGesture ? `<span class="post-crop-gesture-layer ${composer.isVideo ? 'is-video' : ''}" aria-hidden="true"></span>` : ''}
+        ${composer.isVideo ? `<div class="post-preview-controls"><button data-action="toggle-post-preview-play" aria-label="Play preview" aria-pressed="false">${icon('play')}</button><input class="post-preview-progress" data-post-preview-progress type="range" min="0" max="1000" value="0" aria-label="Preview playback position" aria-valuetext="0% played"><button data-action="toggle-post-preview-sound" aria-label="${composer.previewMuted === false ? 'Mute preview' : 'Turn preview sound on'}" aria-pressed="${composer.previewMuted === false ? 'true' : 'false'}">${icon(composer.previewMuted === false ? 'volume' : 'mute')}</button></div>` : ''}
+        ${composer.items?.length > 1 ? `<span class="post-composer-count">${Number(composer.activeIndex || 0) + 1}/${composer.items.length}</span>` : ''}
+        ${(composer.personTags || []).map((tag, index) => ({ tag, index })).filter(({ tag }) => Number(tag.mediaIndex || 0) === Number(composer.activeIndex || 0)).map(({ tag, index }) => `<button class="post-tag-draft" style="left:${tag.x}%;top:${tag.y}%" data-action="remove-post-tag" data-tag-index="${index}">@${esc(tag.username)}</button>`).join('')}
+        ${composer.pendingTagPoint && Number(composer.pendingTagPoint.mediaIndex || 0) === Number(composer.activeIndex || 0) ? `<span class="post-tag-target" style="left:${composer.pendingTagPoint.x}%;top:${composer.pendingTagPoint.y}%"></span>` : ''}
+      </div>
+    `;
+  }
+
+  function renderPostMusicControl(composer, compact = false) {
+    if (!composer.isVideo || composer.items?.length !== 1) return '';
+    const music = composer.music || null;
+    return `
+      <section class="post-music-control ${compact ? 'compact' : ''}">
+        ${music ? `
+          <span class="music-artwork">${music.artworkUrl ? `<img src="${esc(music.artworkUrl)}" alt="">` : icon('music')}</span>
+          <span><strong>${esc(music.title)}</strong><small>${esc(music.artist)} · ${esc(formatClipTime(music.start || 0))}–${esc(formatClipTime(Number(music.start || 0) + Number(music.clipDuration || 30)))}</small></span>
+          <button data-action="open-post-music" aria-label="Change music">${icon('edit')}</button>
+          <button data-action="remove-post-music" aria-label="Remove music">${icon('x')}</button>
+        ` : `
+          <span class="post-music-icon">${icon('music')}</span>
+          <span><strong>Add music</strong><small>Search tracks and choose the section</small></span>
+          <button data-action="open-post-music" aria-label="Add music">${icon('plus')}</button>
+        `}
+      </section>
+    `;
+  }
+
+  function renderPostMediaRail(composer) {
+    if (!composer.items?.length) return '';
+    return `
+      <div class="post-selection-rail" aria-label="Selected photos and videos">
+        ${composer.items.map((item, index) => `
+          <div class="post-selection-item ${index === composer.activeIndex ? 'active' : ''}">
+            <button class="post-selection-thumb" data-action="select-post-media" data-media-index="${index}" aria-label="Edit item ${index + 1}">
+              ${item.isVideo ? `<video src="${esc(item.previewUrl)}" muted playsinline preload="metadata"></video><i>${icon('play')}</i>` : `<img src="${esc(item.previewUrl)}" alt="">`}
+              <b>${index + 1}</b>
+            </button>
+            ${composer.items.length > 1 ? `<button class="post-selection-remove" data-action="remove-post-media" data-media-index="${index}" aria-label="Remove item ${index + 1}">${icon('x')}</button>` : ''}
+            ${index === composer.activeIndex && composer.items.length > 1 ? `<span class="post-selection-order"><button data-action="move-post-media-previous" data-media-index="${index}" aria-label="Move item earlier" ${index === 0 ? 'disabled' : ''}>${icon('back')}</button><button data-action="move-post-media-next" data-media-index="${index}" aria-label="Move item later" ${index === composer.items.length - 1 ? 'disabled' : ''}>${icon('back')}</button></span>` : ''}
+          </div>
+        `).join('')}
+        ${composer.items.length < 20 ? `<button class="post-selection-add" data-action="add-post-media" aria-label="Add more photos or videos">${icon('plus')}<small>Add</small></button>` : ''}
       </div>
     `;
   }
@@ -2034,32 +2762,32 @@
     const adjustment = composer.activeAdjustment || 'saturation';
     return `
       <div class="post-composer-overlay">
-        <section class="post-composer-page" role="dialog" aria-modal="true" aria-label="Create post">
+        <section class="post-composer-page ${state.postPublishing ? 'is-publishing' : ''}" role="dialog" aria-modal="true" aria-label="Create post" aria-busy="${state.postPublishing}">
           <header class="post-composer-head">
-            <button data-action="${stage === 1 ? 'close-post-composer' : 'post-composer-back'}" aria-label="${stage === 1 ? 'Close' : 'Back'}">${stage === 1 ? icon('x') : icon('back')}</button>
-            <span><strong>${stage === 1 ? 'Crop' : stage === 2 ? 'Look' : 'Share'}</strong><small>Step ${stage} of 3</small></span>
+            <button data-action="${state.postPublishing || stage === 1 ? 'close-post-composer' : 'post-composer-back'}" aria-label="${state.postPublishing ? 'Cancel upload' : stage === 1 ? 'Close' : 'Back'}">${state.postPublishing || stage === 1 ? icon('x') : icon('back')}</button>
+            <span><strong>${stage === 1 ? 'New post' : stage === 2 ? 'Edit' : 'Share'}</strong><small>${stage === 1 ? 'Crop and arrange' : stage === 2 ? 'Style and add music' : 'Finish your post'}</small></span>
             ${stage < 3 ? `<button class="post-next" data-action="post-composer-next">Next</button>` : `<button class="post-next" data-action="publish-post" ${state.postPublishing || composer.sizeError ? 'disabled' : ''}>${state.postPublishing ? 'Sharing…' : composer.sizeError ? 'Too large' : 'Share'}</button>`}
           </header>
-          <div class="post-stage-meta">
-            <div class="post-stage-dots">${[1, 2, 3].map((step) => `<i class="${step <= stage ? 'active' : ''}"></i>`).join('')}</div>
-            ${composer.sizeError ? `<p class="post-media-warning" role="alert">${esc(composer.sizeError)}</p>` : ''}
-          </div>
+          ${composer.sizeError ? `<div class="post-stage-meta"><p class="post-media-warning" role="alert">${esc(composer.sizeError)}</p></div>` : ''}
           ${stage === 1 ? `
             <div class="post-editor-body">
               ${renderPostComposerMedia(composer)}
+              ${renderPostMediaRail(composer)}
               <div class="post-crop-controls">
+                <p class="post-crop-hint">${composer.isVideo ? 'Drag to choose the framing. Use the controls on the preview to play or mute it.' : 'Drag to reposition. Pinch or use the slider to zoom.'}</p>
                 <div class="post-aspect-row">
-                  ${[['square','1:1'],['portrait','4:5'],['original','Original']].map(([value,label]) => `<button class="${composer.crop.aspect === value ? 'active' : ''}" data-action="set-post-aspect" data-aspect="${value}">${label}</button>`).join('')}
+                  ${[['mixed','Mixed'],['original','Original'],['square','1:1'],['portrait','4:5'],['portrait34','3:4'],['landscape','1.91:1']].map(([value,label]) => `<button class="${composer.crop.aspect === value ? 'active' : ''}" data-action="set-post-aspect" data-aspect="${value}">${label}</button>`).join('')}
                 </div>
-                <label>Zoom <input type="range" min="1" max="3" step=".01" value="${composer.crop.zoom}" data-post-crop="zoom"></label>
-                <label>Horizontal <input type="range" min="-50" max="50" step="1" value="${composer.crop.x}" data-post-crop="x"></label>
-                <label>Vertical <input type="range" min="-50" max="50" step="1" value="${composer.crop.y}" data-post-crop="y"></label>
-                <button class="secondary" data-action="rotate-post-media">${icon('rotate')} Rotate</button>
+                ${composer.isVideo ? '' : `<label>Zoom <input type="range" min="1" max="3" step=".01" value="${composer.crop.zoom}" data-post-crop="zoom"></label>`}
+                <label>Horizontal <input type="range" min="-100" max="100" step="1" value="${composer.crop.x}" data-post-crop="x"></label>
+                <label>Vertical <input type="range" min="-100" max="100" step="1" value="${composer.crop.y}" data-post-crop="y"></label>
+                <div class="post-crop-actions ${composer.isVideo ? 'single' : ''}"><button class="secondary" data-action="reset-post-crop">Reset</button>${composer.isVideo ? '' : `<button class="secondary" data-action="rotate-post-media">${icon('rotate')} Rotate</button>`}</div>
               </div>
             </div>
           ` : stage === 2 ? `
             <div class="post-editor-body">
               ${renderPostComposerMedia(composer)}
+              ${renderPostMediaRail(composer)}
               <div class="post-filter-rail" data-scroll-memory="post-filters">
                 ${[['normal','Original'],['vivid','Vivid'],['warm','Warm'],['cool','Cool'],['mono','Mono'],['fade','Fade'],['noir','Noir']].map(([value,label]) => `<button class="${composer.filter === value ? 'active' : ''}" data-action="set-post-filter" data-filter="${value}"><span style="filter:${postFilterStyle({filter:value})}">${composer.isVideo ? `<img class="post-video-filter-poster" data-video-poster ${composer.posterUrl ? `src="${esc(composer.posterUrl)}"` : 'hidden'} alt=""><i class="post-video-filter-placeholder" ${composer.posterUrl ? 'hidden' : ''}>${icon('play')}</i>` : `<img src="${esc(composer.previewUrl)}" alt="">`}</span><small>${label}</small></button>`).join('')}
               </div>
@@ -2067,11 +2795,13 @@
                 ${['brightness','contrast','saturation','warmth'].map((name) => `<button class="${adjustment === name ? 'active' : ''}" data-action="select-post-adjustment" data-adjustment="${name}">${name}</button>`).join('')}
               </div>
               <label class="post-adjust-slider"><span>${adjustment}</span><input type="range" min="${adjustment === 'warmth' ? -50 : adjustment === 'saturation' ? 0 : 60}" max="${adjustment === 'warmth' ? 50 : adjustment === 'saturation' ? 200 : 140}" value="${composer.adjustments[adjustment]}" data-post-adjust="${adjustment}"><output>${composer.adjustments[adjustment]}</output></label>
+              ${renderPostMusicControl(composer)}
             </div>
           ` : `
             <div class="post-details-layout">
               <div>
                 ${renderPostComposerMedia(composer, true)}
+                ${renderPostMediaRail(composer)}
                 <small class="post-tag-help">Tap the photo or video to place a person tag.</small>
                 ${composer.pendingTagPoint ? `
                   <div class="post-tag-picker">
@@ -2082,10 +2812,15 @@
                 ` : ''}
               </div>
               <div class="post-details-fields">
+                ${renderPostMusicControl(composer, true)}
                 <label>Title <input id="post-title" maxlength="100" value="${esc(composer.title)}" placeholder="Give this post a title"></label>
-                <label>Description <textarea id="post-description" maxlength="2200" placeholder="Write a description…">${esc(composer.description)}</textarea></label>
+                <label>Caption <textarea id="post-description" maxlength="2200" placeholder="Write a caption…">${esc(composer.description)}</textarea></label>
                 <label>Tags <input id="post-hashtags" maxlength="300" value="${esc(composer.hashtags)}" placeholder="#travel #summer"></label>
+                <label>Location <input id="post-location" maxlength="100" value="${esc(composer.location || '')}" placeholder="Add a location"></label>
+                <label>Alt text · item ${Number(composer.activeIndex || 0) + 1}<textarea id="post-alt-text" maxlength="500" placeholder="Describe this media for people who use screen readers">${esc(activePostComposerItem(composer)?.altText || '')}</textarea></label>
                 <label class="switch-row compact"><span><strong>Allow reposts</strong><small>Other people can share this post to their profile.</small></span><input id="post-allow-reposts" type="checkbox" ${composer.allowReposts ? 'checked' : ''}></label>
+                <label class="switch-row compact"><span><strong>Allow comments</strong><small>People can reply to this post.</small></span><input id="post-allow-comments" type="checkbox" ${composer.allowComments ? 'checked' : ''}></label>
+                <label class="switch-row compact"><span><strong>Hide like counts</strong><small>You will still be able to see the count.</small></span><input id="post-hide-like-counts" type="checkbox" ${composer.hideLikeCounts ? 'checked' : ''}></label>
               </div>
             </div>
           `}
@@ -2128,6 +2863,8 @@
   function renderNoteComposer() {
     const composer = state.noteComposer;
     if (!composer) return '';
+    const selectedMusic = composer.music || null;
+    const hasAudio = Boolean(composer.audio || selectedMusic);
     return `
       <div class="center-overlay note-composer-overlay" data-action="close-note-composer">
         <section class="center-modal note-composer" data-stop-close>
@@ -2138,19 +2875,103 @@
           </div>
           <label class="note-text-field"><textarea id="note-text" maxlength="60" placeholder="Share a thought…">${esc(composer.text || '')}</textarea><output>${String(composer.text || '').length}/60</output></label>
           <section class="note-audio-editor">
-            <div><strong>${icon('music')} Audio snippet</strong><small>Optional · up to 30 seconds</small></div>
-            ${composer.audio ? `<audio src="${esc(composer.audio.dataUrl)}" controls preload="metadata"></audio>` : ''}
+            <div><strong>${icon('music')} Add music</strong><small>Optional · choose a section up to 30 seconds</small></div>
+            ${selectedMusic ? `
+              <div class="note-selected-music">
+                <span class="music-artwork">${selectedMusic.artworkUrl ? `<img src="${esc(selectedMusic.artworkUrl)}" alt="">` : icon('music')}</span>
+                <span><strong>${esc(selectedMusic.title)}</strong><small>${esc(selectedMusic.artist)} · ${esc(formatClipTime(selectedMusic.start || 0))}–${esc(formatClipTime(Number(selectedMusic.start || 0) + Number(selectedMusic.clipDuration || 30)))}</small></span>
+                <button data-action="open-note-music" aria-label="Change music">${icon('edit')}</button>
+                <button data-action="remove-note-music" aria-label="Remove music">${icon('x')}</button>
+              </div>
+            ` : composer.audio ? `
+              <div class="note-selected-music local-audio">
+                <span class="music-artwork">${icon('mic')}</span>
+                <span><strong>${esc(composer.audioTitle || 'Original audio')}</strong><small>${esc(composer.audioArtist || 'From your device')}</small></span>
+                <button data-action="toggle-note-local-preview" aria-label="Play original audio" aria-pressed="false">${icon('play')}</button>
+                <button data-action="remove-note-audio" aria-label="Remove audio">${icon('x')}</button>
+              </div>
+              <audio id="note-composer-audio" src="${esc(composer.audio.dataUrl)}" preload="metadata"></audio>
+            ` : ''}
             <div class="note-audio-actions">
-              <button class="secondary" data-action="choose-note-audio">Choose audio</button>
+              <button class="secondary" data-action="open-note-music">${icon('music')} Music</button>
+              <button class="secondary" data-action="choose-note-audio">${icon('file')} Device</button>
               <button class="secondary ${state.noteRecording ? 'recording' : ''}" data-action="${state.noteRecording ? 'stop-note-recording' : 'start-note-recording'}">${icon('mic')} ${state.noteRecording ? 'Stop recording' : 'Record'}</button>
             </div>
-            <label>Track title <input id="note-audio-title" maxlength="80" value="${esc(composer.audioTitle || '')}" placeholder="Song or clip title"></label>
-            <label>Creator <input id="note-audio-artist" maxlength="80" value="${esc(composer.audioArtist || '')}" placeholder="Artist or creator"></label>
           </section>
           <div class="note-composer-footer">
             ${composer.hasExisting ? '<button class="danger-text" data-action="delete-note">Delete note</button>' : ''}
-            <button class="primary note-share" data-action="share-note" ${!String(composer.text || '').trim() && !composer.audio ? 'disabled' : ''}>Share note</button>
+            <button class="primary note-share" data-action="share-note" ${!String(composer.text || '').trim() && !hasAudio ? 'disabled' : ''}>Share note</button>
           </div>
+        </section>
+      </div>
+    `;
+  }
+
+  function musicWaveformBars(trackId) {
+    const seed = Array.from(String(trackId || 'music')).reduce((total, char) => (total * 33 + char.charCodeAt(0)) % 9973, 17);
+    return Array.from({ length: 52 }, (_, index) => {
+      const height = 20 + ((seed * (index + 7) * 19 + index * index * 11) % 78);
+      return `<i style="--music-peak:${height}%"></i>`;
+    }).join('');
+  }
+
+  function renderMusicPicker() {
+    const picker = state.musicPicker;
+    if (!picker) return '';
+    const track = picker.selected || null;
+    const clipDuration = track ? Math.min(Number(picker.clipDuration || 30), Number(track.trackDuration || 30)) : 30;
+    const maxStart = track ? Math.max(0, Number(track.trackDuration || 0) - clipDuration) : 0;
+    const start = track ? clamp(Number(picker.start || 0), 0, maxStart) : 0;
+    const durationChoices = track ? ([15, 30].filter((seconds) => seconds <= Number(track.trackDuration || 0)) || []) : [];
+    if (track && !durationChoices.length) durationChoices.push(Math.max(1, Math.floor(Number(track.trackDuration || clipDuration))));
+    return `
+      <div class="music-picker-overlay" data-action="close-music-picker">
+        <section class="music-picker-sheet" data-stop-close role="dialog" aria-modal="true" aria-label="Add music">
+          <header class="music-picker-head">
+            <button data-action="${track ? 'music-picker-back' : 'close-music-picker'}" aria-label="${track ? 'Back to music search' : 'Close music'}">${icon(track ? 'back' : 'x')}</button>
+            <span><strong>${track ? 'Choose a section' : 'Add music'}</strong>${track ? '<small>Drag the waveform or use the start slider</small>' : '<small>Openly licensed tracks</small>'}</span>
+            ${track ? '<button class="music-picker-done" data-action="apply-music-selection">Done</button>' : '<span></span>'}
+          </header>
+          ${track ? `
+            <div class="music-segment-editor">
+              <div class="music-segment-track">
+                <span class="music-artwork large">${track.artworkUrl ? `<img src="${esc(track.artworkUrl)}" alt="">` : icon('music')}</span>
+                <span><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></span>
+                <button class="music-preview-toggle" data-action="toggle-music-segment-preview" aria-label="Play selected section" aria-pressed="false">${icon('play')}</button>
+              </div>
+              <audio id="music-picker-audio" src="${esc(track.audioUrl)}" preload="metadata" data-start="${start}" data-end="${start + clipDuration}"></audio>
+              <div class="music-segment-summary"><strong>${esc(formatClipTime(start))}–${esc(formatClipTime(start + clipDuration))}</strong><span>${Math.round(clipDuration)} seconds</span></div>
+              <div class="music-waveform-window" style="--music-position:${maxStart ? start / maxStart : 0}">
+                <div class="music-waveform-bars">${musicWaveformBars(track.catalogId)}</div>
+                <span class="music-window-edge start"></span><span class="music-window-edge end"></span>
+                <input class="music-waveform-range" data-music-segment-start type="range" min="0" max="${maxStart}" step="0.1" value="${start}" aria-label="Choose the start of the selected music section">
+              </div>
+              <label class="music-segment-slider"><span>Start</span><input id="music-segment-start" data-music-segment-start type="range" min="0" max="${maxStart}" step="0.1" value="${start}"><output>${esc(formatClipTime(start))}</output></label>
+              <div class="music-duration-options" role="group" aria-label="Section length">
+                ${durationChoices.map((seconds) => `<button class="${Math.round(clipDuration) === seconds ? 'active' : ''}" data-action="set-music-duration" data-duration="${seconds}">${seconds}s</button>`).join('')}
+              </div>
+              <p class="music-license-copy">${esc(track.attribution || `${track.title} by ${track.artist}`)} ${track.licenseUrl ? `<a href="${esc(track.licenseUrl)}" target="_blank" rel="noopener noreferrer">License</a>` : ''}</p>
+            </div>
+          ` : `
+            <div class="music-search-view">
+              <label class="music-search-field">${icon('search')}<input id="music-search" value="${esc(picker.query || '')}" placeholder="Search music" autocomplete="off" enterkeyhint="search"><button data-action="clear-music-search" aria-label="Clear search" ${picker.query ? '' : 'hidden'}>${icon('x')}</button></label>
+              <div class="music-category-rail">
+                ${['For you', 'Pop', 'Electronic', 'Hip hop', 'Acoustic', 'Cinematic'].map((label) => `<button data-action="music-category" data-query="${esc(label === 'For you' ? 'instrumental' : label)}">${esc(label)}</button>`).join('')}
+              </div>
+              <div class="music-results" aria-live="polite">
+                ${picker.loading ? `<div class="music-results-loading"><i></i><span>Finding tracks…</span></div>` : picker.tracks?.length ? picker.tracks.map((item) => `
+                  <article class="music-result-row">
+                    <button class="music-result-main" data-action="select-music-track" data-track-id="${esc(item.catalogId)}">
+                      <span class="music-artwork">${item.artworkUrl ? `<img src="${esc(item.artworkUrl)}" alt="" loading="lazy">` : icon('music')}</span>
+                      <span><strong>${esc(item.title)}</strong><small>${esc(item.artist)} · ${esc(formatClipTime(item.trackDuration || 0))}</small></span>
+                    </button>
+                    <button class="music-result-play" data-action="preview-music-track" data-track-id="${esc(item.catalogId)}" aria-label="Preview ${esc(item.title)}">${icon('play')}</button>
+                  </article>
+                `).join('') : picker.error ? `<div class="music-results-empty is-error"><p>${esc(picker.error)}</p><button data-action="retry-music-search">Try again</button></div>` : '<div class="music-results-empty">No matching tracks. Try another title, artist, or mood.</div>'}
+              </div>
+              <footer class="music-provider-credit"><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Search powered by Openverse</a><span>CC BY, CC0 and public-domain music</span></footer>
+            </div>
+          `}
         </section>
       </div>
     `;
@@ -2761,7 +3582,7 @@
   }
 
   function stickerTextColors() {
-    return ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
+    return ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#6c63ff', '#9f7cff'];
   }
 
   function renderStickerCreatorChoices(editor) {
@@ -2891,7 +3712,7 @@
         <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         <filter id="neon" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="7" result="a"/><feFlood flood-color="#ff5fb8"/><feComposite in2="a" operator="in"/><feGaussianBlur stdDeviation="12" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="a"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         <filter id="sparkle" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        <linearGradient id="rainbow"><stop stop-color="#ff304f"/><stop offset=".2" stop-color="#ff8a00"/><stop offset=".4" stop-color="#ffd166"/><stop offset=".6" stop-color="#4fd2c2"/><stop offset=".8" stop-color="#00a8ff"/><stop offset="1" stop-color="#9f7cff"/></linearGradient>
+        <linearGradient id="rainbow"><stop stop-color="#ff304f"/><stop offset=".2" stop-color="#ff8a00"/><stop offset=".4" stop-color="#ffd166"/><stop offset=".6" stop-color="#2f8b83"/><stop offset=".8" stop-color="#285f88"/><stop offset="1" stop-color="#9f7cff"/></linearGradient>
         <linearGradient id="shimmer"><stop stop-color="#9ca3af"/><stop offset=".42" stop-color="#ffffff"/><stop offset=".58" stop-color="#dbeafe"/><stop offset="1" stop-color="#9ca3af"><animate attributeName="offset" values=".7;1;.7" dur="1.5s" repeatCount="indefinite"/></stop></linearGradient>
       </defs>
       <style>
@@ -2907,7 +3728,7 @@
   }
 
   function storyTextToolPanel(editor) {
-    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff', '#9f7cff'];
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#6c63ff', '#9f7cff'];
     const panel = ['font', 'color', 'animation', 'effect'].includes(editor.textPanel) ? editor.textPanel : 'font';
     const alignIcon = editor.textAlign === 'left' ? 'alignLeft' : editor.textAlign === 'right' ? 'alignRight' : 'alignCenter';
     let choices = '';
@@ -2966,7 +3787,7 @@
       ['midnight', 'Midnight', '#0b1020', '#111827'],
       ['dusk', 'Dusk', '#54205f', '#f05a7e'],
       ['ocean', 'Ocean', '#063970', '#0fa3b1'],
-      ['aurora', 'Aurora', '#064e3b', '#38bdf8'],
+      ['aurora', 'Aurora', '#064e3b', '#397db4'],
       ['sunset', 'Sunset', '#9f1239', '#f59e0b'],
       ['violet', 'Violet', '#312e81', '#a855f7'],
       ['graphite', 'Graphite', '#111111', '#4b5563'],
@@ -3312,7 +4133,7 @@
   }
 
   function storyDrawToolPanel(editor) {
-    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#6c63ff'];
+    const colors = ['#ffffff', '#111111', '#ff304f', '#ff4fa3', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#6c63ff'];
     return `
       <div class="story-swatch-row story-draw-colors" aria-label="Drawing color">
         <button class="story-draw-sampler" data-action="story-draw-eyedropper" aria-label="Sample a color">${icon('eyedropper')}</button>
@@ -4842,9 +5663,10 @@
     const highlighted = state.highlightMessageId === message.id;
     const stickerMessage = message.kind === 'sticker' && !message.deletedAt;
     const mediaMessage = ['image', 'video', 'gif'].includes(message.kind) && message.attachment && !message.deletedAt;
+    const sharedPostMessage = message.kind === 'post' && !message.deletedAt;
     const sender = message.sender || userById(message.senderId);
     return `
-      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''}" data-message-id="${esc(message.id)}">
+      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''} ${sharedPostMessage ? 'shared-post-message' : ''}" data-message-id="${esc(message.id)}">
         ${message.pinnedAt ? `<span class="message-context-label">${icon('pin')} Pinned</span>` : ''}
         ${state.activeGroup && sender ? `<span class="group-message-sender" title="${esc(sender.displayName || sender.username)}">${avatarHtml(sender)}</span>` : ''}
         <div class="bubble">
@@ -4888,15 +5710,15 @@
     if (!message) return '';
     const mine = message.senderId === state.me.id;
     return `
-      <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus">
-        <section class="message-focus-stage ${mine ? 'mine' : 'theirs'}" data-stop-close>
+      <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus" role="dialog" aria-modal="true" aria-label="Message actions" tabindex="-1">
+        <section class="message-focus-stage ${mine ? 'mine' : 'theirs'}">
           <div class="message-focus-actions">
-        <div class="message-reaction-bar">
+        <div class="message-reaction-bar" data-stop-close>
           ${messageReactionOptions().map((emoji) => `<button data-action="react-message" data-message-id="${esc(message.id)}" data-emoji="${esc(emoji)}" class="${(message.reactions || []).some((reaction) => reaction.emoji === emoji && (reaction.userIds || []).includes(state.me.id)) ? 'active' : ''}">${esc(emoji)}</button>`).join('')}
           <button data-action="message-more" data-message-id="${esc(message.id)}" aria-label="More">${icon('plus')}</button>
         </div>
         <div class="message-focus-host"></div>
-        <div class="message-action-menu">
+        <div class="message-action-menu" data-stop-close>
           <button data-action="focus-reply" data-message-id="${esc(message.id)}">${icon('back')}<span>Reply</span></button>
           <button data-action="message-focus-mode" data-mode="sticker">${icon('sticker')}<span>Sticker</span></button>
           <button data-action="message-focus-mode" data-mode="forward">${icon('forward')}<span>Forward</span></button>
@@ -4912,7 +5734,7 @@
 
   function renderMessageFocusPicker(mode, message) {
     if (mode === 'forward') return `
-      <section class="message-focus-picker">
+      <section class="message-focus-picker" data-stop-close>
         <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Forward to</strong></header>
         <div class="message-focus-list">
           ${state.chats.length ? state.chats.map((chat) => `
@@ -4930,7 +5752,7 @@
       </section>
     `;
     if (mode === 'sticker') return `
-      <section class="message-focus-picker sticker-picker">
+      <section class="message-focus-picker sticker-picker" data-stop-close>
         <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Add a sticker</strong></header>
         <div class="message-focus-stickers">
           ${availableChatStickers().map((sticker) => `<button data-action="attach-message-sticker" data-message-id="${esc(message.id)}" data-sticker-id="${esc(sticker.id)}"><img src="${esc(sticker.dataUrl)}" alt="${esc(sticker.name)}"></button>`).join('')}
@@ -4979,11 +5801,39 @@
     return `${renderSearchProfileActions(user)}<button class="mini-btn" data-action="open-report" data-report-type="user" data-user-id="${esc(user.id)}">Report</button>`;
   }
 
+  function renderSharedPostMessage(message) {
+    const post = message.sharedPost;
+    if (!post) {
+      return `<div class="shared-post-unavailable">${icon('clips')}<span><strong>Post unavailable</strong><small>It may have been deleted or made private.</small></span></div>`;
+    }
+    const author = postAuthor(post);
+    const item = postMediaItems(post)[0];
+    const media = item?.media;
+    const isVideo = item?.mediaType === 'video' || String(media?.mime || '').startsWith('video/');
+    const label = post.isClip || isVideo ? 'Watch clip' : 'View post';
+    return `
+      <button class="shared-post-card" data-action="open-shared-post" data-post-id="${esc(post.id)}" aria-label="${esc(`${label} by ${author?.username || 'user'}`)}">
+        <span class="shared-post-author">${author ? avatarHtml(author) : ''}<span><strong>${esc(author?.username || 'user')}</strong><small>${post.isClip || isVideo ? 'Clip' : 'Post'}</small></span></span>
+        <span class="shared-post-media">
+          ${media?.url
+            ? (isVideo
+              ? `<video src="${esc(media.url)}" muted playsinline webkit-playsinline preload="metadata" disablepictureinpicture disableremoteplayback aria-hidden="true"></video><i class="shared-post-play">${icon('play')}</i>`
+              : `<img src="${esc(media.url)}" alt="" loading="lazy">`)
+            : `<i class="shared-post-missing">${icon('clips')}</i>`}
+        </span>
+        <span class="shared-post-copy"><strong>${label}</strong>${post.description ? `<small>${esc(String(post.description).slice(0, 100))}</small>` : ''}</span>
+      </button>
+      ${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}
+    `;
+  }
+
   function renderMessageBody(message) {
     if (message.deletedAt) return '<div class="message-text">Message deleted</div>';
+    if (message.kind === 'post') return renderSharedPostMessage(message);
     const attachment = message.attachment;
     if (message.kind === 'gif' && attachment) {
-      return `<img class="chat-gif" src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name || 'GIF')}" data-type="${esc(attachment.mime || 'image/gif')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
+      const credit = message.mediaCredit;
+      return `<img class="chat-gif" src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name || 'GIF')}" data-type="${esc(attachment.mime || 'image/gif')}">${credit?.creator ? `<a class="chat-gif-credit" href="${esc(credit.sourceUrl || credit.licenseUrl || '#')}" ${credit.sourceUrl || credit.licenseUrl ? 'target="_blank" rel="noopener noreferrer"' : ''}>${esc(credit.creator)} · ${esc(credit.license || credit.provider || 'Openverse')}</a>` : ''}${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
     }
     if (message.kind === 'image' && attachment) {
       return `<img class="media-image" src="${esc(attachment.url)}" alt="${esc(attachment.name)}" data-action="open-media" data-src="${esc(attachment.url)}" data-name="${esc(attachment.name)}" data-type="${esc(attachment.mime || 'image/*')}">${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
@@ -5032,12 +5882,12 @@
 
   function chatStickerPresets() {
     return [
-      { id: 'preset_wave', name: 'Wave', dataUrl: presetStickerSvg('&#x1F44B;', 'wave', '#00a8ff', '#6c63ff'), animated: true, preset: true },
+      { id: 'preset_wave', name: 'Wave', dataUrl: presetStickerSvg('&#x1F44B;', 'wave', '#285f88', '#6c63ff'), animated: true, preset: true },
       { id: 'preset_heart', name: 'Heart', dataUrl: presetStickerSvg('&#x2764;', 'pop', '#ff304f', '#ff4fa3'), animated: true, preset: true },
       { id: 'preset_fire', name: 'Fire', dataUrl: presetStickerSvg('&#x1F525;', 'float', '#ff8a00', '#ff304f'), animated: true, preset: true },
-      { id: 'preset_lol', name: 'LOL', dataUrl: presetStickerSvg('LOL', 'pop', '#4fd2c2', '#00a8ff'), animated: true, preset: true },
+      { id: 'preset_lol', name: 'LOL', dataUrl: presetStickerSvg('LOL', 'pop', '#2f8b83', '#285f88'), animated: true, preset: true },
       { id: 'preset_wow', name: 'WOW', dataUrl: presetStickerSvg('WOW', 'flicker', '#9f7cff', '#ff4fa3'), animated: true, preset: true },
-      { id: 'preset_hi', name: 'HI', dataUrl: presetStickerSvg('HI', 'float', '#23836f', '#4fd2c2'), animated: true, preset: true }
+      { id: 'preset_hi', name: 'HI', dataUrl: presetStickerSvg('HI', 'float', '#23836f', '#2f8b83'), animated: true, preset: true }
     ];
   }
 
@@ -5125,7 +5975,9 @@
   function renderStickerPanel() {
     const tab = state.chatTrayTab === 'gifs' ? 'gifs' : 'stickers';
     const gifQuery = state.chatGifQuery.trim().toLowerCase();
-    const gifs = state.gifPool.filter((gif) => !gifQuery || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery));
+    const localGifs = state.gifPool.filter((gif) => !gifQuery || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery));
+    const catalogGifs = state.chatGifResults || [];
+    const gifs = [...localGifs, ...catalogGifs];
     return `
       <section class="sticker-panel chat-media-tray ${tab === 'stickers' ? 'stickers-tray' : 'gifs-tray'}">
         <header class="chat-tray-head">
@@ -5156,14 +6008,17 @@
           </div>
         ` : `
           <div class="chat-gif-search">
-            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIFs" autocomplete="off">
+            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIFs" aria-label="Search GIFs" autocomplete="off">
             <button data-action="chat-gif-upload" aria-label="Upload GIF">${icon('plus')}</button>
             <input id="chat-gif-input" type="file" accept="image/gif,image/webp" hidden>
           </div>
           <div class="chat-gif-grid">
-            ${state.gifPool.map((gif) => `<button data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}" ${gifQuery && !`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery) ? 'hidden' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}"></button>`).join('')}
-            <p class="chat-gif-empty" ${gifs.length ? 'hidden' : ''}>No approved GIFs found. Use + to send one from your device.</p>
+            ${localGifs.map((gif) => `<button data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"></button>`).join('')}
+            ${catalogGifs.map((gif) => `<button class="catalog-gif ${state.sendingGifId === gif.id ? 'sending' : ''}" data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${gif.creator || ''}`.toLowerCase())}" aria-label="Send ${esc(gif.title)} by ${esc(gif.creator || 'unknown creator')}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"><small>${state.sendingGifId === gif.id ? 'Sending…' : esc(gif.creator || gif.license || 'Openverse')}</small></button>`).join('')}
+            ${state.chatGifLoading ? '<div class="chat-gif-loading"><i></i><span>Searching GIFs…</span></div>' : ''}
+            ${state.chatGifError ? `<p class="chat-gif-empty is-error">${esc(state.chatGifError)} <button data-action="retry-chat-gif-search">Try again</button></p>` : `<p class="chat-gif-empty" ${gifs.length || state.chatGifLoading ? 'hidden' : ''}>No matching GIFs. Try another word or upload your own.</p>`}
           </div>
+          <footer class="chat-gif-provider"><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Openverse</a><span>Creator and license stay attached when sent</span></footer>
         `}
       </section>
     `;
@@ -5289,17 +6144,67 @@
     if (!post) return '<p class="hint">Post not found.</p>';
     const comments = (post.comments || []).filter((comment) => comment?.user && String(comment.text || '').trim());
     const posting = Boolean(sheet.commentPosting);
-    const rows = comments.map((comment, index) => {
+    const creator = postAuthor(post);
+    const commentById = new Map(comments.map((comment) => [comment.id, comment]));
+    const rootIdFor = (comment) => {
+      let current = comment;
+      const visited = new Set();
+      while (current?.replyTo && commentById.has(current.replyTo) && !visited.has(current.replyTo)) {
+        visited.add(current.id);
+        current = commentById.get(current.replyTo);
+      }
+      return current?.id || comment.id;
+    };
+    const roots = comments.filter((comment) => !comment.replyTo || !commentById.has(comment.replyTo));
+    const repliesByRoot = new Map(roots.map((comment) => [comment.id, []]));
+    comments.forEach((comment) => {
+      const rootId = rootIdFor(comment);
+      if (rootId === comment.id) return;
+      if (!repliesByRoot.has(rootId)) repliesByRoot.set(rootId, []);
+      repliesByRoot.get(rootId).push(comment);
+    });
+    const expandedCommentIds = new Set(sheet.expandedCommentIds || []);
+    const replyComment = commentById.get(sheet.replyToCommentId) || null;
+    if (replyComment) expandedCommentIds.add(rootIdFor(replyComment));
+    let commentOrder = 0;
+    const renderCommentRow = (comment, isReply = false) => {
       const username = comment.user.username || 'user';
+      const likeLabel = comment.likeCount === 1 ? '1 like' : `${comment.likeCount || 0} likes`;
+      const order = commentOrder++;
       return `
-        <article class="story-comment-row post-comment-row ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(index, 12)}">
+        <article class="story-comment-row post-comment-row ${isReply ? 'reply' : ''} ${comment.pinned ? 'is-pinned' : ''} ${sheet.newCommentId === comment.id ? 'just-posted' : ''}" data-comment-id="${esc(comment.id)}" style="--comment-order:${Math.min(order, 12)}">
           <button class="story-comment-avatar" data-action="view-user-profile" data-username="${esc(username)}" aria-label="View ${esc(username)}'s profile">${avatarHtml(comment.user)}</button>
           <div class="story-comment-content">
             <p><button class="comment-username" data-action="view-user-profile" data-username="${esc(username)}">${esc(username)}</button> <span>${renderMentionText(comment.text || '')}</span></p>
-            <div class="story-comment-meta"><time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(compactRelativeTime(comment.createdAt))}</time></div>
+            <div class="story-comment-meta">
+              <time datetime="${esc(comment.createdAt)}" title="${esc(formatTime(comment.createdAt))}">${esc(compactRelativeTime(comment.createdAt))}</time>
+              <span class="story-comment-like-count ${comment.likeCount ? '' : 'is-empty'}" data-post-comment-like-count="${esc(comment.id)}">${esc(likeLabel)}</span>
+              ${comment.pinned ? `<span class="post-comment-pinned">${icon('pin')} Pinned</span>` : ''}
+              <button data-action="reply-post-comment" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}" ${posting ? 'disabled' : ''}>Reply</button>
+              ${comment.canPin ? `<button data-action="toggle-post-comment-pin" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}">${comment.pinned ? 'Unpin' : 'Pin'}</button>` : ''}
+              ${comment.canDelete ? `<button class="post-comment-delete" data-action="delete-post-comment" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}">Delete</button>` : ''}
+            </div>
+            ${comment.likedByCreator ? `<span class="post-comment-creator-like" title="Liked by ${esc(creator?.username || 'the creator')}">${icon('heart')} Liked by creator</span>` : ''}
           </div>
-          <span aria-hidden="true"></span>
+          <button class="story-comment-like post-comment-like ${comment.likedByMe ? 'active' : ''}" data-action="toggle-post-comment-like" data-post-id="${esc(post.id)}" data-comment-id="${esc(comment.id)}" aria-label="${comment.likedByMe ? 'Unlike' : 'Like'} comment" aria-pressed="${comment.likedByMe ? 'true' : 'false'}">${icon('heart')}</button>
         </article>
+      `;
+    };
+    const commentThreads = roots.map((comment) => {
+      const replies = repliesByRoot.get(comment.id) || [];
+      const expanded = expandedCommentIds.has(comment.id);
+      return `
+        <section class="story-comment-thread post-comment-thread" data-thread-id="${esc(comment.id)}">
+          ${renderCommentRow(comment)}
+          ${replies.length ? `
+            <button class="story-comment-replies-toggle" data-action="toggle-post-comment-replies" data-comment-id="${esc(comment.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
+              <i aria-hidden="true"></i><span>${expanded ? 'Hide replies' : `View ${replies.length === 1 ? '1 reply' : `all ${replies.length} replies`}`}</span>
+            </button>
+            <div class="story-comment-replies ${expanded ? 'expanded' : ''}">
+              ${expanded ? replies.map((reply) => renderCommentRow(reply, true)).join('') : ''}
+            </div>
+          ` : ''}
+        </section>
       `;
     }).join('');
     const quickReactions = ['❤️', '🙌', '🔥', '👏', '😂', '😍'];
@@ -5310,7 +6215,7 @@
         <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close comments">${icon('x')}</button>
       </header>
       <div class="story-comment-list post-comment-list" role="feed" aria-label="Post comments">
-        ${rows || `
+        ${commentThreads || `
           <div class="story-comments-empty">
             <span>${icon('comment')}</span>
             <strong>No comments yet</strong>
@@ -5318,18 +6223,73 @@
           </div>
         `}
       </div>
-      <form class="story-comment-composer post-comment-composer" data-form="post-comment" data-post-id="${esc(post.id)}" aria-busy="${posting}">
-        <div class="story-comment-quick-reactions" aria-label="Quick reactions">
-          ${quickReactions.map((emoji) => `<button type="button" data-action="add-post-comment-emoji" data-emoji="${emoji}" ${posting ? 'disabled' : ''}>${emoji}</button>`).join('')}
-        </div>
-        <div class="story-comment-box">
-          <button type="button" class="story-comment-composer-avatar" data-action="view-own-profile" aria-label="View your profile" ${posting ? 'disabled' : ''}>${avatarHtml(state.me)}</button>
-          <div class="story-comment-field">
-            <input id="post-comment-input" name="comment" maxlength="500" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}" ${posting ? 'disabled' : ''}>
-            <button class="story-comment-post post-comment-submit" type="submit" ${posting || !String(sheet.commentDraft || '').trim() ? 'disabled' : ''}>Post</button>
+      ${post.allowComments === false ? `
+        <div class="post-comments-disabled">${icon('comment')}<span><strong>Comments are off</strong><small>The author has limited replies on this post.</small></span></div>
+      ` : `
+        <form class="story-comment-composer post-comment-composer" data-form="post-comment" data-post-id="${esc(post.id)}" aria-busy="${posting}">
+          ${replyComment ? `<div class="comment-replying"><span>Replying to <strong>${esc(replyComment.user?.username || 'user')}</strong></span><button type="button" data-action="clear-post-comment-reply" aria-label="Cancel reply" ${posting ? 'disabled' : ''}>${icon('x')}</button></div>` : ''}
+          <div class="story-comment-quick-reactions" aria-label="Quick reactions">
+            ${quickReactions.map((emoji) => `<button type="button" data-action="add-post-comment-emoji" data-emoji="${emoji}" ${posting ? 'disabled' : ''}>${emoji}</button>`).join('')}
           </div>
+          <div class="story-comment-box">
+            <button type="button" class="story-comment-composer-avatar" data-action="view-own-profile" aria-label="View your profile" ${posting ? 'disabled' : ''}>${avatarHtml(state.me)}</button>
+            <div class="story-comment-field">
+              <input id="post-comment-input" name="comment" maxlength="500" placeholder="Add a comment..." aria-label="Add a comment" autocomplete="off" enterkeyhint="send" value="${esc(sheet.commentDraft || '')}" ${posting ? 'disabled' : ''}>
+              <button class="story-comment-post post-comment-submit" type="submit" ${posting || !String(sheet.commentDraft || '').trim() ? 'disabled' : ''}>Post</button>
+            </div>
+          </div>
+        </form>
+      `}
+    `;
+  }
+
+  function postShareTargets() {
+    const people = [];
+    const seen = new Set();
+    [...state.chats.map((chat) => chat.peer), ...state.contacts].forEach((user) => {
+      if (!user?.id || user.id === state.me?.id || seen.has(user.id) || user.hasBlocked) return;
+      seen.add(user.id);
+      people.push({ key: `peer:${user.id}`, kind: 'peer', id: user.id, label: user.displayName || user.username, detail: `@${user.username}`, user });
+    });
+    state.groups.forEach((group) => {
+      if (!group?.id) return;
+      people.push({ key: `group:${group.id}`, kind: 'group', id: group.id, label: group.name || 'Group', detail: `${group.memberCount || group.members?.length || 0} members`, group });
+    });
+    return people;
+  }
+
+  function renderPostShareSheet(post, sheet) {
+    if (!post) return '<p class="hint">Post not found.</p>';
+    const selected = new Set(sheet.selectedTargets || []);
+    const query = String(sheet.query || '').trim().toLowerCase();
+    const targets = postShareTargets();
+    const visible = targets.filter((target) => `${target.label} ${target.detail}`.toLowerCase().includes(query));
+    return `
+      <section class="post-share-shell" aria-label="Share post">
+        <header class="post-share-head">
+          <span class="story-sheet-grabber" aria-hidden="true"></span>
+          <strong>Share</strong>
+          <button data-action="close-overlays" aria-label="Close share sheet">${icon('x')}</button>
+        </header>
+        <label class="post-share-search" for="post-share-search">${icon('search')}<input id="post-share-search" value="${esc(sheet.query || '')}" placeholder="Search" autocomplete="off" enterkeyhint="search"></label>
+        <div class="post-share-people" role="list" aria-label="People and groups">
+          ${visible.map((target) => `
+            <button class="post-share-person ${selected.has(target.key) ? 'selected' : ''}" data-action="toggle-post-share-target" data-target-key="${esc(target.key)}" data-share-search="${esc(`${target.label} ${target.detail}`.toLowerCase())}" aria-pressed="${selected.has(target.key)}">
+              <span class="post-share-avatar">${target.kind === 'group' ? groupAvatarHtml(target.group) : avatarHtml(target.user)}<i>${icon('check')}</i></span>
+              <strong>${esc(target.label)}</strong>
+              <small>${esc(target.detail)}</small>
+            </button>
+          `).join('')}
+          <p class="post-share-empty" ${visible.length ? 'hidden' : ''}>No chats found.</p>
         </div>
-      </form>
+        <footer class="post-share-footer">
+          <div class="post-share-quick" aria-label="More sharing options">
+            <button data-action="copy-post-link" data-post-id="${esc(post.id)}"><span>${icon('link')}</span><small>Copy link</small></button>
+            <button data-action="share-post-external" data-post-id="${esc(post.id)}"><span>${icon('send')}</span><small>Share to</small></button>
+          </div>
+          ${selected.size ? `<button class="post-share-send" data-action="send-shared-post" data-post-id="${esc(post.id)}" ${sheet.sending ? 'disabled' : ''}>${sheet.sending ? '<i class="spinner"></i> Sending…' : `Send separately · ${selected.size}`}</button>` : ''}
+        </footer>
+      </section>
     `;
   }
 
@@ -5339,6 +6299,7 @@
     const peer = sheet.peerId ? userById(sheet.peerId) : null;
     const profileUser = sheet.userId ? userById(sheet.userId) : null;
     const message = sheet.messageId ? state.messages.find((item) => item.id === sheet.messageId) : null;
+    const sheetPost = sheet.postId ? postById(sheet.postId) : null;
     let body = '';
     if (sheet.type === 'chat-user' && peer) {
       body = `
@@ -5365,6 +6326,21 @@
         <div class="sheet-note"><strong>Post options</strong><small>Manage this post</small></div>
         <button class="danger-text" data-action="delete-post" data-post-id="${esc(sheet.postId)}">${icon('trash')} Delete post</button>
       `;
+    }
+    if (sheet.type === 'post-options' && sheetPost) {
+      const author = postAuthor(sheetPost);
+      body = `
+        <div class="sheet-note"><strong>Clip options</strong><small>Choose what you want to do.</small></div>
+        <button data-action="toggle-post-save" data-post-id="${esc(sheetPost.id)}">${icon('bookmark')} ${sheetPost.savedByMe ? 'Remove from saved' : 'Save'}</button>
+        <button data-action="copy-post-link" data-post-id="${esc(sheetPost.id)}">${icon('link')} Copy link</button>
+        ${author ? `<button data-action="view-user-profile" data-username="${esc(author.username)}">${icon('profile')} About this account</button>` : ''}
+        ${author?.id === state.me?.id
+          ? `<button class="danger-text" data-action="delete-post" data-post-id="${esc(sheetPost.id)}">${icon('trash')} Delete post</button>`
+          : author ? `<button data-action="open-report" data-report-type="user" data-user-id="${esc(author.id)}">Report</button>` : ''}
+      `;
+    }
+    if (sheet.type === 'post-share') {
+      body = renderPostShareSheet(sheetPost, sheet);
     }
     if (sheet.type === 'group-member' && state.activeGroup) {
       const member = userById(sheet.userId);
@@ -5555,11 +6531,22 @@
         <button class="story-owner-action danger-text" data-action="delete-story" data-story-id="${esc(story.id)}">${icon('trash')}<span>Delete story</span></button>
       ` : '';
     }
-    const compact = ['post-comments', 'story-comments', 'story-owner'].includes(sheet.type);
+    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner'].includes(sheet.type);
     const compactClass = sheet.type === 'post-comments' ? 'story-comments-sheet post-comments-sheet' : `${sheet.type}-sheet`;
+    const dialogLabel = ({
+      'post-share': 'Share post',
+      'post-comments': 'Post comments',
+      'story-comments': 'Story comments',
+      'story-owner': 'Story options',
+      'post-options': 'Clip options',
+      'post-owner': 'Post options',
+      message: 'Message options',
+      report: 'Report',
+      mute: 'Mute options'
+    })[sheet.type] || 'Actions';
     return `
       <div class="overlay ${state.storyViewer ? 'over-story' : ''} ${state.overlayClosing ? 'closing' : ''}" data-action="close-overlays">
-        <section class="action-sheet ${compact ? `compact-sheet ${compactClass}` : ''} ${sheet.refreshing ? 'sheet-refreshing' : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close>
+        <section class="action-sheet ${compact ? `compact-sheet ${compactClass}` : ''} ${sheet.refreshing ? 'sheet-refreshing' : ''} ${state.overlayClosing ? 'closing' : ''}" data-stop-close role="dialog" aria-modal="true" aria-label="${esc(dialogLabel)}" tabindex="-1">
           ${body || '<p class="hint">No actions available.</p>'}
           ${compact ? '' : '<button data-action="close-overlays">Cancel</button>'}
         </section>
@@ -6235,6 +7222,13 @@
     }
   }
 
+  async function loadClips(options = {}) {
+    const data = await api('/api/clips?limit=60');
+    state.clips = data.posts || [];
+    if (options.render && state.tab === 'clips') updateSidebar();
+    return state.clips;
+  }
+
   async function loadNotes(options = {}) {
     const data = await api('/api/notes');
     state.notes = data.notes || [];
@@ -6258,6 +7252,7 @@
     await Promise.all([
       loadFeed(state.feedMode, { render: false }).catch(() => { state.homeFeed = []; state.feedLoading = false; }),
       loadExplore().catch(() => { state.explorePosts = []; state.exploreLoading = false; }),
+      loadClips().catch(() => { state.clips = []; }),
       loadNotes().catch(() => { state.notes = []; }),
       loadProfilePosts(state.me, state.profileMediaTab, { render: false }).catch(() => [])
     ]);
@@ -6268,6 +7263,8 @@
     return [
       ...state.homeFeed,
       ...state.explorePosts,
+      ...state.clips,
+      ...state.messages.map((message) => message.sharedPost),
       ...Array.from(state.profilePosts.values()).flat(),
       ...state.accountActivity.reposts.map((item) => item.post || item)
     ].filter(Boolean);
@@ -6280,46 +7277,63 @@
   function replacePost(updatedPost) {
     if (!updatedPost?.id) return;
     const replace = (posts) => (posts || []).map((post) => post.id === updatedPost.id ? { ...post, ...updatedPost } : post);
+    const replaceSharedMessage = (message) => message?.sharedPost?.id === updatedPost.id
+      ? { ...message, sharedPost: { ...message.sharedPost, ...updatedPost } }
+      : message;
     state.homeFeed = replace(state.homeFeed);
     state.explorePosts = replace(state.explorePosts);
+    state.clips = replace(state.clips);
+    state.messages = state.messages.map(replaceSharedMessage);
+    state.chats = state.chats.map((chat) => ({ ...chat, lastMessage: replaceSharedMessage(chat.lastMessage) }));
+    state.groups = state.groups.map((group) => ({ ...group, lastMessage: replaceSharedMessage(group.lastMessage) }));
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, replace(posts));
   }
 
   function syncPostEngagement(post, changedAction = '') {
     if (!post?.id) return false;
     const escapedId = window.CSS?.escape ? CSS.escape(String(post.id)) : String(post.id).replace(/"/g, '\\"');
-    const card = document.querySelector(`.feed-post[data-post-id="${escapedId}"]`);
-    if (!card) return false;
+    const cards = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"], .clip-card[data-post-id="${escapedId}"]`));
+    if (!cards.length) return false;
     const states = {
       like: { active: Boolean(post.likedByMe), activeLabel: 'Unlike', idleLabel: 'Like' },
       save: { active: Boolean(post.savedByMe), activeLabel: 'Unsave', idleLabel: 'Save' },
       repost: { active: Boolean(post.repostedByMe), activeLabel: 'Undo repost', idleLabel: 'Repost' }
     };
-    for (const [action, config] of Object.entries(states)) {
-      const button = card.querySelector(`[data-action="toggle-post-${action}"]`);
-      if (!button) continue;
-      button.classList.remove('is-pending');
-      button.classList.toggle('active', config.active);
-      button.setAttribute('aria-pressed', config.active ? 'true' : 'false');
-      button.setAttribute('aria-label', config.active ? config.activeLabel : config.idleLabel);
-      if (action === changedAction) {
-        button.classList.remove('post-action-pop');
-        void button.offsetWidth;
-        button.classList.add('post-action-pop');
+    for (const card of cards) {
+      for (const [action, config] of Object.entries(states)) {
+        const button = card.querySelector(`[data-action="toggle-post-${action}"]`);
+        if (!button) continue;
+        button.classList.remove('is-pending');
+        button.classList.toggle('active', config.active);
+        button.setAttribute('aria-pressed', config.active ? 'true' : 'false');
+        button.setAttribute('aria-label', config.active ? config.activeLabel : config.idleLabel);
+        if (action === changedAction) {
+          button.classList.remove('post-action-pop');
+          void button.offsetWidth;
+          button.classList.add('post-action-pop');
+        }
       }
-    }
-    const likeCount = card.querySelector('[data-post-like-count]');
-    if (likeCount) likeCount.textContent = `${Number(post.likeCount || 0).toLocaleString()} likes`;
-    const commentCount = card.querySelector('[data-post-comment-count]');
-    if (commentCount) commentCount.textContent = `${Number(post.commentCount ?? post.comments?.length ?? 0)} comments`;
-    const repostCount = card.querySelector('[data-post-repost-count]');
-    if (repostCount) repostCount.textContent = `${Number(post.repostCount || 0)} reposts`;
-    const currentComments = card.querySelector('.post-comments');
-    if (currentComments) {
-      const template = document.createElement('template');
-      template.innerHTML = renderPostComments(post).trim();
-      const nextComments = template.content.firstElementChild;
-      if (nextComments) currentComments.replaceWith(nextComments);
+      const likeCount = card.querySelector('[data-post-like-count]');
+      if (likeCount) likeCount.textContent = post.hideLikeCounts && postAuthor(post)?.id !== state.me?.id
+        ? 'Like count hidden'
+        : `${Number(post.likeCount || 0).toLocaleString()} likes`;
+      const commentCount = card.querySelector('[data-post-comment-count]');
+      if (commentCount) commentCount.textContent = `${Number(post.commentCount ?? post.comments?.length ?? 0)} comments`;
+      const repostCount = card.querySelector('[data-post-repost-count]');
+      if (repostCount) repostCount.textContent = `${Number(post.repostCount || 0)} reposts`;
+      const clipLikeCount = card.querySelector('[data-clip-like-count]');
+      if (clipLikeCount) clipLikeCount.textContent = post.hideLikeCounts && postAuthor(post)?.id !== state.me?.id ? '—' : Number(post.likeCount || 0).toLocaleString();
+      const clipCommentCount = card.querySelector('[data-clip-comment-count]');
+      if (clipCommentCount) clipCommentCount.textContent = Number(post.commentCount ?? post.comments?.length ?? 0).toLocaleString();
+      const clipRepostCount = card.querySelector('[data-clip-repost-count]');
+      if (clipRepostCount) clipRepostCount.textContent = Number(post.repostCount || 0).toLocaleString();
+      const currentComments = card.querySelector('.post-comments');
+      if (currentComments) {
+        const template = document.createElement('template');
+        template.innerHTML = renderPostComments(post).trim();
+        const nextComments = template.content.firstElementChild;
+        if (nextComments) currentComments.replaceWith(nextComments);
+      }
     }
     return true;
   }
@@ -6331,9 +7345,17 @@
     if (!composer) return;
     composer.uploadController?.abort();
     unloadPostComposerVideos();
-    const urls = new Set([composer.previewUrl, composer.posterUrl].filter((url) => String(url || '').startsWith('blob:')));
+    const urls = new Set([
+      composer.previewUrl,
+      composer.posterUrl,
+      ...(composer.items || []).flatMap((item) => [item.previewUrl, item.posterUrl])
+    ].filter((url) => String(url || '').startsWith('blob:')));
     composer.previewUrl = '';
     composer.posterUrl = '';
+    (composer.items || []).forEach((item) => {
+      item.previewUrl = '';
+      item.posterUrl = '';
+    });
     urls.forEach((url) => URL.revokeObjectURL(url));
   }
 
@@ -6399,6 +7421,7 @@
   }
 
   function applyPostVideoPoster(composer) {
+    syncPostComposerAliases(composer);
     if (!composer?.posterUrl || state.postComposer !== composer) return;
     document.querySelectorAll('#post-composer-slot [data-video-poster]').forEach((image) => {
       image.src = composer.posterUrl;
@@ -6457,61 +7480,153 @@
     }[extension] || declared;
   }
 
-  async function beginPostComposer(file = null) {
-    if (!file) {
-      openPostMediaPicker();
-      return;
-    }
+  function createPostComposerItem(file, aspect = 'original') {
     const type = postMediaType(file);
-    if (!type.startsWith('image/') && !type.startsWith('video/')) {
-      throw new Error('Choose a photo or video.');
-    }
+    if (!type.startsWith('image/') && !type.startsWith('video/')) throw new Error(`${file?.name || 'That file'} is not a supported photo or video.`);
     const isVideo = type.startsWith('video/');
     const maximum = isVideo ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES;
-    if (state.postComposer) releasePostComposerMedia(state.postComposer);
     const previewUrl = URL.createObjectURL(file);
-    const composer = {
-      stage: 1,
+    return {
       file,
       previewUrl,
       posterUrl: '',
-      uploadController: null,
       sizeError: file.size > maximum
-        ? `This ${isVideo ? 'video' : 'image'} is ${Math.ceil(file.size / 1024 / 1024)} MB. You can edit it, but choose one under ${Math.floor(maximum / 1024 / 1024)} MB to share.`
+        ? `${file.name || `This ${isVideo ? 'video' : 'image'}`} is ${Math.ceil(file.size / 1024 / 1024)} MB. Choose one under ${Math.floor(maximum / 1024 / 1024)} MB to share.`
         : '',
       name: file.name || (isVideo ? 'post.mp4' : 'post.jpg'),
       type,
       lastModified: file.lastModified || null,
       isVideo,
-      crop: { aspect: 'portrait', zoom: 1, x: 0, y: 0, rotation: 0 },
+      naturalAspect: 1,
+      altText: '',
+      crop: { aspect, aspectRatio: aspect, zoom: 1, x: 0, y: 0, rotation: 0 },
       filter: 'normal',
       activeAdjustment: 'saturation',
-      adjustments: { brightness: 100, contrast: 100, saturation: 100, warmth: 0 },
+      adjustments: { brightness: 100, contrast: 100, saturation: 100, warmth: 0 }
+    };
+  }
+
+  function readPostMediaAspect(item) {
+    return new Promise((resolve) => {
+      const media = item.isVideo ? document.createElement('video') : new Image();
+      let settled = false;
+      const timeout = setTimeout(() => finish(1), 5000);
+      const finish = (ratio) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (item.isVideo) {
+          media.pause();
+          media.removeAttribute('src');
+          media.load();
+        } else {
+          media.src = '';
+        }
+        resolve(clamp(Number(ratio) || 1, 0.25, 4));
+      };
+      const ready = () => finish(item.isVideo
+        ? Number(media.videoWidth || 1) / Number(media.videoHeight || 1)
+        : Number(media.naturalWidth || 1) / Number(media.naturalHeight || 1));
+      media.addEventListener(item.isVideo ? 'loadedmetadata' : 'load', ready, { once: true });
+      media.addEventListener('error', () => finish(1), { once: true });
+      if (item.isVideo) {
+        media.muted = true;
+        media.preload = 'metadata';
+      }
+      media.src = item.previewUrl;
+      if (item.isVideo) media.load();
+    });
+  }
+
+  async function hydratePostComposerItem(composer, item) {
+    const [naturalAspect, posterUrl] = await Promise.all([
+      readPostMediaAspect(item),
+      item.isVideo ? createVideoPoster(item.previewUrl) : Promise.resolve('')
+    ]);
+    if (state.postComposer !== composer || !composer.items.includes(item)) {
+      if (String(posterUrl || '').startsWith('blob:')) URL.revokeObjectURL(posterUrl);
+      return;
+    }
+    item.naturalAspect = naturalAspect;
+    item.posterUrl = posterUrl;
+    if (composer.aspect === 'mixed') Object.assign(item.crop, { aspect: 'mixed', aspectRatio: `mixed:${clamp(naturalAspect, 0.75, 1.91).toFixed(4)}` });
+    if (composer.items[0] === item) {
+      composer.originalAspect = naturalAspect;
+      if (composer.aspect === 'original') {
+        const aspectRatio = `original:${clamp(naturalAspect, 0.75, 1.91).toFixed(4)}`;
+        composer.items.forEach((entry) => Object.assign(entry.crop, { aspect: 'original', aspectRatio }));
+      }
+      if (composer.aspect === 'original' || composer.aspect === 'mixed') {
+        document.querySelector('#post-composer-slot .post-composer-media')?.style.setProperty('--post-aspect', String(postComposerAspectRatio(composer)));
+      }
+    }
+    syncPostComposerAliases(composer);
+    if (activePostComposerItem(composer) === item && item.isVideo) applyPostVideoPoster(composer);
+  }
+
+  async function appendPostComposerMedia(files) {
+    const composer = state.postComposer;
+    if (!composer) return beginPostComposer(files);
+    const selectedFiles = Array.from(files || []).filter(Boolean);
+    if (!selectedFiles.length) return;
+    if (composer.items.length + selectedFiles.length > 20) throw new Error('You can share up to 20 photos and videos in one post.');
+    const newItems = selectedFiles.map((file) => createPostComposerItem(file, composer.aspect || 'portrait'));
+    if (composer.aspect === 'original') {
+      const aspectRatio = `original:${clamp(Number(composer.originalAspect || 1), 0.75, 1.91).toFixed(4)}`;
+      newItems.forEach((item) => Object.assign(item.crop, { aspect: 'original', aspectRatio }));
+    }
+    composer.items.push(...newItems);
+    composer.music = null;
+    composer.activeIndex = composer.items.length - newItems.length;
+    syncPostComposerAliases(composer);
+    updatePostComposerSlot();
+    await Promise.all(newItems.map((item) => hydratePostComposerItem(composer, item)));
+  }
+
+  async function beginPostComposer(file = null) {
+    if (!file) {
+      openPostMediaPicker();
+      return;
+    }
+    const selectedFiles = Array.isArray(file) ? file.filter(Boolean) : Array.from(typeof file?.length === 'number' && !file?.name ? file : [file]).filter(Boolean);
+    if (!selectedFiles.length) return;
+    if (selectedFiles.length > 20) throw new Error('You can share up to 20 photos and videos in one post.');
+    const items = selectedFiles.map((selectedFile) => createPostComposerItem(selectedFile));
+    if (state.postComposer) releasePostComposerMedia(state.postComposer);
+    const composer = {
+      stage: 1,
+      items,
+      activeIndex: 0,
+      aspect: 'original',
+      originalAspect: 1,
+      uploadController: null,
       title: '',
       description: '',
       hashtags: '',
+      location: '',
+      music: null,
+      previewMuted: true,
       allowReposts: state.me?.allowReposts !== false,
+      allowComments: true,
+      hideLikeCounts: false,
       personTags: [],
       pendingTagPoint: null
     };
+    syncPostComposerAliases(composer);
     state.postComposer = composer;
     state.postPublishing = false;
     updatePostComposerSlot();
-    if (isVideo) {
-      const posterUrl = await createVideoPoster(previewUrl);
-      if (state.postComposer === composer) {
-        composer.posterUrl = posterUrl;
-        applyPostVideoPoster(composer);
-      } else if (String(posterUrl || '').startsWith('blob:')) {
-        URL.revokeObjectURL(posterUrl);
-      }
-    }
+    await Promise.all(items.map((item) => hydratePostComposerItem(composer, item)));
   }
 
   function closePostComposer() {
     const composer = state.postComposer;
     state.postComposer = null;
+    if (state.musicPicker?.context === 'post') state.musicPicker = null;
     state.postPublishing = false;
+    state.postCropDrag = null;
+    state.postCropGesture = null;
+    postCropPointers.clear();
     releasePostComposerMedia(composer);
     updatePostComposerSlot();
   }
@@ -6519,50 +7634,103 @@
   async function publishPost() {
     const composer = state.postComposer;
     if (!composer || state.postPublishing) return;
+    syncPostComposerAliases(composer);
     if (composer.sizeError) throw new Error(composer.sizeError);
     composer.title = document.getElementById('post-title')?.value.slice(0, 100) || composer.title;
     composer.description = document.getElementById('post-description')?.value.slice(0, 2200) || composer.description;
     composer.hashtags = document.getElementById('post-hashtags')?.value.slice(0, 300) || composer.hashtags;
+    composer.location = (document.getElementById('post-location')?.value ?? composer.location).slice(0, 100);
+    const activeItem = activePostComposerItem(composer);
+    if (activeItem) activeItem.altText = (document.getElementById('post-alt-text')?.value ?? activeItem.altText).slice(0, 500);
     composer.allowReposts = document.getElementById('post-allow-reposts')?.checked !== false;
+    composer.allowComments = document.getElementById('post-allow-comments')?.checked !== false;
+    composer.hideLikeCounts = document.getElementById('post-hide-like-counts')?.checked === true;
+    const publishItems = composer.items.map((item) => ({
+      file: item.file,
+      type: item.type,
+      crop: { ...item.crop },
+      filter: item.filter,
+      adjustments: { ...item.adjustments },
+      altText: item.altText || ''
+    }));
+    const publishDetails = {
+      title: composer.title,
+      description: composer.description,
+      hashtags: composer.hashtags,
+      location: composer.location,
+      allowReposts: composer.allowReposts,
+      allowComments: composer.allowComments,
+      hideLikeCounts: composer.hideLikeCounts,
+      personTags: composer.personTags.map(({ userId, mediaIndex, x, y }) => ({ userId, mediaIndex, x, y })),
+      music: composer.music ? {
+        catalogId: composer.music.catalogId,
+        start: Number(composer.music.start || 0),
+        clipDuration: Number(composer.music.clipDuration || 30)
+      } : null
+    };
     const controller = new AbortController();
     composer.uploadController = controller;
     setPostPublishing(true);
+    updatePostComposerSlot();
     let pendingFileId = '';
+    const pendingFileIds = [];
     try {
-      const uploaded = await uploadPostMedia(composer.file, composer.type, controller.signal);
-      pendingFileId = uploaded.file?.id || uploaded.fileId || '';
-      if (!pendingFileId) throw new Error('The video upload did not return a file ID.');
-      if (state.postComposer !== composer) throw new DOMException('Post upload cancelled.', 'AbortError');
+      for (let index = 0; index < publishItems.length; index += 1) {
+        const item = publishItems[index];
+        const button = document.querySelector('#post-composer-slot [data-action="publish-post"]');
+        if (button) button.textContent = `Uploading ${index + 1}/${publishItems.length}`;
+        const uploaded = await uploadPostMedia(item.file, item.type, controller.signal);
+        pendingFileId = uploaded.file?.id || uploaded.fileId || '';
+        if (!pendingFileId) throw new Error('A media upload did not return a file ID.');
+        pendingFileIds.push(pendingFileId);
+        if (state.postComposer !== composer) throw new DOMException('Post upload cancelled.', 'AbortError');
+      }
       const data = await api('/api/posts', {
         method: 'POST',
         signal: controller.signal,
         body: {
-          fileId: pendingFileId,
-          title: composer.title,
-          description: composer.description,
-          hashtags: composer.hashtags,
-          personTags: composer.personTags.map(({ userId, x, y }) => ({ userId, x, y })),
-          allowReposts: composer.allowReposts,
-          crop: composer.crop,
-          filter: composer.filter,
-          adjustments: composer.adjustments,
-          edits: { crop: composer.crop, filter: composer.filter, adjustments: composer.adjustments }
+          fileId: pendingFileIds[0] || pendingFileId,
+          fileIds: pendingFileIds,
+          mediaEdits: publishItems.map((item) => ({
+            crop: item.crop,
+            filter: item.filter,
+            adjustments: item.adjustments,
+            edits: { crop: item.crop, filter: item.filter, adjustments: item.adjustments }
+          })),
+          title: publishDetails.title,
+          description: publishDetails.description,
+          hashtags: publishDetails.hashtags,
+          location: publishDetails.location,
+          altTexts: publishItems.map((item) => item.altText),
+          personTags: publishDetails.personTags,
+          music: publishDetails.music,
+          allowReposts: publishDetails.allowReposts,
+          allowComments: publishDetails.allowComments,
+          hideLikeCounts: publishDetails.hideLikeCounts,
+          crop: publishItems[0].crop,
+          filter: publishItems[0].filter,
+          adjustments: publishItems[0].adjustments,
+          edits: { crop: publishItems[0].crop, filter: publishItems[0].filter, adjustments: publishItems[0].adjustments }
         }
       });
       pendingFileId = '';
+      pendingFileIds.length = 0;
       if (data.user) state.me = data.user;
       state.postComposer = null;
       state.postPublishing = false;
       releasePostComposerMedia(composer);
       updatePostComposerSlot();
-      await Promise.all([loadFeed(state.feedMode, { render: false }), loadExplore(), loadProfilePosts(state.me, 'posts', { render: false })]);
+      await Promise.all([loadFeed(state.feedMode, { render: false }), loadExplore(), loadClips(), loadProfilePosts(state.me, 'posts', { render: false })]);
       state.profileMediaTab = 'posts';
       state.tab = 'home';
       updateSidebar();
       pushToast({ key: `post-${data.post?.id || Date.now()}`, kind: 'social', title: 'Post shared', body: 'Your photo or video is now live.' });
     } catch (error) {
-      await discardPendingPostMedia(pendingFileId);
-      if (state.postComposer === composer) setPostPublishing(false);
+      await Promise.all(Array.from(new Set([...pendingFileIds, pendingFileId].filter(Boolean))).map(discardPendingPostMedia));
+      if (state.postComposer === composer) {
+        setPostPublishing(false);
+        updatePostComposerSlot();
+      }
       if (error?.name === 'AbortError') return;
       throw error;
     } finally {
@@ -6572,20 +7740,176 @@
 
   async function togglePostAction(postId, action) {
     const escapedId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
-    const button = document.querySelector(`.feed-post[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"]`);
-    if (button?.classList.contains('is-pending')) return;
-    button?.classList.add('is-pending');
+    const buttons = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"], .clip-card[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"]`));
+    if (buttons.some((button) => button.classList.contains('is-pending'))) return;
+    buttons.forEach((button) => button.classList.add('is-pending'));
     let data;
     try {
       data = await api(`/api/posts/${encodeURIComponent(postId)}/${action}`, { method: 'POST' });
     } catch (error) {
-      button?.classList.remove('is-pending');
+      buttons.forEach((button) => button.classList.remove('is-pending'));
       throw error;
     }
     replacePost(data.post);
-    syncPostEngagement(data.post, action);
+    const synced = syncPostEngagement(data.post, action);
+    if (!synced && state.tab === 'clips') {
+      renderSidebarState();
+      requestAnimationFrame(attachClipPlayback);
+    }
     if (action === 'save') await loadProfilePosts(state.me, 'saved', { render: false }).catch(() => []);
     if (action === 'repost') await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
+  }
+
+  function postShareDetails(postId) {
+    const post = postById(postId);
+    if (!post) return null;
+    const author = postAuthor(post);
+    const url = new URL(accountProfileHref(author), location.origin);
+    url.searchParams.set('post', post.id);
+    return {
+      post,
+      shareData: {
+        title: post.title || `Post by @${author?.username || 'user'}`,
+        text: String(post.description || '').slice(0, 180),
+        url: url.toString()
+      }
+    };
+  }
+
+  function sharePost(postId) {
+    const details = postShareDetails(postId);
+    if (!details) return;
+    currentAppShell()?.querySelector(`.clip-card[data-post-id="${window.CSS?.escape ? CSS.escape(postId) : postId}"] .clip-video`)?.pause?.();
+    openActionSheet({ type: 'post-share', postId, query: '', selectedTargets: [], sending: false });
+  }
+
+  async function copyTextToClipboard(value) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+    const field = document.createElement('textarea');
+    field.value = value;
+    field.setAttribute('readonly', '');
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.append(field);
+    field.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } finally { field.remove(); }
+    if (!copied) throw new Error('Copying is not available in this browser.');
+    return true;
+  }
+
+  async function copyPostLink(postId) {
+    const details = postShareDetails(postId);
+    if (!details) return;
+    await copyTextToClipboard(details.shareData.url);
+    pushToast({ key: `post-link-${details.post.id}`, kind: 'social', title: 'Link copied', body: 'The post link is ready to share.' });
+  }
+
+  async function sharePostExternally(postId) {
+    const details = postShareDetails(postId);
+    if (!details) return;
+    if (navigator.share) {
+      try {
+        await navigator.share(details.shareData);
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+      }
+    }
+    await copyPostLink(postId);
+  }
+
+  async function sendSharedPost(postId) {
+    const sheet = state.actionSheet?.type === 'post-share' && state.actionSheet.postId === postId ? state.actionSheet : null;
+    if (!sheet || sheet.sending || !sheet.selectedTargets?.length) return;
+    sheet.sending = true;
+    updateActionSheetSlot();
+    const delivered = [];
+    const failed = [];
+    await Promise.all(sheet.selectedTargets.map(async (key) => {
+      const [kind, id] = String(key).split(':');
+      const url = kind === 'group'
+        ? `/api/groups/${encodeURIComponent(id)}/messages`
+        : `/api/chats/${encodeURIComponent(id)}/messages`;
+      try {
+        const data = await api(url, { method: 'POST', body: { kind: 'post', postId } });
+        delivered.push({ key, message: data.message });
+        if ((kind === 'group' && state.activeGroup?.id === id) || (kind === 'peer' && state.activePeer?.id === id)) {
+          if (data.message) upsertMessage(data.message);
+        }
+      } catch (error) {
+        failed.push({ key, error });
+      }
+    }));
+    await refreshChatsOnly();
+    if (state.actionSheet === sheet) {
+      state.actionSheet = null;
+      state.overlayClosing = false;
+      updateActionSheetSlot();
+      if (state.clipViewer || state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
+    }
+    if (delivered.length) {
+      pushToast({ key: `post-sent-${postId}-${Date.now()}`, kind: 'social', title: 'Sent', body: `Shared to ${delivered.length} ${delivered.length === 1 ? 'chat' : 'chats'}.` });
+    }
+    if (failed.length) throw new Error(`Could not send to ${failed.length} ${failed.length === 1 ? 'chat' : 'chats'}.`);
+  }
+
+  async function loadSharedLinkPost(postId, options = {}) {
+    try {
+      const data = await api(`/api/posts/${encodeURIComponent(postId)}`);
+      const post = data.post;
+      const items = postMediaItems(post);
+      const first = items[0];
+      if (!post || !first?.media?.url) return null;
+      if (options.publicOnly) {
+        state.mediaViewer = {
+          src: first.media.url,
+          name: post.title || `Post by ${postAuthor(post)?.username || 'user'}`,
+          type: first.media.mime || (first.mediaType === 'video' ? 'video/*' : 'image/*'),
+          deepLinkPostId: post.id
+        };
+        return post;
+      }
+      state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
+      if (first.mediaType === 'video') {
+        if (items.length === 1) state.clips = [post, ...state.clips.filter((item) => item.id !== post.id)];
+        state.mediaViewer = null;
+        state.clipViewer = { postId: post.id, mediaIndex: 0, sourceTab: state.tab, sourceTime: 0 };
+        const url = new URL(location.href);
+        url.searchParams.delete('post');
+        url.searchParams.set('clip', post.id);
+        url.searchParams.set('media', '0');
+        history.replaceState(history.state, '', url.toString());
+      } else {
+        state.mediaViewer = {
+          src: first.media.url,
+          name: post.title || `Post by ${postAuthor(post)?.username || 'user'}`,
+          type: first.media.mime || 'image/*',
+          deepLinkPostId: post.id
+        };
+      }
+      return post;
+    } catch {
+      return null;
+    }
+  }
+
+  async function openSharedPost(postId) {
+    const data = await api(`/api/posts/${encodeURIComponent(postId)}`);
+    const post = data.post;
+    if (!post) throw new Error('This post is no longer available.');
+    state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
+    const first = postMediaItems(post)[0];
+    if (first?.mediaType === 'video') {
+      if (postMediaItems(post).length === 1) state.clips = [post, ...state.clips.filter((item) => item.id !== post.id)];
+      openPostClip(post.id, 0);
+      return;
+    }
+    switchMainTab('home', { animate: false });
+    setTimeout(() => document.querySelector(`.feed-post[data-post-id="${window.CSS?.escape ? CSS.escape(post.id) : post.id}"]`)?.scrollIntoView({ block: 'start' }), 0);
   }
 
   async function commentOnPost(postId, text) {
@@ -6594,6 +7918,7 @@
     const sheet = state.actionSheet?.type === 'post-comments' && state.actionSheet.postId === postId
       ? state.actionSheet
       : null;
+    const replyToCommentId = sheet?.replyToCommentId || null;
     if (sheet?.commentPosting) return;
     if (sheet) {
       sheet.commentDraft = clean;
@@ -6603,7 +7928,10 @@
     }
     let data;
     try {
-      data = await api(`/api/posts/${encodeURIComponent(postId)}/comments`, { method: 'POST', body: { text: clean } });
+      data = await api(`/api/posts/${encodeURIComponent(postId)}/comments`, {
+        method: 'POST',
+        body: { text: clean, replyTo: replyToCommentId }
+      });
     } catch (error) {
       if (sheet && state.actionSheet === sheet) {
         sheet.commentPosting = false;
@@ -6615,11 +7943,24 @@
     replacePost(data.post);
     syncPostEngagement(data.post);
     if (sheet && state.actionSheet === sheet) {
+      const expandedCommentIds = new Set(sheet.expandedCommentIds || []);
+      if (data.comment?.replyTo) {
+        const byId = new Map((data.post.comments || []).map((comment) => [comment.id, comment]));
+        let rootId = data.comment.replyTo;
+        const visited = new Set();
+        while (byId.get(rootId)?.replyTo && !visited.has(rootId)) {
+          visited.add(rootId);
+          rootId = byId.get(rootId).replyTo;
+        }
+        expandedCommentIds.add(rootId);
+      }
       state.actionSheet = {
         ...sheet,
         commentDraft: '',
         commentPosting: false,
-        newCommentId: data.comment?.id || null
+        newCommentId: data.comment?.id || null,
+        replyToCommentId: null,
+        expandedCommentIds: [...expandedCommentIds]
       };
       updateActionSheetSlot();
       requestAnimationFrame(() => {
@@ -6652,15 +7993,133 @@
     input.setSelectionRange?.(caret, caret);
   }
 
+  function togglePostCommentReplies(commentId) {
+    if (state.actionSheet?.type !== 'post-comments') return;
+    const expanded = new Set(state.actionSheet.expandedCommentIds || []);
+    if (expanded.has(commentId)) expanded.delete(commentId);
+    else expanded.add(commentId);
+    state.actionSheet.expandedCommentIds = [...expanded];
+    updatePostCommentsSheet();
+  }
+
+  function beginPostCommentReply(postId, commentId) {
+    if (state.actionSheet?.type !== 'post-comments' || state.actionSheet.postId !== postId || state.actionSheet.commentPosting) return;
+    const post = postById(postId);
+    const comment = post?.comments?.find((item) => item.id === commentId);
+    if (!comment) return;
+    state.actionSheet.replyToCommentId = comment.id;
+    state.actionSheet.commentDraft = `@${comment.user?.username || ''} `;
+    const expanded = new Set(state.actionSheet.expandedCommentIds || []);
+    const byId = new Map((post.comments || []).map((item) => [item.id, item]));
+    let rootId = comment.id;
+    const visited = new Set();
+    while (byId.get(rootId)?.replyTo && !visited.has(rootId)) {
+      visited.add(rootId);
+      rootId = byId.get(rootId).replyTo;
+    }
+    expanded.add(rootId);
+    state.actionSheet.expandedCommentIds = [...expanded];
+    updatePostCommentsSheet({ useStateDraft: true, focus: true, commentId });
+  }
+
+  function clearPostCommentReply() {
+    if (state.actionSheet?.type !== 'post-comments' || state.actionSheet.commentPosting) return;
+    const post = postById(state.actionSheet.postId);
+    const comment = post?.comments?.find((item) => item.id === state.actionSheet.replyToCommentId);
+    const currentDraft = document.getElementById('post-comment-input')?.value || state.actionSheet.commentDraft || '';
+    const prefix = comment ? `@${comment.user?.username || ''} ` : '';
+    state.actionSheet.replyToCommentId = null;
+    state.actionSheet.commentDraft = prefix && currentDraft.startsWith(prefix) ? currentDraft.slice(prefix.length) : currentDraft;
+    updatePostCommentsSheet({ useStateDraft: true, focus: true });
+  }
+
+  function updatePostCommentsSheet(options = {}) {
+    if (state.actionSheet?.type !== 'post-comments') return;
+    const list = document.querySelector('.post-comment-list');
+    const scrollTop = list?.scrollTop || 0;
+    const draft = options.useStateDraft
+      ? state.actionSheet.commentDraft || ''
+      : document.getElementById('post-comment-input')?.value ?? state.actionSheet.commentDraft ?? '';
+    state.actionSheet.commentDraft = draft;
+    state.actionSheet.refreshing = true;
+    updateActionSheetSlot();
+    state.actionSheet.refreshing = false;
+    requestAnimationFrame(() => {
+      const nextList = document.querySelector('.post-comment-list');
+      if (nextList) nextList.scrollTop = scrollTop;
+      if (options.commentId) {
+        const escapedId = window.CSS?.escape ? CSS.escape(options.commentId) : String(options.commentId).replace(/"/g, '\\"');
+        const row = document.querySelector(`.post-comment-row[data-comment-id="${escapedId}"]`);
+        row?.scrollIntoView({ block: 'nearest', behavior: options.smooth ? 'smooth' : 'auto' });
+        if (options.heart) {
+          const button = row?.querySelector('.post-comment-like');
+          button?.classList.add('heart-pop');
+          setTimeout(() => button?.classList.remove('heart-pop'), 520);
+        }
+      }
+      if (options.focus) {
+        const input = document.getElementById('post-comment-input');
+        input?.focus({ preventScroll: true });
+        input?.setSelectionRange?.(input.value.length, input.value.length);
+      }
+    });
+  }
+
+  async function mutatePostComment(postId, commentId, action) {
+    const escapedId = window.CSS?.escape ? CSS.escape(commentId) : String(commentId).replace(/"/g, '\\"');
+    const row = document.querySelector(`.post-comment-row[data-comment-id="${escapedId}"]`);
+    const control = row?.querySelector(`[data-action="${action}"]`);
+    if (control?.classList.contains('is-pending')) return;
+    control?.classList.add('is-pending');
+    let data;
+    try {
+      const endpoint = action === 'delete-post-comment'
+        ? `/api/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`
+        : `/api/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}/${action === 'toggle-post-comment-pin' ? 'pin' : 'like'}`;
+      data = await api(endpoint, { method: action === 'delete-post-comment' ? 'DELETE' : 'POST' });
+    } catch (error) {
+      control?.classList.remove('is-pending');
+      throw error;
+    }
+    replacePost(data.post);
+    syncPostEngagement(data.post);
+    if (state.actionSheet?.type === 'post-comments' && state.actionSheet.postId === postId) {
+      updatePostCommentsSheet({
+        commentId: action === 'delete-post-comment' ? null : commentId,
+        smooth: action === 'toggle-post-comment-pin',
+        heart: action === 'toggle-post-comment-like'
+      });
+    }
+  }
+
+  async function togglePostCommentLike(postId, commentId) {
+    return mutatePostComment(postId, commentId, 'toggle-post-comment-like');
+  }
+
+  async function togglePostCommentPin(postId, commentId) {
+    return mutatePostComment(postId, commentId, 'toggle-post-comment-pin');
+  }
+
+  async function deletePostComment(postId, commentId) {
+    return mutatePostComment(postId, commentId, 'delete-post-comment');
+  }
+
   async function deletePost(postId) {
     await api(`/api/posts/${encodeURIComponent(postId)}`, { method: 'DELETE' });
+    const wasViewing = state.clipViewer?.postId === postId;
     state.actionSheet = null;
     state.homeFeed = state.homeFeed.filter((post) => post.id !== postId);
     state.explorePosts = state.explorePosts.filter((post) => post.id !== postId);
+    state.clips = state.clips.filter((post) => post.id !== postId);
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, posts.filter((post) => post.id !== postId));
+    const escapedId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
+    document.querySelectorAll(`[data-post-id="${escapedId}"]`).forEach((element) => {
+      if (element.matches('.feed-post, .clip-card')) element.remove();
+    });
     await loadContactsAndChats();
     updateActionSheetSlot();
-    updateSidebar();
+    if (wasViewing) closeClipViewer();
+    else updateSidebar();
   }
 
   async function toggleFavoriteUser(userId) {
@@ -6681,6 +8140,7 @@
     state.noteComposer = {
       text: current?.text || '',
       audio: null,
+      music: current?.music ? { ...current.music } : null,
       audioTitle: current?.audioTitle || '',
       audioArtist: current?.audioArtist || '',
       hasExisting: Boolean(current)
@@ -6711,6 +8171,9 @@
       lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null,
       duration
     };
+    state.noteComposer.music = null;
+    state.noteComposer.audioTitle = String(file.name || 'Original audio').replace(/\.[^.]+$/, '').slice(0, 80) || 'Original audio';
+    state.noteComposer.audioArtist = 'Original audio';
     updateNoteComposerSlot();
   }
 
@@ -6728,6 +8191,9 @@
       const dataUrl = await blobToDataUrl(blob);
       if (state.noteComposer) {
         state.noteComposer.audio = { name: 'recorded-note.webm', type: blob.type || 'audio/webm', dataUrl, duration: Math.min(30, (Date.now() - recording.startedAt) / 1000) };
+        state.noteComposer.music = null;
+        state.noteComposer.audioTitle = 'Recorded audio';
+        state.noteComposer.audioArtist = state.me?.username || 'Original audio';
       }
       if (state.noteRecording === recording) state.noteRecording = null;
       updateNoteComposerSlot();
@@ -6747,10 +8213,25 @@
   async function shareNote() {
     if (!state.noteComposer) return;
     const text = (document.getElementById('note-text')?.value || state.noteComposer.text || '').trim().slice(0, 60);
-    const audioTitle = (document.getElementById('note-audio-title')?.value || state.noteComposer.audioTitle || '').trim().slice(0, 80);
-    const audioArtist = (document.getElementById('note-audio-artist')?.value || state.noteComposer.audioArtist || '').trim().slice(0, 80);
-    if (!text && !state.noteComposer.audio) throw new Error('Write a note or add audio first.');
-    await api('/api/me/note', { method: 'POST', body: { text, audio: state.noteComposer.audio, audioTitle, audioArtist } });
+    const audioTitle = (state.noteComposer.music?.title || state.noteComposer.audioTitle || '').trim().slice(0, 80);
+    const audioArtist = (state.noteComposer.music?.artist || state.noteComposer.audioArtist || '').trim().slice(0, 80);
+    if (!text && !state.noteComposer.audio && !state.noteComposer.music) throw new Error('Write a note or add audio first.');
+    await api('/api/me/note', {
+      method: 'POST',
+      body: {
+        text,
+        audio: state.noteComposer.audio,
+        music: state.noteComposer.music ? {
+          catalogId: state.noteComposer.music.catalogId,
+          start: Number(state.noteComposer.music.start || 0),
+          clipDuration: Number(state.noteComposer.music.clipDuration || 30)
+        } : null,
+        audioTitle,
+        audioArtist,
+        audioStart: Number(state.noteComposer.music?.start || 0),
+        audioDuration: Number(state.noteComposer.music?.clipDuration || state.noteComposer.audio?.duration || 0) || null
+      }
+    });
     state.noteComposer = null;
     updateNoteComposerSlot();
     await loadNotes({ render: true });
@@ -6765,12 +8246,30 @@
 
   function playNote(noteId) {
     const selected = document.getElementById(`note-audio-${noteId}`);
+    const note = state.notes.find((item) => item.id === noteId);
     document.querySelectorAll('.note-rail audio').forEach((audio) => {
       if (audio !== selected) audio.pause();
     });
     if (!selected) return;
-    if (selected.paused) selected.play().catch(() => {});
-    else selected.pause();
+    if (!selected.paused) {
+      selected.pause();
+      return;
+    }
+    const start = Math.max(0, Number(note?.audioStart || note?.music?.start || 0));
+    const duration = Math.max(0, Number(note?.audioDuration || note?.music?.clipDuration || 0));
+    const end = duration ? start + duration : Infinity;
+    const begin = () => {
+      if (!Number.isFinite(selected.currentTime) || selected.currentTime < start || selected.currentTime >= end) selected.currentTime = start;
+      selected.play().catch(() => {});
+    };
+    selected.ontimeupdate = () => {
+      if (selected.currentTime >= end) {
+        selected.pause();
+        selected.currentTime = start;
+      }
+    };
+    if (selected.readyState >= 1) begin();
+    else selected.addEventListener('loadedmetadata', begin, { once: true });
   }
 
   async function loadContactsAndChats() {
@@ -6798,6 +8297,223 @@
     if (state.activeGroup) state.activeGroup = state.groups.find((group) => group.id === state.activeGroup.id) || state.activeGroup;
   }
 
+  let musicSearchTimer = null;
+  let musicSearchRequestId = 0;
+  let musicCatalogPreviewAudio = null;
+  let musicPickerReturnFocus = null;
+  let musicPickerWasOpen = false;
+
+  function syncMusicPickerAccessibility() {
+    const slot = document.getElementById('music-picker-slot');
+    const open = Boolean(state.musicPicker && slot?.querySelector('.music-picker-overlay'));
+    Array.from(app.children).forEach((child) => {
+      if (child !== slot) child.inert = open;
+    });
+    if (!open && musicPickerWasOpen) {
+      const returnTarget = musicPickerReturnFocus;
+      musicPickerReturnFocus = null;
+      if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
+    }
+    musicPickerWasOpen = open;
+  }
+
+  function stopMusicCatalogPreview() {
+    if (musicCatalogPreviewAudio) {
+      musicCatalogPreviewAudio.pause();
+      musicCatalogPreviewAudio.src = '';
+      musicCatalogPreviewAudio = null;
+    }
+    document.querySelectorAll('[data-action="preview-music-track"]').forEach((button) => { button.innerHTML = icon('play'); });
+  }
+
+  async function searchMusicCatalog(query = '') {
+    const picker = state.musicPicker;
+    if (!picker) return;
+    const requestId = ++musicSearchRequestId;
+    picker.query = String(query || '').slice(0, 80);
+    picker.loading = true;
+    picker.error = '';
+    updateMusicPickerSlot();
+    try {
+      const data = await api(`/api/media/music${picker.query.trim() ? `?q=${encodeURIComponent(picker.query.trim())}` : ''}`);
+      if (state.musicPicker !== picker || requestId !== musicSearchRequestId) return;
+      picker.tracks = data.tracks || [];
+      picker.provider = data.provider || 'Openverse';
+      picker.error = '';
+    } catch (error) {
+      if (state.musicPicker !== picker || requestId !== musicSearchRequestId) return;
+      picker.tracks = [];
+      picker.error = error.message;
+    } finally {
+      if (state.musicPicker === picker && requestId === musicSearchRequestId) {
+        picker.loading = false;
+        updateMusicPickerSlot();
+        requestAnimationFrame(() => document.getElementById('music-search')?.focus({ preventScroll: true }));
+      }
+    }
+  }
+
+  function openMusicPicker(context) {
+    const current = context === 'post' ? state.postComposer?.music : state.noteComposer?.music;
+    musicPickerReturnFocus = document.activeElement;
+    state.musicPicker = {
+      context: context === 'post' ? 'post' : 'note',
+      query: '',
+      tracks: [],
+      loading: !current,
+      provider: 'Openverse',
+      selected: current ? { ...current } : null,
+      start: Number(current?.start || 0),
+      clipDuration: Number(current?.clipDuration || 30)
+    };
+    updateMusicPickerSlot();
+    requestAnimationFrame(() => {
+      const dialog = document.querySelector('.music-picker-sheet');
+      const focusTarget = dialog?.querySelector(current ? 'button:not([disabled])' : '#music-search') || dialog;
+      focusTarget?.focus?.({ preventScroll: true });
+    });
+    if (!current) searchMusicCatalog().catch((error) => alert(error.message));
+  }
+
+  function closeMusicPicker() {
+    clearTimeout(musicSearchTimer);
+    musicSearchRequestId += 1;
+    stopMusicCatalogPreview();
+    document.getElementById('music-picker-audio')?.pause?.();
+    state.musicPicker = null;
+    updateMusicPickerSlot();
+  }
+
+  function musicPickerTrack(trackId) {
+    return state.musicPicker?.tracks?.find((track) => track.catalogId === trackId) || null;
+  }
+
+  function selectMusicTrack(trackId) {
+    const picker = state.musicPicker;
+    const track = musicPickerTrack(trackId);
+    if (!picker || !track) return;
+    stopMusicCatalogPreview();
+    picker.selected = { ...track };
+    picker.start = 0;
+    picker.clipDuration = Math.min(30, Number(track.trackDuration || 30));
+    updateMusicPickerSlot();
+  }
+
+  function previewMusicTrack(trackId, button) {
+    const track = musicPickerTrack(trackId);
+    if (!track?.audioUrl) return;
+    if (musicCatalogPreviewAudio?.dataset?.trackId === trackId && !musicCatalogPreviewAudio.paused) {
+      stopMusicCatalogPreview();
+      return;
+    }
+    stopMusicCatalogPreview();
+    const audio = new Audio(track.audioUrl);
+    audio.dataset.trackId = trackId;
+    audio.preload = 'metadata';
+    const stopAt = 12;
+    audio.ontimeupdate = () => { if (audio.currentTime >= stopAt) stopMusicCatalogPreview(); };
+    audio.onended = stopMusicCatalogPreview;
+    audio.onerror = stopMusicCatalogPreview;
+    musicCatalogPreviewAudio = audio;
+    if (button) button.innerHTML = icon('pause');
+    audio.play().catch(() => stopMusicCatalogPreview());
+  }
+
+  function toggleMusicSegmentPreview() {
+    const audio = document.getElementById('music-picker-audio');
+    const button = document.querySelector('[data-action="toggle-music-segment-preview"]');
+    if (!audio) return;
+    if (!audio.paused) {
+      audio.pause();
+      if (button) {
+        button.innerHTML = icon('play');
+        button.setAttribute('aria-label', 'Play selected section');
+        button.setAttribute('aria-pressed', 'false');
+      }
+      return;
+    }
+    const start = Math.max(0, Number(audio.dataset.start || 0));
+    const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
+    if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end) audio.currentTime = start;
+    audio.ontimeupdate = () => {
+      const liveStart = Math.max(0, Number(audio.dataset.start || 0));
+      const liveEnd = Math.max(liveStart + 1, Number(audio.dataset.end || liveStart + 30));
+      if (audio.currentTime >= liveEnd) {
+        audio.pause();
+        audio.currentTime = liveStart;
+        if (button) {
+          button.innerHTML = icon('play');
+          button.setAttribute('aria-label', 'Play selected section');
+          button.setAttribute('aria-pressed', 'false');
+        }
+      }
+    };
+    audio.onended = () => {
+      if (button) {
+        button.innerHTML = icon('play');
+        button.setAttribute('aria-label', 'Play selected section');
+        button.setAttribute('aria-pressed', 'false');
+      }
+    };
+    audio.play().then(() => {
+      if (button) {
+        button.innerHTML = icon('pause');
+        button.setAttribute('aria-label', 'Pause selected section');
+        button.setAttribute('aria-pressed', 'true');
+      }
+    }).catch(() => {});
+  }
+
+  function updateMusicSegmentStart(value) {
+    if (!state.musicPicker?.selected) return;
+    const duration = Number(state.musicPicker.clipDuration || 30);
+    const maxStart = Math.max(0, Number(state.musicPicker.selected.trackDuration || 0) - duration);
+    const start = clamp(Number(value || 0), 0, maxStart);
+    state.musicPicker.start = start;
+    document.querySelectorAll('[data-music-segment-start]').forEach((input) => { input.value = String(start); });
+    const output = document.querySelector('.music-segment-slider output');
+    if (output) output.textContent = formatClipTime(start);
+    const summary = document.querySelector('.music-segment-summary strong');
+    if (summary) summary.textContent = `${formatClipTime(start)}–${formatClipTime(start + duration)}`;
+    const waveform = document.querySelector('.music-waveform-window');
+    if (waveform) waveform.style.setProperty('--music-position', String(maxStart ? start / maxStart : 0));
+    const audio = document.getElementById('music-picker-audio');
+    if (audio) {
+      audio.pause();
+      audio.dataset.start = String(start);
+      audio.dataset.end = String(start + duration);
+      try { audio.currentTime = start; } catch {}
+    }
+    const button = document.querySelector('[data-action="toggle-music-segment-preview"]');
+    if (button) {
+      button.innerHTML = icon('play');
+      button.setAttribute('aria-label', 'Play selected section');
+      button.setAttribute('aria-pressed', 'false');
+    }
+  }
+
+  function applyMusicSelection() {
+    const picker = state.musicPicker;
+    const track = picker?.selected;
+    if (!picker || !track) return;
+    const selection = {
+      ...track,
+      start: Number(picker.start || 0),
+      clipDuration: Number(picker.clipDuration || 30)
+    };
+    if (picker.context === 'post' && state.postComposer) state.postComposer.music = selection;
+    if (picker.context === 'note' && state.noteComposer) {
+      state.noteComposer.music = selection;
+      state.noteComposer.audio = null;
+      state.noteComposer.audioTitle = selection.title;
+      state.noteComposer.audioArtist = selection.artist;
+    }
+    const context = picker.context;
+    closeMusicPicker();
+    if (context === 'post') updatePostComposerSlot();
+    else updateNoteComposerSlot();
+  }
+
   async function loadGifPool(query = '') {
     state.gifLoading = true;
     try {
@@ -6809,6 +8525,40 @@
       state.pendingGifs = pending.gifs || [];
     } finally {
       state.gifLoading = false;
+    }
+  }
+
+  let chatGifSearchTimer = null;
+  let chatGifSearchRequestId = 0;
+
+  async function loadChatGifResults(query = '') {
+    const requestId = ++chatGifSearchRequestId;
+    const term = String(query || '').trim().slice(0, 80);
+    state.chatGifLoading = true;
+    state.chatGifError = '';
+    if (state.stickerPanel && state.chatTrayTab === 'gifs') updateChatFooter({ suppressFocus: true });
+    try {
+      const data = await api(`/api/media/gifs${term ? `?q=${encodeURIComponent(term)}` : ''}`);
+      if (requestId !== chatGifSearchRequestId || term !== state.chatGifQuery.trim()) return;
+      state.chatGifResults = data.gifs || [];
+      state.chatGifProvider = data.provider || 'Openverse';
+    } catch (error) {
+      if (requestId !== chatGifSearchRequestId) return;
+      state.chatGifResults = [];
+      state.chatGifProvider = '';
+      state.chatGifError = error.message || 'GIF search is temporarily unavailable.';
+    } finally {
+      if (requestId === chatGifSearchRequestId) {
+        state.chatGifLoading = false;
+        if (state.stickerPanel && state.chatTrayTab === 'gifs') {
+          updateChatFooter({ suppressFocus: true });
+          requestAnimationFrame(() => {
+            const input = document.getElementById('chat-gif-search');
+            input?.focus({ preventScroll: true });
+            input?.setSelectionRange?.(input.value.length, input.value.length);
+          });
+        }
+      }
     }
   }
 
@@ -7860,7 +9610,7 @@
       ctx.rotate((clamp(Number(editor.textRotation || 0), -180, 180) * Math.PI) / 180);
       if (editor.textEffect === 'rainbow') {
         const rainbow = ctx.createLinearGradient(-430, 0, 430, 0);
-        ['#ff304f', '#ff8a00', '#ffd166', '#4fd2c2', '#00a8ff', '#9f7cff'].forEach((color, index, colors) => rainbow.addColorStop(index / (colors.length - 1), color));
+        ['#ff304f', '#ff8a00', '#ffd166', '#2f8b83', '#285f88', '#9f7cff'].forEach((color, index, colors) => rainbow.addColorStop(index / (colors.length - 1), color));
         ctx.fillStyle = rainbow;
       }
       if (editor.textEffect === 'shimmer') {
@@ -8610,7 +10360,8 @@
       replyTo: state.replyTo?.id || null,
       file: payload.file || null,
       stickerId: payload.stickerId || null,
-      gifId: payload.gifId || null
+      gifId: payload.gifId || null,
+      gifCatalogId: payload.gifCatalogId || null
     };
     state.replyTo = null;
     const data = await api(activeMessagesUrl(), {
@@ -8833,8 +10584,8 @@
     const cachedConversation = conversationType && conversationId
       ? state.conversationCache.get(conversationCacheKey(conversationType, conversationId))
       : null;
-    state.tab = ['home', 'chats', 'search', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'home';
-    state.lastTab = ['home', 'chats', 'search', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
+    state.tab = ['home', 'chats', 'search', 'clips', 'notifications', 'profile'].includes(view?.tab) ? view.tab : 'home';
+    state.lastTab = ['home', 'chats', 'search', 'clips', 'notifications', 'profile'].includes(view?.lastTab) ? view.lastTab : state.tab;
     state.profileSocialView = view?.profileSocialView || null;
     state.activePeer = peer;
     state.activeGroup = group;
@@ -8846,6 +10597,7 @@
     state.chatProfileSocialView = view?.chatProfileSocialView || null;
     state.searchProfileOpen = Boolean(view?.searchProfileOpen && profileUsername);
     state.searchProfileSocialView = view?.searchProfileSocialView || null;
+    state.clipViewer = view?.clipViewer ? { ...view.clipViewer } : null;
     state.publicProfile = state.searchProfileOpen ? await fetchPublicProfile(profileUsername) : null;
     state.tabTransition = false;
     renderApp({ scrollSnapshot: state.searchProfileOpen ? null : returnScroll });
@@ -8925,6 +10677,7 @@
     rememberViewedProfile(user);
     if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
     if (options.pushHistory !== false) beginDetailNavigation('profile', profilePath(user.username));
+    state.clipViewer = null;
     state.lastTab = state.tab;
     state.tab = 'search';
     state.publicProfile = user;
@@ -9436,15 +11189,22 @@
   }
 
   async function sendGif(gifId) {
-    const gif = state.gifPool.find((item) => item.id === gifId);
-    if (!gif?.file?.url || !hasActiveConversation()) return;
-    await sendMessage({
-      kind: 'gif',
-      text: '',
-      gifId: gif.id
-    });
-    state.stickerPanel = false;
-    updateChatFooter();
+    const gif = [...state.gifPool, ...(state.chatGifResults || [])].find((item) => item.id === gifId);
+    if (!gif?.file?.url || !hasActiveConversation() || state.sendingGifId) return;
+    state.sendingGifId = gifId;
+    updateChatFooter({ suppressFocus: true });
+    try {
+      await sendMessage({
+        kind: 'gif',
+        text: '',
+        gifId: gif.catalogId ? null : gif.id,
+        gifCatalogId: gif.catalogId || null
+      });
+      state.stickerPanel = false;
+    } finally {
+      state.sendingGifId = null;
+      updateChatFooter();
+    }
   }
 
   async function downloadSticker(messageId) {
@@ -9618,8 +11378,12 @@
   }
 
   let overlayCloseTimer = null;
+  let actionSheetReturnFocus = null;
+  let actionSheetWasOpen = false;
   let messageFocusCloseTimer = null;
   let focusedMessageDom = null;
+  let messageFocusReturnFocus = null;
+  let messageFocusWasOpen = false;
   let activeMessagePress = null;
   let settingsCloseTimer = null;
   let storyAdvanceTimer = null;
@@ -9632,7 +11396,7 @@
     if (options.pointerId !== undefined && options.pointerId !== press.pointerId) return null;
     clearTimeout(press.timer);
     press.element?.classList.remove('message-press-pending', 'message-press-held');
-    if (options.suppressClick && press.recognized) state.suppressClickUntil = Math.max(state.suppressClickUntil, Date.now() + 360);
+    if (options.suppressClick && press.recognized) state.suppressClickUntil = Math.max(state.suppressClickUntil, Date.now() + 90);
     activeMessagePress = null;
     return press;
   }
@@ -9693,11 +11457,46 @@
     }, delay);
   }
 
+  function syncActionSheetAccessibility() {
+    const slot = document.getElementById('action-sheet-slot');
+    const open = Boolean(state.actionSheet && slot?.querySelector('.action-sheet'));
+    Array.from(app.children).forEach((child) => {
+      if (child !== slot) child.inert = open;
+    });
+    if (!open && actionSheetWasOpen) {
+      const returnTarget = actionSheetReturnFocus;
+      actionSheetReturnFocus = null;
+      if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
+    }
+    actionSheetWasOpen = open;
+  }
+
+  function syncMessageFocusAccessibility() {
+    const slot = document.getElementById('message-focus-slot');
+    const open = Boolean(state.messageFocus && slot?.querySelector('.message-focus-overlay'));
+    Array.from(app.children).forEach((child) => {
+      if (child !== slot) child.inert = open;
+    });
+    if (!open && messageFocusWasOpen) {
+      const returnTarget = messageFocusReturnFocus;
+      messageFocusReturnFocus = null;
+      if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
+    }
+    messageFocusWasOpen = open;
+  }
+
   function openActionSheet(sheet) {
     clearTimeout(overlayCloseTimer);
+    if (!state.actionSheet) actionSheetReturnFocus = document.activeElement;
     state.overlayClosing = false;
     state.actionSheet = sheet;
     updateActionSheetSlot();
+    requestAnimationFrame(() => {
+      if (state.actionSheet !== sheet) return;
+      const dialog = document.querySelector('#action-sheet-slot .action-sheet');
+      const focusTarget = dialog?.querySelector('input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || dialog;
+      focusTarget?.focus?.({ preventScroll: true });
+    });
   }
 
   function openMessageFocus(messageId) {
@@ -9708,6 +11507,7 @@
     if (!element) return;
     const sourceRect = element.getBoundingClientRect();
     clearTimeout(messageFocusCloseTimer);
+    messageFocusReturnFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : element;
     document.activeElement?.blur?.();
     state.messageFocusClosing = false;
     state.messageFocusNeedsRefresh = false;
@@ -9722,6 +11522,7 @@
     element.before(placeholder);
     host.append(element);
     element.classList.add('message-focus-original');
+    element.setAttribute('data-stop-close', '');
     element.style.transition = 'none';
     element.style.transform = '';
     focusedMessageDom = { element, placeholder };
@@ -9730,8 +11531,16 @@
     element.getBoundingClientRect();
     requestAnimationFrame(() => {
       if (focusedMessageDom?.element !== element) return;
-      element.style.transition = `transform ${navigationMotionDuration(280)}ms cubic-bezier(.2,.82,.2,1)`;
+      const forwardDuration = navigationMotionDuration(280);
+      element.style.transition = `transform ${forwardDuration}ms cubic-bezier(.2,.82,.2,1)`;
       element.style.transform = 'translate3d(0,0,0)';
+      afterVisualMotion(element, 'transitionend', forwardDuration + 50, () => {
+        if (focusedMessageDom?.element === element) {
+          const overlay = document.querySelector('.message-focus-overlay');
+          overlay?.classList.add('ready');
+          overlay?.focus?.({ preventScroll: true });
+        }
+      }, 'transform');
     });
   }
 
@@ -9743,6 +11552,7 @@
       const dom = focusedMessageDom;
       if (dom?.element) {
         dom.element.classList.remove('message-focus-original');
+        dom.element.removeAttribute('data-stop-close');
         dom.element.style.transition = '';
         dom.element.style.transform = '';
         if (dom.placeholder?.isConnected) dom.placeholder.replaceWith(dom.element);
@@ -9754,6 +11564,7 @@
       state.messageFocusNeedsRefresh = false;
       const slot = document.getElementById('message-focus-slot');
       if (slot) slot.innerHTML = '';
+      syncMessageFocusAccessibility();
       if (refresh) updateMessagesList({ scroll: 'preserve' });
       options.afterClose?.();
     };
@@ -9812,6 +11623,7 @@
       state.overlayClosing = false;
       updateActionSheetSlot();
       if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
+      if (state.clipViewer || state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
     }, 190);
   }
 
@@ -9933,7 +11745,7 @@
     const next = template.content.firstElementChild;
     if (!next) return false;
     current.replaceWith(next);
-    currentAppShell()?.classList.toggle('chat-open', hasActiveConversation());
+    currentAppShell()?.classList.toggle('chat-open', hasVisibleConversation());
     resizeComposerInput();
     applyRenderScroll(options.scroll || 'preserve', options.scrollSnapshot || null);
     setTimeout(() => {
@@ -9953,11 +11765,13 @@
     if (!next) return false;
     current.replaceWith(next);
     restorePersistentScroll();
+    initializePostCarousels(next);
+    if (state.tab === 'clips' || state.clipViewer) requestAnimationFrame(attachClipPlayback);
     return true;
   }
 
   function renderSidebarState() {
-    if (!isMobileLayout() && hasActiveConversation() && !state.searchProfileOpen && updateSidebar()) return;
+    if (!isMobileLayout() && hasVisibleConversation() && !state.searchProfileOpen && updateSidebar()) return;
     renderApp();
   }
 
@@ -9968,6 +11782,9 @@
     const input = current.querySelector('#composer-text');
     const hadFocus = document.activeElement === input;
     const selectionStart = input?.selectionStart || 0;
+    const gifInput = current.querySelector('#chat-gif-search');
+    const hadGifFocus = document.activeElement === gifInput;
+    const gifSelectionStart = gifInput?.selectionStart || 0;
     const template = document.createElement('template');
     template.innerHTML = renderChatPane().trim();
     const next = template.content.firstElementChild?.querySelector('footer');
@@ -9980,6 +11797,12 @@
         nextInput?.focus({ preventScroll: true });
         const cursor = Math.min(selectionStart, nextInput?.value.length || 0);
         nextInput?.setSelectionRange?.(cursor, cursor);
+      }
+      if (hadGifFocus) {
+        const nextGifInput = document.getElementById('chat-gif-search');
+        nextGifInput?.focus({ preventScroll: true });
+        const cursor = Math.min(gifSelectionStart, nextGifInput?.value.length || 0);
+        nextGifInput?.setSelectionRange?.(cursor, cursor);
       }
     }, { anchor: 'bottom' });
     return true;
@@ -10109,14 +11932,22 @@
       event.stopPropagation();
       return;
     }
+    const clipViewport = event.target.closest('.clip-viewport');
+    if (clipViewport && !event.target.closest('button,a,[data-action]')) {
+      clearTimeout(clipTapTimer);
+      clipTapTimer = setTimeout(() => toggleClipPlayback(clipViewport), 180);
+      return;
+    }
     const target = event.target.closest('[data-action]');
     if (!target) return;
     if (target.matches('a[data-action]') && (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)) return;
     if (target.matches('button, a[data-action]')) event.preventDefault();
     const action = target.dataset.action;
+    if (state.postPublishing && target.closest('#post-composer-slot') && action !== 'close-post-composer') return;
     if (action === 'close-overlays' && target.classList.contains('overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-note-composer' && target.classList.contains('note-composer-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-music-picker' && target.classList.contains('music-picker-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-highlight-composer' && target.classList.contains('highlight-composer-overlay') && event.target.closest('[data-stop-close]')) return;
@@ -10177,10 +12008,16 @@
         state.feedMenuOpen = false;
         await loadFeed(target.dataset.mode, { render: true });
       }
+      if (action === 'set-clip-mode') {
+        state.clipMode = target.dataset.mode === 'friends' ? 'friends' : 'for_you';
+        updateSidebar();
+        requestAnimationFrame(attachClipPlayback);
+      }
       if (action === 'open-post-create') {
         state.feedMenuOpen = false;
         openPostMediaPicker();
       }
+      if (action === 'add-post-media') openPostMediaPicker({ append: true });
       if (action === 'close-post-composer') closePostComposer();
       if (action === 'post-composer-back' && state.postComposer) {
         state.postComposer.stage = Math.max(1, state.postComposer.stage - 1);
@@ -10190,27 +12027,84 @@
         state.postComposer.stage = Math.min(3, state.postComposer.stage + 1);
         updatePostComposerSlot();
       }
+      if (action === 'select-post-media' && state.postComposer) {
+        state.postComposer.activeIndex = clamp(Number(target.dataset.mediaIndex || 0), 0, state.postComposer.items.length - 1);
+        state.postComposer.pendingTagPoint = null;
+        syncPostComposerAliases(state.postComposer);
+        updatePostComposerSlot();
+      }
+      if (action === 'remove-post-media' && state.postComposer?.items?.length > 1) {
+        const index = clamp(Number(target.dataset.mediaIndex || 0), 0, state.postComposer.items.length - 1);
+        const [removed] = state.postComposer.items.splice(index, 1);
+        [removed?.previewUrl, removed?.posterUrl].filter((url) => String(url || '').startsWith('blob:')).forEach((url) => URL.revokeObjectURL(url));
+        state.postComposer.personTags = state.postComposer.personTags
+          .filter((tag) => Number(tag.mediaIndex || 0) !== index)
+          .map((tag) => Number(tag.mediaIndex || 0) > index ? { ...tag, mediaIndex: Number(tag.mediaIndex || 0) - 1 } : tag);
+        state.postComposer.pendingTagPoint = null;
+        state.postComposer.activeIndex = clamp(state.postComposer.activeIndex - (index <= state.postComposer.activeIndex ? 1 : 0), 0, state.postComposer.items.length - 1);
+        syncPostComposerAspectFromOrder(state.postComposer);
+        updatePostComposerSlot();
+      }
+      if ((action === 'move-post-media-previous' || action === 'move-post-media-next') && state.postComposer?.items?.length > 1) {
+        const from = clamp(Number(target.dataset.mediaIndex || 0), 0, state.postComposer.items.length - 1);
+        const to = clamp(from + (action.endsWith('previous') ? -1 : 1), 0, state.postComposer.items.length - 1);
+        if (from !== to) {
+          const [item] = state.postComposer.items.splice(from, 1);
+          state.postComposer.items.splice(to, 0, item);
+          state.postComposer.personTags = state.postComposer.personTags.map((tag) => {
+            const mediaIndex = Number(tag.mediaIndex || 0);
+            if (mediaIndex === from) return { ...tag, mediaIndex: to };
+            if (from < to && mediaIndex > from && mediaIndex <= to) return { ...tag, mediaIndex: mediaIndex - 1 };
+            if (from > to && mediaIndex >= to && mediaIndex < from) return { ...tag, mediaIndex: mediaIndex + 1 };
+            return tag;
+          });
+          state.postComposer.pendingTagPoint = null;
+          state.postComposer.activeIndex = to;
+          syncPostComposerAspectFromOrder(state.postComposer);
+          updatePostComposerSlot();
+        }
+      }
       if (action === 'set-post-aspect' && state.postComposer) {
-        state.postComposer.crop.aspect = target.dataset.aspect || 'portrait';
+        const aspect = target.dataset.aspect || 'portrait';
+        state.postComposer.aspect = aspect;
+        state.postComposer.items.forEach((item) => {
+          const ratio = aspect === 'original'
+            ? `original:${clamp(Number(state.postComposer.items[0]?.naturalAspect || 1), 0.75, 1.91).toFixed(4)}`
+            : aspect === 'mixed'
+              ? `mixed:${clamp(Number(item.naturalAspect || 1), 0.75, 1.91).toFixed(4)}`
+              : aspect;
+          Object.assign(item.crop, { aspect, aspectRatio: ratio });
+        });
+        syncPostComposerAliases(state.postComposer);
         target.parentElement?.querySelectorAll('[data-action="set-post-aspect"]').forEach((button) => button.classList.toggle('active', button === target));
         const frame = document.querySelector('#post-composer-slot .post-composer-media');
         if (frame) {
           Array.from(frame.classList).filter((name) => name.startsWith('aspect-')).forEach((name) => frame.classList.remove(name));
           frame.classList.add(`aspect-${state.postComposer.crop.aspect}`);
+          frame.style.setProperty('--post-aspect', String(postComposerAspectRatio(state.postComposer)));
         }
       }
       if (action === 'rotate-post-media' && state.postComposer) {
         state.postComposer.crop.rotation = (Number(state.postComposer.crop.rotation || 0) + 90) % 360;
         updatePostComposerMediaStyle();
       }
+      if (action === 'reset-post-crop' && state.postComposer) {
+        Object.assign(state.postComposer.crop, { zoom: 1, x: 0, y: 0, rotation: 0 });
+        updatePostComposerMediaStyle();
+        syncPostCropControls();
+      }
       if (action === 'set-post-filter' && state.postComposer) {
         state.postComposer.filter = target.dataset.filter || 'normal';
+        const item = activePostComposerItem(state.postComposer);
+        if (item) item.filter = state.postComposer.filter;
         target.parentElement?.querySelectorAll('[data-action="set-post-filter"]').forEach((button) => button.classList.toggle('active', button === target));
         updatePostComposerMediaStyle();
       }
       if (action === 'select-post-adjustment' && state.postComposer) {
         const adjustment = target.dataset.adjustment || 'saturation';
         state.postComposer.activeAdjustment = adjustment;
+        const item = activePostComposerItem(state.postComposer);
+        if (item) item.activeAdjustment = adjustment;
         target.parentElement?.querySelectorAll('[data-action="select-post-adjustment"]').forEach((button) => button.classList.toggle('active', button === target));
         const slider = document.querySelector('#post-composer-slot .post-adjust-slider');
         const input = slider?.querySelector('input');
@@ -10228,7 +12122,9 @@
       if (action === 'pick-post-tag-position' && state.postComposer?.stage === 3) {
         if (event.target.closest('.post-tag-draft')) return;
         const rect = target.getBoundingClientRect();
+        if (state.postComposer.isVideo && event.clientY >= rect.bottom - 54) return;
         state.postComposer.pendingTagPoint = {
+          mediaIndex: Number(state.postComposer.activeIndex || 0),
           x: Math.round(clamp(((event.clientX - rect.left) / rect.width) * 100, 2, 98) * 10) / 10,
           y: Math.round(clamp(((event.clientY - rect.top) / rect.height) * 100, 2, 98) * 10) / 10
         };
@@ -10249,25 +12145,94 @@
         }
         if (!tagged) throw new Error('That username was not found.');
         state.postComposer.personTags = [
-          ...state.postComposer.personTags.filter((tag) => tag.userId !== tagged.id),
+          ...state.postComposer.personTags.filter((tag) => tag.userId !== tagged.id || Number(tag.mediaIndex || 0) !== Number(state.postComposer.pendingTagPoint.mediaIndex || 0)),
           { userId: tagged.id, username: tagged.username, ...state.postComposer.pendingTagPoint }
         ];
         state.postComposer.pendingTagPoint = null;
         updatePostComposerSlot();
       }
       if (action === 'publish-post') await publishPost();
+      if (action === 'toggle-post-preview-play') {
+        const video = target.closest('.post-composer-media')?.querySelector('video');
+        if (video) {
+          if (video.paused) await video.play().catch(() => {});
+          else video.pause();
+          syncPostPreviewUi(video);
+        }
+      }
+      if (action === 'toggle-post-preview-sound' && state.postComposer) {
+        state.postComposer.previewMuted = !state.postComposer.previewMuted;
+        const video = target.closest('.post-composer-media')?.querySelector('video');
+        const music = video?.closest('.post-composer-media')?.querySelector('.post-preview-music');
+        if (video) video.muted = Boolean(music) || state.postComposer.previewMuted;
+        if (music) {
+          music.muted = state.postComposer.previewMuted;
+          syncPostPreviewMusic(video);
+        }
+        target.innerHTML = icon(state.postComposer.previewMuted ? 'mute' : 'volume');
+        target.setAttribute('aria-label', state.postComposer.previewMuted ? 'Turn preview sound on' : 'Mute preview');
+        target.setAttribute('aria-pressed', state.postComposer.previewMuted ? 'false' : 'true');
+      }
+      if (action === 'open-post-music') openMusicPicker('post');
+      if (action === 'remove-post-music' && state.postComposer) {
+        state.postComposer.music = null;
+        updatePostComposerSlot();
+      }
+      if (action === 'open-home-video') openPostClip(target.dataset.postId, Number(target.dataset.mediaIndex || 0), target);
+      if (action === 'toggle-home-video-sound') toggleHomeVideoSound(target);
+      if (action === 'close-clip-viewer') closeClipViewer();
+      if (action === 'toggle-clip-sound') toggleClipSound();
+      if (action === 'post-carousel-previous') movePostCarousel(target.dataset.postId, -1);
+      if (action === 'post-carousel-next') movePostCarousel(target.dataset.postId, 1);
       if (action === 'toggle-post-like') await togglePostAction(target.dataset.postId, 'like');
       if (action === 'toggle-post-save') await togglePostAction(target.dataset.postId, 'save');
       if (action === 'toggle-post-repost') await togglePostAction(target.dataset.postId, 'repost');
+      if (action === 'share-post') await sharePost(target.dataset.postId);
+      if (action === 'copy-post-link') await copyPostLink(target.dataset.postId);
+      if (action === 'share-post-external') await sharePostExternally(target.dataset.postId);
+      if (action === 'toggle-post-share-target' && state.actionSheet?.type === 'post-share') {
+        const selected = new Set(state.actionSheet.selectedTargets || []);
+        if (selected.has(target.dataset.targetKey)) selected.delete(target.dataset.targetKey);
+        else selected.add(target.dataset.targetKey);
+        state.actionSheet.selectedTargets = [...selected];
+        updateActionSheetSlot();
+      }
+      if (action === 'send-shared-post') await sendSharedPost(target.dataset.postId);
+      if (action === 'open-shared-post') await openSharedPost(target.dataset.postId);
       if (action === 'expand-post') {
         state.expandedPosts.add(target.dataset.postId);
         updateSidebar();
       }
       if (action === 'open-post-comments') {
-        openActionSheet({ type: 'post-comments', postId: target.dataset.postId, commentDraft: '', commentPosting: false });
+        openActionSheet({
+          type: 'post-comments',
+          postId: target.dataset.postId,
+          commentDraft: '',
+          commentPosting: false,
+          replyToCommentId: null,
+          expandedCommentIds: []
+        });
       }
       if (action === 'add-post-comment-emoji') {
         addPostCommentEmoji(target.dataset.emoji || '', target);
+      }
+      if (action === 'toggle-post-comment-like') {
+        await togglePostCommentLike(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'toggle-post-comment-pin') {
+        await togglePostCommentPin(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'delete-post-comment') {
+        if (confirm('Delete this comment?')) await deletePostComment(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'reply-post-comment') {
+        beginPostCommentReply(target.dataset.postId, target.dataset.commentId);
+      }
+      if (action === 'clear-post-comment-reply') {
+        clearPostCommentReply();
+      }
+      if (action === 'toggle-post-comment-replies') {
+        togglePostCommentReplies(target.dataset.commentId);
       }
       if (action === 'open-explore-post' || action === 'open-profile-post') {
         const post = postById(target.dataset.postId);
@@ -10278,6 +12243,7 @@
         }
       }
       if (action === 'post-owner-menu') openActionSheet({ type: 'post-owner', postId: target.dataset.postId });
+      if (action === 'post-options') openActionSheet({ type: 'post-options', postId: target.dataset.postId });
       if (action === 'delete-post') {
         if (confirm('Delete this post forever?')) await deletePost(target.dataset.postId);
       }
@@ -10317,11 +12283,62 @@
         updateNoteComposerSlot();
       }
       if (action === 'choose-note-audio') document.getElementById('note-audio-input')?.click();
+      if (action === 'open-note-music') openMusicPicker('note');
+      if (action === 'remove-note-music' && state.noteComposer) {
+        state.noteComposer.music = null;
+        updateNoteComposerSlot();
+      }
+      if (action === 'toggle-note-local-preview') {
+        const audio = document.getElementById('note-composer-audio');
+        if (!audio) return;
+        if (audio.paused) await audio.play().catch(() => {});
+        else audio.pause();
+        target.innerHTML = icon(audio.paused ? 'play' : 'pause');
+        target.setAttribute('aria-label', audio.paused ? 'Play original audio' : 'Pause original audio');
+        target.setAttribute('aria-pressed', audio.paused ? 'false' : 'true');
+        audio.onended = () => {
+          target.innerHTML = icon('play');
+          target.setAttribute('aria-label', 'Play original audio');
+          target.setAttribute('aria-pressed', 'false');
+        };
+      }
+      if (action === 'remove-note-audio' && state.noteComposer) {
+        state.noteComposer.audio = null;
+        state.noteComposer.audioTitle = '';
+        state.noteComposer.audioArtist = '';
+        updateNoteComposerSlot();
+      }
       if (action === 'start-note-recording') await startNoteRecording();
       if (action === 'stop-note-recording') stopNoteRecording();
       if (action === 'share-note') await shareNote();
       if (action === 'delete-note') await deleteNote();
       if (action === 'play-note') playNote(target.dataset.noteId);
+      if (action === 'close-music-picker') closeMusicPicker();
+      if (action === 'music-picker-back' && state.musicPicker) {
+        document.getElementById('music-picker-audio')?.pause?.();
+        state.musicPicker.selected = null;
+        updateMusicPickerSlot();
+        if (!state.musicPicker.tracks?.length) await searchMusicCatalog(state.musicPicker.query);
+      }
+      if (action === 'select-music-track') selectMusicTrack(target.dataset.trackId);
+      if (action === 'preview-music-track') previewMusicTrack(target.dataset.trackId, target);
+      if (action === 'toggle-music-segment-preview') toggleMusicSegmentPreview();
+      if (action === 'set-music-duration' && state.musicPicker?.selected) {
+        state.musicPicker.clipDuration = Math.min(Number(target.dataset.duration || 30), Number(state.musicPicker.selected.trackDuration || 30));
+        state.musicPicker.start = Math.min(Number(state.musicPicker.start || 0), Math.max(0, Number(state.musicPicker.selected.trackDuration || 0) - state.musicPicker.clipDuration));
+        updateMusicPickerSlot();
+      }
+      if (action === 'apply-music-selection') applyMusicSelection();
+      if (action === 'music-category' && state.musicPicker) {
+        state.musicPicker.query = target.dataset.query || '';
+        await searchMusicCatalog(state.musicPicker.query);
+      }
+      if (action === 'retry-music-search' && state.musicPicker) await searchMusicCatalog(state.musicPicker.query);
+      if (action === 'clear-music-search' && state.musicPicker) {
+        state.musicPicker.query = '';
+        await searchMusicCatalog('');
+      }
+      if (action === 'retry-chat-gif-search') await loadChatGifResults(state.chatGifQuery);
       if (action === 'open-chat') {
         if (state.longPressTriggered) {
           state.longPressTriggered = false;
@@ -10456,7 +12473,7 @@
       }
       if (action === 'set-chat-tray') {
         state.chatTrayTab = target.dataset.tray === 'gifs' ? 'gifs' : 'stickers';
-        if (state.chatTrayTab === 'gifs') await loadGifPool();
+        if (state.chatTrayTab === 'gifs') await Promise.all([loadGifPool(), loadChatGifResults(state.chatGifQuery)]);
         document.activeElement?.blur?.();
         updateChatFooter({ suppressFocus: true });
       }
@@ -10603,6 +12620,11 @@
         updateMediaViewerSlot();
       }
       if (action === 'close-media') {
+        if (state.mediaViewer?.deepLinkPostId) {
+          const url = new URL(location.href);
+          url.searchParams.delete('post');
+          history.replaceState(history.state, '', url.toString());
+        }
         state.mediaViewer = null;
         updateMediaViewerSlot();
       }
@@ -11107,6 +13129,11 @@
           updateActionSheetSlot();
           updateStoryViewerView();
         }
+        if (state.actionSheet?.type === 'post-options') {
+          state.actionSheet = null;
+          state.overlayClosing = false;
+          updateActionSheetSlot();
+        }
         await openSearchProfile(target.dataset.username);
       }
       if (action === 'close-search-profile') {
@@ -11157,7 +13184,7 @@
         closeOverlays();
       }
       if (action === 'copy-profile-link') {
-        await navigator.clipboard.writeText(target.dataset.link);
+        await copyTextToClipboard(target.dataset.link);
         target.textContent = 'Copied';
       }
       if (action === 'show-profile-link') {
@@ -11469,13 +13496,18 @@
         if (file) await beginAvatarCrop(file);
       }
       if (event.target.id === 'post-input') {
-        const file = event.target.files[0];
+        const files = Array.from(event.target.files || []);
+        const file = files[0];
         event.target.value = '';
-        if (file) {
+        if (files.length) {
           try {
-            await beginPostComposer(file);
+            if (postMediaPickerMode === 'append' && state.postComposer) await appendPostComposerMedia(files);
+            else if (files.length === 1) await beginPostComposer(file);
+            else await beginPostComposer(files);
           } catch (error) {
             showPostSelectionError(error);
+          } finally {
+            postMediaPickerMode = 'replace';
           }
         }
         return;
@@ -11520,6 +13552,41 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.matches('[data-post-preview-progress]')) {
+      const video = event.target.closest('.post-composer-media')?.querySelector('video');
+      if (video && Number.isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = clamp(Number(event.target.value || 0) / 1000, 0, 1) * video.duration;
+        syncPostPreviewUi(video);
+        syncPostPreviewMusic(video);
+      }
+      return;
+    }
+    if (event.target.id === 'music-search' && state.musicPicker) {
+      state.musicPicker.query = event.target.value.slice(0, 80);
+      const clear = event.target.closest('.music-search-field')?.querySelector('[data-action="clear-music-search"]');
+      if (clear) clear.hidden = !state.musicPicker.query;
+      clearTimeout(musicSearchTimer);
+      musicSearchTimer = setTimeout(() => {
+        searchMusicCatalog(state.musicPicker?.query || '').catch(() => {});
+      }, 300);
+      return;
+    }
+    if (event.target.matches('[data-music-segment-start]') && state.musicPicker?.selected) {
+      updateMusicSegmentStart(event.target.value);
+      return;
+    }
+    if (event.target.id === 'post-share-search' && state.actionSheet?.type === 'post-share') {
+      state.actionSheet.query = event.target.value.slice(0, 80);
+      const term = state.actionSheet.query.trim().toLowerCase();
+      let visible = 0;
+      document.querySelectorAll('.post-share-person').forEach((button) => {
+        button.hidden = Boolean(term && !String(button.dataset.shareSearch || '').includes(term));
+        if (!button.hidden) visible += 1;
+      });
+      const empty = document.querySelector('.post-share-empty');
+      if (empty) empty.hidden = visible > 0;
+      return;
+    }
     if (event.target.matches('[data-post-crop]') && state.postComposer) {
       const key = event.target.dataset.postCrop;
       state.postComposer.crop[key] = Number(event.target.value);
@@ -11546,8 +13613,25 @@
       state.postComposer.hashtags = event.target.value.slice(0, 300);
       return;
     }
+    if (event.target.id === 'post-location' && state.postComposer) {
+      state.postComposer.location = event.target.value.slice(0, 100);
+      return;
+    }
+    if (event.target.id === 'post-alt-text' && state.postComposer) {
+      const item = activePostComposerItem(state.postComposer);
+      if (item) item.altText = event.target.value.slice(0, 500);
+      return;
+    }
     if (event.target.id === 'post-allow-reposts' && state.postComposer) {
       state.postComposer.allowReposts = event.target.checked;
+      return;
+    }
+    if (event.target.id === 'post-allow-comments' && state.postComposer) {
+      state.postComposer.allowComments = event.target.checked;
+      return;
+    }
+    if (event.target.id === 'post-hide-like-counts' && state.postComposer) {
+      state.postComposer.hideLikeCounts = event.target.checked;
       return;
     }
     if (event.target.id === 'note-text' && state.noteComposer) {
@@ -11557,15 +13641,7 @@
       const preview = document.querySelector('.note-composer-preview > span');
       if (preview) preview.textContent = state.noteComposer.text || 'Share a thought…';
       const share = document.querySelector('.note-share');
-      if (share) share.disabled = !state.noteComposer.text.trim() && !state.noteComposer.audio;
-      return;
-    }
-    if (event.target.id === 'note-audio-title' && state.noteComposer) {
-      state.noteComposer.audioTitle = event.target.value.slice(0, 80);
-      return;
-    }
-    if (event.target.id === 'note-audio-artist' && state.noteComposer) {
-      state.noteComposer.audioArtist = event.target.value.slice(0, 80);
+      if (share) share.disabled = !state.noteComposer.text.trim() && !state.noteComposer.audio && !state.noteComposer.music;
       return;
     }
     if (event.target.id === 'group-name-input' && state.groupComposer) {
@@ -11645,6 +13721,10 @@
       });
       const empty = document.querySelector('.chat-gif-empty');
       if (empty) empty.hidden = visible > 0;
+      clearTimeout(chatGifSearchTimer);
+      chatGifSearchTimer = setTimeout(() => {
+        loadChatGifResults(state.chatGifQuery).catch(() => {});
+      }, 280);
       return;
     }
     if (event.target.dataset.storyAdjust && state.storyEditor) {
@@ -11873,13 +13953,131 @@
   });
 
   document.addEventListener('scroll', (event) => {
+    if (event.target?.matches?.('.post-carousel-track')) {
+      if (event.target._carouselFrame) cancelAnimationFrame(event.target._carouselFrame);
+      event.target._carouselFrame = requestAnimationFrame(() => {
+        event.target._carouselFrame = 0;
+        syncPostCarousel(event.target);
+      });
+      return;
+    }
     if (event.target?.id === 'messages') {
       if (state.chatLoading || chatScrollSettleCleanup || event.target.classList.contains('chat-settling')) return;
       if (event.target.scrollTop < 80) loadOlderMessages().catch((error) => alert(error.message));
     }
   }, true);
 
+  document.addEventListener('dblclick', (event) => {
+    const clipViewport = event.target.closest('.clip-viewport');
+    const clipCard = clipViewport?.closest('.clip-card');
+    if (clipViewport && clipCard && !event.target.closest('button,a,[data-action]')) {
+      event.preventDefault();
+      clearTimeout(clipTapTimer);
+      const burst = clipCard.querySelector('.clip-like-burst');
+      burst?.classList.remove('show');
+      void burst?.offsetWidth;
+      burst?.classList.add('show');
+      setTimeout(() => burst?.classList.remove('show'), 720);
+      const post = postById(clipCard.dataset.postId);
+      if (post && !post.likedByMe) togglePostAction(post.id, 'like').catch((error) => alert(error.message));
+      return;
+    }
+    const media = event.target.closest('.feed-post .post-carousel-slide img, .feed-post > .post-media-frame img');
+    const card = media?.closest('.feed-post');
+    if (!media || !card) return;
+    event.preventDefault();
+    const post = postById(card.dataset.postId);
+    const frame = media.closest('.post-media-frame');
+    const burst = document.createElement('span');
+    burst.className = 'post-like-burst';
+    burst.innerHTML = icon('heart');
+    frame?.append(burst);
+    setTimeout(() => burst.remove(), 760);
+    if (!post?.likedByMe) togglePostAction(card.dataset.postId, 'like').catch((error) => alert(error.message));
+  });
+
   document.addEventListener('keydown', async (event) => {
+    if (state.musicPicker && event.key === 'Tab') {
+      const dialog = document.querySelector('#music-picker-slot .music-picker-sheet');
+      const focusable = Array.from(dialog?.querySelectorAll('input:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+        .filter((element) => !element.hidden && element.getClientRects().length);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === first)) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+    }
+    if (state.messageFocus && event.key === 'Tab') {
+      const dialog = document.querySelector('#message-focus-slot .message-focus-overlay');
+      const focusable = Array.from(dialog?.querySelectorAll('button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+        .filter((element) => !element.hidden && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === first)) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+    }
+    if (state.actionSheet && event.key === 'Tab') {
+      const dialog = document.querySelector('#action-sheet-slot .action-sheet');
+      const focusable = Array.from(dialog?.querySelectorAll('input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+        .filter((element) => !element.hidden && element.getClientRects().length);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === first)) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+    }
+    if (event.target.matches('.post-video-preview[data-action="open-home-video"]') && ['Enter', ' '].includes(event.key)) {
+      event.preventDefault();
+      openPostClip(event.target.dataset.postId, Number(event.target.dataset.mediaIndex || 0), event.target);
+      return;
+    }
+    if (event.target.matches('.clip-video') && ['Enter', ' '].includes(event.key)) {
+      event.preventDefault();
+      toggleClipPlayback(event.target);
+      return;
+    }
+    if (event.key === 'Escape' && state.musicPicker) {
+      event.preventDefault();
+      closeMusicPicker();
+      return;
+    }
     if (event.key === 'Escape' && state.postComposer) {
       event.preventDefault();
       closePostComposer();
@@ -11996,7 +14194,7 @@
       state.edgeSwipe = null;
       return;
     }
-    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture ||
+    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture || state.musicPicker ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer ||
       state.postComposer || state.noteComposer || state.noteRecording;
     const backEntry = state.navigationStack[state.navigationStack.length - 1];
@@ -12005,8 +14203,9 @@
     // inside it prevents the native history swipe from cancelling our preview.
     const appSwipeStartsAt = 16;
     const isAppBackSwipe = event.clientX >= appSwipeStartsAt && event.clientX < appSwipeStartsAt + 32;
+    const isClipViewerBackSwipe = Boolean(state.clipViewer && event.target.closest('.clip-viewport, .clip-card'));
     if (state.me && isMobileLayout() && backEntry && !state.navigationBusy && !gestureBlocked &&
-      !hasActiveConversation() && isAppBackSwipe && !gestureControl) {
+      (!hasActiveConversation() || state.clipViewer) && (isAppBackSwipe || isClipViewerBackSwipe) && !gestureControl) {
       const surface = currentAppShell();
       cancelForwardNavigationAnimation(surface);
       state.edgeSwipe = {
@@ -12023,7 +14222,7 @@
         liveScroll: captureLiveScroll(surface)
       };
     }
-    if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !hasActiveConversation() &&
+    if (state.me && isMobileLayout() && !gestureBlocked && !state.edgeSwipe && !state.clipViewer && !hasActiveConversation() &&
       !state.searchProfileOpen && !state.profileSocialView && state.tab !== 'notifications' &&
       event.target.closest('.side-content') && !event.target.closest('input,textarea,[contenteditable="true"]')) {
       state.tabSwipe = {
@@ -12033,6 +14232,41 @@
       };
     }
     if (state.edgeSwipe) return;
+
+    const postCropSurface = event.target.closest('[data-post-crop-surface]');
+    if (state.postComposer?.stage === 1 && postCropSurface && !event.target.closest('button,input,a')) {
+      const rect = postCropSurface.getBoundingClientRect();
+      if (state.postComposer.isVideo && event.clientY >= rect.bottom - 54) return;
+      event.preventDefault();
+      state.edgeSwipe = null;
+      state.tabSwipe = null;
+      const crop = state.postComposer.crop;
+      postCropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      capturePointer(postCropSurface, event.pointerId);
+      if (postCropPointers.size >= 2) {
+        const entries = Array.from(postCropPointers.entries()).slice(0, 2);
+        const points = entries.map(([, point]) => point);
+        state.postCropDrag = null;
+        state.postCropGesture = {
+          pointerIds: entries.map(([pointerId]) => pointerId),
+          distance: Math.max(1, pointerDistance(points[0], points[1])),
+          zoom: Number(crop.zoom || 1),
+          rect
+        };
+        state.postCropGesture.pointerIds.forEach((pointerId) => capturePointer(postCropSurface, pointerId));
+      } else {
+        state.postCropGesture = null;
+        state.postCropDrag = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          x: Number(crop.x || 0),
+          y: Number(crop.y || 0),
+          rect
+        };
+      }
+      return;
+    }
 
     const storySticker = event.target.closest('[data-action="story-sticker-drag"]');
     if (state.storyEditor && storySticker) {
@@ -12295,6 +14529,26 @@
       updateStoryVideoFromPointer(state.storyVideoTrimDrag, event.clientX);
       return;
     }
+    if (state.postComposer && postCropPointers.has(event.pointerId)) {
+      event.preventDefault();
+      postCropPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const crop = state.postComposer.crop;
+      if (state.postCropGesture && postCropPointers.size >= 2) {
+        const points = state.postCropGesture.pointerIds.map((pointerId) => postCropPointers.get(pointerId)).filter(Boolean);
+        if (points.length >= 2) {
+          const zoom = clamp(state.postCropGesture.zoom * (pointerDistance(points[0], points[1]) / state.postCropGesture.distance), 1, 3);
+          Object.assign(crop, { zoom });
+        }
+      } else if (state.postCropDrag?.pointerId === event.pointerId) {
+        const drag = state.postCropDrag;
+        const x = clamp(drag.x - ((event.clientX - drag.startX) / Math.max(1, drag.rect.width)) * 200, -100, 100);
+        const y = clamp(drag.y - ((event.clientY - drag.startY) / Math.max(1, drag.rect.height)) * 200, -100, 100);
+        Object.assign(crop, { x, y });
+      }
+      updatePostComposerMediaStyle();
+      syncPostCropControls();
+      return;
+    }
     if (state.storyEditor && storyStickerPointers.has(event.pointerId)) {
       const pointer = storyStickerPointers.get(event.pointerId);
       storyStickerPointers.set(event.pointerId, { ...pointer, x: event.clientX, y: event.clientY });
@@ -12546,6 +14800,29 @@
       state.edgeSwipe = null;
       return;
     }
+    if (postCropPointers.has(event.pointerId)) {
+      postCropPointers.delete(event.pointerId);
+      state.postCropDrag = null;
+      state.postCropGesture = null;
+      if (postCropPointers.size) {
+        const [pointerId, point] = postCropPointers.entries().next().value;
+        const surface = document.querySelector('#post-composer-slot [data-post-crop-surface]');
+        const rect = surface?.getBoundingClientRect();
+        if (rect && state.postComposer) {
+          state.postCropDrag = {
+            pointerId,
+            startX: point.x,
+            startY: point.y,
+            x: Number(state.postComposer.crop.x || 0),
+            y: Number(state.postComposer.crop.y || 0),
+            rect
+          };
+        }
+      }
+      state.edgeSwipe = null;
+      state.tabSwipe = null;
+      return;
+    }
     if (storyStickerPointers.has(event.pointerId)) {
       const trash = document.getElementById('story-object-trash');
       const removeSticker = Boolean(trash?.classList.contains('active'));
@@ -12764,10 +15041,13 @@
     state.storyStickerGesture = null;
     state.storyDraw = null;
     state.storyVideoTrimDrag = null;
+    state.postCropDrag = null;
+    state.postCropGesture = null;
     storyTextPointers.clear();
     storyMediaPointers.clear();
     storyStickerPointers.clear();
     cropPointers.clear();
+    postCropPointers.clear();
     document.getElementById('story-object-trash')?.classList.remove('visible', 'active');
     state.edgeSwipe = null;
     state.tabSwipe = null;
@@ -12777,11 +15057,19 @@
 
   ['gesturestart', 'gesturechange', 'gestureend'].forEach((eventName) => {
     document.addEventListener(eventName, (event) => {
-      if (state.storyEditor && event.target.closest?.('.story-editor-preview')) event.preventDefault();
+      if ((state.storyEditor && event.target.closest?.('.story-editor-preview')) || (state.postComposer && event.target.closest?.('[data-post-crop-surface]'))) event.preventDefault();
     }, { passive: false });
   });
 
   document.addEventListener('wheel', (event) => {
+    if (state.postComposer?.stage === 1 && !state.postComposer.isVideo && event.target.closest('[data-post-crop-surface]')) {
+      event.preventDefault();
+      const zoom = clamp(Number(state.postComposer.crop.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
+      Object.assign(state.postComposer.crop, { zoom });
+      updatePostComposerMediaStyle();
+      syncPostCropControls();
+      return;
+    }
     if (state.avatarCrop && event.target.closest('#crop-stage')) {
       event.preventDefault();
       state.avatarCrop.zoom = clamp((state.avatarCrop.zoom || 1) + (event.deltaY < 0 ? 0.08 : -0.08), 1, 3);
@@ -12856,6 +15144,11 @@
       const username = publicUsernameFromPath();
       if (username) {
         await openSearchProfile(username, { pushHistory: false });
+        const sharedPostId = sharedPostIdFromLocation();
+        if (sharedPostId) {
+          await loadSharedLinkPost(sharedPostId);
+          renderApp();
+        }
         return;
       }
       state.searchProfileOpen = false;

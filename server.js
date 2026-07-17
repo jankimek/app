@@ -4,6 +4,8 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -22,6 +24,16 @@ const DISPLAY_NAME_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 const NOTE_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const EMAIL_VERIFICATION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const GOOGLE_WEATHER_API_KEY = String(process.env.GOOGLE_WEATHER_API_KEY || '').trim();
+const OPENVERSE_API_BASE = String(process.env.OPENVERSE_API_BASE || 'https://api.openverse.org').trim().replace(/\/+$/, '');
+const OPENVERSE_BEARER_TOKEN = String(process.env.OPENVERSE_BEARER_TOKEN || '').trim();
+const OPENVERSE_ALLOW_HTTP = String(process.env.OPENVERSE_ALLOW_HTTP || '') === '1';
+const OPENVERSE_MEDIA_HOSTS = new Set(String(process.env.OPENVERSE_MEDIA_HOSTS || '')
+  .split(',')
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean));
+const MAX_CATALOG_GIF_BYTES = Math.max(1, Number(process.env.MAX_CATALOG_GIF_BYTES) || 12 * 1024 * 1024);
+const OPENVERSE_CACHE_TTL_MS = 10 * 60 * 1000;
+const OPENVERSE_CACHE_MAX_ENTRIES = Math.max(40, Number(process.env.OPENVERSE_CACHE_MAX_ENTRIES) || 400);
 const MODERATOR_USERNAMES = String(process.env.MODERATOR_USERNAMES || '')
   .split(',')
   .map((value) => normalizeUsername(value))
@@ -81,6 +93,9 @@ if (!followsFileExists) {
 }
 
 const socketsByUser = new Map();
+const openverseDetailCache = new Map();
+const openverseQueryCache = new Map();
+const openverseGifImports = new Map();
 
 function readJson(fileName, fallback) {
   try {
@@ -377,7 +392,32 @@ function publicGif(gif, viewerId) {
     reviewedAt: gif.reviewedAt || null,
     submittedByMe: gif.submitterId === viewerId,
     submitter: isModerator(viewerId) ? storyActor(db.users[gif.submitterId]) : null,
-    file: publicFile(db.files[gif.fileId])
+    file: publicFile(db.files[gif.fileId]),
+    provider: gif.provider || 'local',
+    creator: gif.creator || '',
+    sourceUrl: gif.sourceUrl || '',
+    license: gif.license || '',
+    licenseUrl: gif.licenseUrl || '',
+    attribution: gif.attribution || ''
+  };
+}
+
+function publicMusicSelection(music, audioUrl) {
+  if (!music) return null;
+  return {
+    catalogId: music.catalogId || '',
+    provider: music.provider || 'Openverse',
+    title: music.title || '',
+    artist: music.artist || '',
+    artworkUrl: music.artworkUrl || '',
+    sourceUrl: music.sourceUrl || '',
+    license: music.license || '',
+    licenseUrl: music.licenseUrl || '',
+    attribution: music.attribution || '',
+    trackDuration: Number(music.trackDuration || 0),
+    start: Number(music.start || 0),
+    clipDuration: Number(music.clipDuration || 0),
+    audioUrl
   };
 }
 
@@ -783,6 +823,7 @@ function postRepostsAllowed(post) {
 function postActor(user, viewerId = null) {
   if (!user) return null;
   const avatar = user.profile?.avatarFileId ? db.files[user.profile.avatarFileId] : null;
+  const relation = viewerId ? relationFor(viewerId, user.id) : {};
   return {
     id: user.id,
     username: user.username,
@@ -791,19 +832,53 @@ function postActor(user, viewerId = null) {
     avatar: publicFile(avatar),
     url: `/u/${encodeURIComponent(user.username)}`,
     socialPublic: user.profile?.socialPublic !== false,
-    isFavorite: Boolean(viewerId && favoriteUserIdsFor(db.users[viewerId]).includes(user.id))
+    isFavorite: Boolean(viewerId && favoriteUserIdsFor(db.users[viewerId]).includes(user.id)),
+    isFollowing: Boolean(viewerId && isFollowing(viewerId, user.id)),
+    outgoingRequest: relation.outgoingRequest || null,
+    incomingRequest: relation.incomingRequest || null,
+    isContact: Boolean(viewerId && (db.contacts[viewerId] || []).includes(user.id))
   };
 }
 
-function publicPostComment(comment, viewerId) {
+function publicPostComment(comment, viewerId, post = null) {
   if (!comment || comment.deletedAt) return null;
+  const likes = Array.isArray(comment.likes) ? comment.likes.filter((userId) => db.users[userId]) : [];
+  const parent = comment.replyTo
+    ? (post?.comments || []).find((item) => item.id === comment.replyTo && !item.deletedAt)
+    : null;
   return {
     id: comment.id,
     text: comment.text || '',
     createdAt: comment.createdAt,
     user: postActor(db.users[comment.userId], viewerId),
-    isMine: comment.userId === viewerId
+    isMine: comment.userId === viewerId,
+    likeCount: likes.length,
+    likedByMe: Boolean(viewerId && likes.includes(viewerId)),
+    likedByCreator: Boolean(post?.ownerId && likes.includes(post.ownerId)),
+    replyTo: parent?.id || null,
+    replyPreview: parent ? {
+      id: parent.id,
+      text: parent.text || '',
+      user: postActor(db.users[parent.userId], viewerId)
+    } : null,
+    pinned: Boolean(comment.pinnedAt),
+    pinnedAt: comment.pinnedAt || null,
+    canDelete: Boolean(viewerId && (comment.userId === viewerId || post?.ownerId === viewerId)),
+    canPin: Boolean(viewerId && post?.ownerId === viewerId && !parent)
   };
+}
+
+function postMediaFileIds(post) {
+  if (!post) return [];
+  const ids = [];
+  const add = (value) => {
+    if (typeof value !== 'string' || !value || ids.includes(value)) return;
+    ids.push(value);
+  };
+  if (Array.isArray(post.mediaFileIds)) post.mediaFileIds.forEach(add);
+  if (!ids.length) add(post.fileId);
+  else if (post.fileId && !ids.includes(post.fileId)) ids.unshift(post.fileId);
+  return ids;
 }
 
 function publicPost(post, viewerId = null) {
@@ -813,28 +888,55 @@ function publicPost(post, viewerId = null) {
   const reposts = Array.isArray(post.repostedBy) ? post.repostedBy.filter((userId) => db.users[userId]) : [];
   const comments = Array.isArray(post.comments) ? post.comments.filter((comment) => !comment.deletedAt) : [];
   const personTags = Array.isArray(post.personTags) ? post.personTags : [];
+  const mediaFileIds = postMediaFileIds(post);
+  const storedMediaEdits = Array.isArray(post.mediaEdits) ? post.mediaEdits : [];
+  const mediaItems = mediaFileIds.map((fileId, index) => {
+    const storedFile = db.files[fileId];
+    const media = publicFile(storedFile);
+    const edits = storedMediaEdits[index] || (index === 0 ? post.edits : null) || {};
+    return {
+      fileId,
+      media,
+      file: media,
+      mediaType: String(storedFile?.mime || '').startsWith('video/') ? 'video' : 'image',
+      edits,
+      crop: edits.crop || {},
+      adjustments: edits.adjustments || {},
+      filter: edits.filter || 'normal',
+      altText: cleanText(Array.isArray(post.altTexts) ? post.altTexts[index] : (index === 0 ? post.altText : ''), 500)
+    };
+  });
+  const firstMedia = mediaItems[0] || null;
+  const firstEdits = firstMedia?.edits || post.edits || {};
   return {
     id: post.id,
     ownerId: post.ownerId,
     author: postActor(db.users[post.ownerId], viewerId),
     user: postActor(db.users[post.ownerId], viewerId),
-    media: publicFile(db.files[post.fileId]),
-    file: publicFile(db.files[post.fileId]),
-    mediaType: String(db.files[post.fileId]?.mime || '').startsWith('video/') ? 'video' : 'image',
+    mediaFileIds,
+    mediaItems,
+    media: firstMedia?.media || null,
+    file: firstMedia?.file || null,
+    mediaType: firstMedia?.mediaType || 'image',
     title: post.title || '',
     description: post.description || '',
+    location: post.location || '',
     hashtags: Array.isArray(post.hashtags) ? post.hashtags : [],
     personTags: personTags.map((tag) => ({
       userId: tag.userId,
       user: postActor(db.users[tag.userId], viewerId),
+      mediaIndex: Math.floor(boundedNumber(tag.mediaIndex, 0, 19, 0)),
       x: tag.x,
       y: tag.y
     })).filter((tag) => tag.user),
-    edits: post.edits || {},
-    crop: post.edits?.crop || {},
-    adjustments: post.edits?.adjustments || {},
-    filter: post.edits?.filter || 'normal',
+    edits: firstEdits,
+    crop: firstEdits.crop || {},
+    adjustments: firstEdits.adjustments || {},
+    filter: firstEdits.filter || 'normal',
+    music: publicMusicSelection(post.music, post.music ? `/api/posts/${post.id}/music` : ''),
     allowReposts: postRepostsAllowed(post),
+    allowComments: post.allowComments !== false,
+    hideLikeCounts: Boolean(post.hideLikeCounts),
     createdAt: post.createdAt,
     updatedAt: post.updatedAt || post.createdAt,
     likeCount: likes.length,
@@ -843,7 +945,11 @@ function publicPost(post, viewerId = null) {
     repostCount: reposts.length,
     repostedByMe: Boolean(viewerId && reposts.includes(viewerId)),
     commentCount: comments.length,
-    comments: comments.slice(-100).map((comment) => publicPostComment(comment, viewerId)).filter(Boolean),
+    comments: comments.slice(-100).sort((a, b) => {
+      if (Boolean(a.pinnedAt) !== Boolean(b.pinnedAt)) return a.pinnedAt ? -1 : 1;
+      if (a.pinnedAt && b.pinnedAt) return String(b.pinnedAt).localeCompare(String(a.pinnedAt));
+      return String(a.createdAt).localeCompare(String(b.createdAt));
+    }).map((comment) => publicPostComment(comment, viewerId, post)).filter(Boolean),
     canDelete: post.ownerId === viewerId
   };
 }
@@ -908,20 +1014,91 @@ function cleanPostEdits(body) {
   };
 }
 
+function publicSharedPost(post, viewerId = null) {
+  if (!post) return null;
+  const value = publicPost(post, viewerId);
+  if (!value) return null;
+  const mediaItems = (value.mediaItems || []).map((item) => ({
+    fileId: item.fileId,
+    media: item.media,
+    file: item.file,
+    mediaType: item.mediaType,
+    edits: item.edits || {},
+    crop: item.crop || {},
+    adjustments: item.adjustments || {},
+    filter: item.filter || 'normal',
+    altText: item.altText || ''
+  }));
+  const isClip = mediaItems.length === 1 && mediaItems[0]?.mediaType === 'video';
+  return {
+    id: value.id,
+    ownerId: value.ownerId,
+    author: value.author,
+    user: value.user,
+    mediaFileIds: value.mediaFileIds,
+    mediaItems,
+    media: value.media,
+    file: value.file,
+    mediaType: value.mediaType,
+    isClip,
+    title: value.title,
+    description: value.description,
+    location: value.location,
+    hashtags: value.hashtags,
+    edits: value.edits,
+    crop: value.crop,
+    adjustments: value.adjustments,
+    filter: value.filter,
+    music: value.music || null,
+    allowComments: value.allowComments,
+    hideLikeCounts: value.hideLikeCounts,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    likeCount: value.likeCount,
+    repostCount: value.repostCount,
+    commentCount: value.commentCount
+  };
+}
+
+function cleanPostMediaEdits(body, fileIds) {
+  const mediaEdits = body?.mediaEdits;
+  const mediaItems = Array.isArray(body?.mediaItems) ? body.mediaItems : [];
+  return fileIds.map((fileId, index) => {
+    let raw = null;
+    if (Array.isArray(mediaEdits)) raw = mediaEdits[index];
+    else if (mediaEdits && typeof mediaEdits === 'object') raw = mediaEdits[fileId] ?? mediaEdits[index];
+
+    if (!raw && mediaItems.length) {
+      const matchingItem = mediaItems.find((item) => {
+        if (!item || typeof item !== 'object') return false;
+        const itemFileId = cleanText(item.fileId || item.id || item.file?.id || item.media?.id || '', 120);
+        return itemFileId === fileId;
+      });
+      raw = matchingItem || mediaItems[index];
+    }
+
+    if (!raw && index === 0) raw = body;
+    return cleanPostEdits(raw && typeof raw === 'object' ? raw : {});
+  });
+}
+
 function cleanPersonTags(value, ownerId) {
   const tags = Array.isArray(value) ? value : [];
   const seen = new Set();
   const cleaned = [];
   for (const raw of tags) {
     const target = db.users[cleanText(raw?.userId || raw?.id || '', 120)] || userByUsername(raw?.username);
-    if (!target || seen.has(target.id) || isBlockedBetween(ownerId, target.id)) continue;
+    const mediaIndex = Math.floor(boundedNumber(raw?.mediaIndex, 0, 19, 0));
+    const tagKey = target ? `${target.id}:${mediaIndex}` : '';
+    if (!target || seen.has(tagKey) || isBlockedBetween(ownerId, target.id)) continue;
     const mentionPermission = target.profile?.mentionPermission || 'everyone';
     if (mentionPermission === 'nobody') continue;
     if (mentionPermission === 'following' && !isFollowing(target.id, ownerId)) continue;
     if (db.users[ownerId]?.profile?.socialPublic === false && target.id !== ownerId && !isFollowing(target.id, ownerId)) continue;
-    seen.add(target.id);
+    seen.add(tagKey);
     cleaned.push({
       userId: target.id,
+      mediaIndex,
       x: boundedNumber(raw?.x, 0, 100, 50),
       y: boundedNumber(raw?.y, 0, 100, 50)
     });
@@ -944,14 +1121,23 @@ function canViewNote(note, viewerId) {
 
 function publicNote(note, viewerId) {
   if (!note) return null;
+  const music = publicMusicSelection(note.music, note.music ? `/api/notes/${note.id}/music` : '');
   return {
     id: note.id,
     ownerId: note.ownerId,
     user: postActor(db.users[note.ownerId], viewerId),
     text: note.text || '',
-    audio: publicFile(db.files[note.audioFileId]),
-    audioTitle: note.audioTitle || '',
-    audioArtist: note.audioArtist || '',
+    audio: publicFile(db.files[note.audioFileId]) || (music ? {
+      id: `catalog-${music.catalogId}`,
+      name: `${music.title || 'Music'}.mp3`,
+      mime: 'audio/mpeg',
+      size: null,
+      url: music.audioUrl,
+      external: true
+    } : null),
+    music,
+    audioTitle: music?.title || note.audioTitle || '',
+    audioArtist: music?.artist || note.audioArtist || '',
     audioDuration: note.audioDuration ?? null,
     audioStart: note.audioStart || 0,
     createdAt: note.createdAt,
@@ -1358,20 +1544,23 @@ function mentionedUsers(text, excludeUserId = null) {
     .filter((user) => user && user.id !== excludeUserId);
 }
 
-function notifyMentions(actor, text, source) {
+function notifyMentions(actor, text, source, options = {}) {
   const notifications = [];
   for (const target of mentionedUsers(text, actor.id)) {
     const permission = target.profile?.mentionPermission || 'everyone';
     if (permission === 'nobody') continue;
     if (permission === 'following' && !isFollowing(target.id, actor.id)) continue;
+    options.beforeAdd?.(target);
     const note = addNotification(target.id, 'mention', actor.id, null, `${actor.username} mentioned you ${source}.`);
     if (note) {
       notifications.push({ target, note });
-      pushToUser(target.id, {
-        type: 'notification:new',
-        pendingRequestCount: pendingIncomingRequests(target.id).length,
-        notification: publicNotification(note, target.id)
-      });
+      if (options.broadcast !== false) {
+        pushToUser(target.id, {
+          type: 'notification:new',
+          pendingRequestCount: pendingIncomingRequests(target.id).length,
+          notification: publicNotification(note, target.id)
+        });
+      }
     }
   }
   return notifications;
@@ -1428,15 +1617,45 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-function messagePreview(message) {
+function sharedPostForMessage(message, viewerId = null) {
+  const sharedPostId = message?.sharedPostId || message?.postId || null;
+  if (!sharedPostId || message?.deletedAt) return null;
+  const post = db.posts[sharedPostId];
+  if (!post) return null;
+  if (viewerId) {
+    if (!canViewPost(post, viewerId)) return null;
+  } else {
+    const participantIds = Array.from(new Set(messageParticipantIds(message)));
+    if (!participantIds.length || participantIds.some((userId) => !canViewPost(post, userId))) return null;
+  }
+  return publicSharedPost(post, viewerId);
+}
+
+function validateSharedPostForRecipients(postIdValue, senderId, recipientIds = []) {
+  const postId = cleanText(postIdValue || '', 120);
+  if (!postId) return { status: 400, error: 'Choose a post to share.' };
+  const post = db.posts[postId];
+  if (!canViewPost(post, senderId)) return { status: 404, error: 'Post not found.' };
+  const inaccessible = Array.from(new Set(recipientIds.filter(Boolean)))
+    .some((recipientId) => !canViewPost(post, recipientId));
+  if (inaccessible) {
+    return { status: 403, error: 'This post cannot be shared because one or more recipients cannot view it.' };
+  }
+  return { post };
+}
+
+function messagePreview(message, viewerId = null) {
   if (!message) return null;
   if (message.deletedAt) return { id: message.id, kind: message.kind, deletedAt: message.deletedAt };
+  const sharedPost = sharedPostForMessage(message, viewerId);
   return {
     id: message.id,
     kind: message.kind,
     text: message.text || '',
     senderId: message.senderId,
     createdAt: message.createdAt,
+    sharedPostId: sharedPost?.id || null,
+    sharedPost,
     attachment: message.attachment ? {
       name: message.attachment.name,
       mime: message.attachment.mime,
@@ -1445,14 +1664,23 @@ function messagePreview(message) {
   };
 }
 
-function messageSearchText(message) {
+function messageSearchText(message, viewerId = null) {
   if (!message || message.deletedAt) return '';
   const sender = db.users[message.senderId];
+  const sharedPost = sharedPostForMessage(message, viewerId);
+  const sharedPostAuthor = sharedPost ? db.users[sharedPost.ownerId] : null;
   return [
     message.text || '',
     message.kind || '',
     message.attachment?.name || '',
     message.attachment?.mime || '',
+    sharedPost ? (sharedPost.isClip ? 'shared clip' : 'shared post') : '',
+    sharedPost?.title || '',
+    sharedPost?.description || '',
+    sharedPost?.location || '',
+    ...(sharedPost?.hashtags || []),
+    sharedPostAuthor?.username || '',
+    sharedPostAuthor?.profile?.displayName || '',
     sender?.username || '',
     sender?.profile?.displayName || ''
   ].join(' ');
@@ -1460,15 +1688,26 @@ function messageSearchText(message) {
 
 function messageSnippet(message) {
   if (!message || message.deletedAt) return 'Deleted message';
+  if (message.kind === 'post') {
+    const sharedPost = sharedPostForMessage(message);
+    if (!sharedPost) return 'Shared post';
+    const label = sharedPost.isClip ? 'clip' : 'post';
+    const caption = message.text || sharedPost.title || sharedPost.description || '';
+    return caption ? `Shared a ${label}: ${caption}` : `Shared a ${label}`;
+  }
   if (message.text) return message.text;
   if (message.attachment?.name) return `${message.kind}: ${message.attachment.name}`;
   return message.kind || 'message';
 }
 
-function decorateMessage(message) {
+function decorateMessage(message, viewerId = null) {
   const reply = message.replyTo ? findMessage(message.replyTo)?.message : null;
   const attachment = message.attachment?.id ? publicFile(db.files[message.attachment.id]) : null;
   const reactionEntries = Object.entries(message.reactions || {});
+  const sharedPost = message.deletedAt ? null : sharedPostForMessage(message, viewerId);
+  const gif = message.kind === 'gif' && attachment
+    ? Object.values(db.gifs).find((item) => item.fileId === attachment.id)
+    : null;
   return {
     id: message.id,
     chatId: message.chatId,
@@ -1479,8 +1718,18 @@ function decorateMessage(message) {
     kind: message.kind,
     text: message.deletedAt ? '' : (message.text || ''),
     replyTo: message.replyTo || null,
-    replyPreview: messagePreview(reply),
+    replyPreview: messagePreview(reply, viewerId),
     attachment: message.deletedAt ? null : attachment,
+    mediaCredit: message.deletedAt || !gif ? null : {
+      provider: gif.provider || 'local',
+      creator: gif.creator || '',
+      sourceUrl: gif.sourceUrl || '',
+      license: gif.license || '',
+      licenseUrl: gif.licenseUrl || '',
+      attribution: gif.attribution || ''
+    },
+    sharedPostId: sharedPost?.id || null,
+    sharedPost,
     stickerId: message.deletedAt ? null : (message.stickerId || null),
     reactions: MESSAGE_REACTIONS.size && !message.deletedAt
       ? Array.from(MESSAGE_REACTIONS).map((emoji) => {
@@ -1873,6 +2122,333 @@ async function saveUpload({ dataUrl, name, lastModified }, ownerId, scope) {
   return record;
 }
 
+async function deleteStoredFile(fileId, expectedScope = '') {
+  const file = db.files[fileId];
+  if (!file || (expectedScope && file.scope !== expectedScope)) return false;
+  if (file.diskPath) await fsp.unlink(file.diskPath).catch((error) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+  delete db.files[fileId];
+  await saveFiles();
+  return true;
+}
+
+function cleanOpenverseId(value) {
+  const idValue = cleanText(value || '', 80).toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(idValue) ? idValue : '';
+}
+
+function safeCatalogLink(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'https:' || (OPENVERSE_ALLOW_HTTP && parsed.protocol === 'http:') ? parsed.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function catalogMediaUrlAllowed(value, kind) {
+  const link = safeCatalogLink(value);
+  if (!link) return false;
+  const hostname = new URL(link).hostname.toLowerCase();
+  if (OPENVERSE_MEDIA_HOSTS.has(hostname)) return true;
+  if (kind === 'gif') return hostname === 'upload.wikimedia.org';
+  if (kind === 'audio') return hostname === 'storage.jamendo.com' || hostname.endsWith('.storage.jamendo.com');
+  return false;
+}
+
+function openverseRequestHeaders() {
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': 'NewAround/1.0 (open media catalog; contact: newcomearound@gmail.com)'
+  };
+  if (OPENVERSE_BEARER_TOKEN) headers.Authorization = `Bearer ${OPENVERSE_BEARER_TOKEN}`;
+  return headers;
+}
+
+function catalogCacheGet(cache, key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry.value;
+}
+
+function catalogCacheSet(cache, key, value) {
+  const now = Date.now();
+  for (const [entryKey, entry] of cache) {
+    if (entry.expiresAt <= now) cache.delete(entryKey);
+  }
+  cache.delete(key);
+  cache.set(key, { value, expiresAt: now + OPENVERSE_CACHE_TTL_MS });
+  while (cache.size > OPENVERSE_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value);
+  return value;
+}
+
+async function openverseJson(resource, params = null) {
+  const url = new URL(`${OPENVERSE_API_BASE}/v1/${String(resource || '').replace(/^\/+/, '')}`);
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
+    });
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(url, { headers: openverseRequestHeaders(), signal: controller.signal });
+    if (!response.ok) {
+      const status = response.status === 429 ? 429 : response.status === 404 ? 404 : 502;
+      const message = response.status === 429
+        ? 'Music and GIF search is busy. Try again in a moment.'
+        : response.status === 404
+          ? 'That catalog item is no longer available.'
+          : 'The open media catalog is temporarily unavailable.';
+      throw Object.assign(new Error(message), {
+        status,
+        retryAfter: response.headers.get('retry-after') || ''
+      });
+    }
+    return await response.json();
+  } catch (error) {
+    if (error.status) throw error;
+    throw Object.assign(new Error('The open media catalog is temporarily unavailable.'), { status: 502 });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function openverseAudioDuration(value) {
+  const milliseconds = Number(value || 0);
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? Math.round(milliseconds / 100) / 10 : 0;
+}
+
+function normalizeOpenverseGif(raw) {
+  const catalogId = cleanOpenverseId(raw?.id);
+  const mediaUrl = safeCatalogLink(raw?.url);
+  if (!catalogId || String(raw?.filetype || '').toLowerCase() !== 'gif' || raw?.mature === true || !catalogMediaUrlAllowed(mediaUrl, 'gif')) return null;
+  return {
+    id: `openverse:${catalogId}`,
+    catalogId,
+    provider: 'Openverse',
+    title: cleanText(raw.title || 'Animated GIF', 100),
+    creator: cleanText(raw.creator || 'Unknown creator', 120),
+    mediaUrl,
+    sourceUrl: safeCatalogLink(raw.foreign_landing_url),
+    license: cleanText(raw.license || '', 30).toUpperCase(),
+    licenseUrl: safeCatalogLink(raw.license_url),
+    attribution: cleanText(raw.attribution || '', 500),
+    tags: Array.isArray(raw.tags) ? raw.tags.map((tag) => cleanText(tag?.name || tag, 40)).filter(Boolean).slice(0, 20) : []
+  };
+}
+
+function normalizeOpenverseMusic(raw) {
+  const catalogId = cleanOpenverseId(raw?.id);
+  const mediaUrl = safeCatalogLink(raw?.url);
+  const licenseKey = cleanText(raw?.license || '', 30).toLowerCase();
+  if (!catalogId || raw?.mature === true || !['by', 'cc0', 'pdm'].includes(licenseKey) || !catalogMediaUrlAllowed(mediaUrl, 'audio')) return null;
+  const trackDuration = openverseAudioDuration(raw.duration);
+  if (!trackDuration) return null;
+  return {
+    catalogId,
+    provider: 'Openverse',
+    title: cleanText(raw.title || 'Untitled track', 100),
+    artist: cleanText(raw.creator || 'Unknown artist', 100),
+    artworkUrl: `${OPENVERSE_API_BASE}/v1/audio/${catalogId}/thumb/`,
+    sourceUrl: safeCatalogLink(raw.foreign_landing_url),
+    license: licenseKey.toUpperCase(),
+    licenseUrl: safeCatalogLink(raw.license_url),
+    attribution: cleanText(raw.attribution || '', 500),
+    trackDuration,
+    url: mediaUrl
+  };
+}
+
+async function resolveOpenverseMedia(kind, rawId) {
+  const catalogId = cleanOpenverseId(rawId);
+  if (!catalogId) throw Object.assign(new Error(`Choose a valid ${kind === 'gif' ? 'GIF' : 'track'} from search.`), { status: 400 });
+  const cacheKey = `${kind}:${catalogId}`;
+  const cached = catalogCacheGet(openverseDetailCache, cacheKey);
+  if (cached) return cached;
+  const raw = await openverseJson(`${kind === 'gif' ? 'images' : 'audio'}/${catalogId}/`);
+  const value = kind === 'gif' ? normalizeOpenverseGif(raw) : normalizeOpenverseMusic(raw);
+  if (!value) throw Object.assign(new Error(`That ${kind === 'gif' ? 'GIF' : 'track'} is not available for this feature.`), { status: 400 });
+  return catalogCacheSet(openverseDetailCache, cacheKey, value);
+}
+
+async function fetchCatalogMedia(rawUrl, kind, options = {}, redirects = 0) {
+  if (!catalogMediaUrlAllowed(rawUrl, kind)) throw Object.assign(new Error('The selected media host is not allowed.'), { status: 400 });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(rawUrl, { ...options, redirect: 'manual', signal: controller.signal });
+    if (response.status >= 300 && response.status < 400 && response.headers.get('location') && redirects < 3) {
+      const nextUrl = new URL(response.headers.get('location'), rawUrl).toString();
+      return fetchCatalogMedia(nextUrl, kind, options, redirects + 1);
+    }
+    return response;
+  } catch (error) {
+    throw Object.assign(new Error('The selected media could not be loaded.'), { status: 502, cause: error });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function responseBufferWithin(response, maximum) {
+  const announced = Number(response.headers.get('content-length') || 0);
+  if (announced > maximum) throw Object.assign(new Error('That GIF is too large to send.'), { status: 413 });
+  const chunks = [];
+  let size = 0;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    response.body?.cancel?.().catch(() => {});
+  }, 30000);
+  timer.unref?.();
+  try {
+    for await (const chunk of response.body || []) {
+      const value = Buffer.from(chunk);
+      size += value.length;
+      if (size > maximum) throw Object.assign(new Error('That GIF is too large to send.'), { status: 413 });
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (timedOut) throw Object.assign(new Error('That GIF took too long to download.'), { status: 504 });
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function importOpenverseGif(catalogId, userId) {
+  const cleanId = cleanOpenverseId(catalogId);
+  if (!cleanId) throw Object.assign(new Error('Choose a valid GIF from search.'), { status: 400 });
+  const existing = Object.values(db.gifs).find((gif) => {
+    const file = db.files[gif.fileId];
+    return gif.provider === 'openverse' && gif.externalId === cleanId && gif.status === 'approved' &&
+      file?.mime === 'image/gif' && file.diskPath && fs.existsSync(file.diskPath);
+  });
+  if (existing) return existing;
+  if (openverseGifImports.has(cleanId)) return openverseGifImports.get(cleanId);
+  const pending = (async () => {
+    const source = await resolveOpenverseMedia('gif', cleanId);
+    const response = await fetchCatalogMedia(source.mediaUrl, 'gif', { headers: { Accept: 'image/gif' } });
+    if (!response.ok || !String(response.headers.get('content-type') || '').toLowerCase().includes('image/gif')) {
+      throw Object.assign(new Error('That GIF could not be imported.'), { status: 502 });
+    }
+    const buffer = await responseBufferWithin(response, MAX_CATALOG_GIF_BYTES);
+    if (!/^GIF8[79]a/.test(buffer.subarray(0, 6).toString('ascii'))) throw Object.assign(new Error('That catalog result is not a valid GIF.'), { status: 400 });
+    const file = await saveUpload({
+      dataUrl: `data:image/gif;base64,${buffer.toString('base64')}`,
+      name: `${safeFileName(source.title || 'openverse-gif').replace(/\.gif$/i, '')}.gif`,
+      lastModified: null
+    }, userId, 'gif');
+    const gif = {
+      id: id('gif'),
+      title: source.title,
+      tags: source.tags,
+      fileId: file.id,
+      submitterId: userId,
+      status: 'approved',
+      provider: 'openverse',
+      externalId: source.catalogId,
+      creator: source.creator,
+      sourceUrl: source.sourceUrl,
+      license: source.license,
+      licenseUrl: source.licenseUrl,
+      attribution: source.attribution,
+      createdAt: nowIso(),
+      reviewedAt: nowIso(),
+      reviewedBy: 'openverse'
+    };
+    db.gifs[gif.id] = gif;
+    try {
+      await saveGifs();
+      return gif;
+    } catch (error) {
+      delete db.gifs[gif.id];
+      delete db.files[file.id];
+      await fsp.unlink(file.diskPath).catch(() => {});
+      await saveFiles().catch(() => {});
+      throw error;
+    }
+  })();
+  openverseGifImports.set(cleanId, pending);
+  try {
+    return await pending;
+  } finally {
+    if (openverseGifImports.get(cleanId) === pending) openverseGifImports.delete(cleanId);
+  }
+}
+
+async function resolveMessageGif(body, userId) {
+  let gif = null;
+  if (body.gifCatalogId) gif = await importOpenverseGif(body.gifCatalogId, userId);
+  else if (body.gifId) gif = db.gifs[cleanText(body.gifId || '', 120)];
+  const file = gif?.fileId ? db.files[gif.fileId] : null;
+  if (!gif || gif.status !== 'approved' || !file || !['image/gif', 'image/webp'].includes(file.mime) || !file.diskPath || !fs.existsSync(file.diskPath)) {
+    throw Object.assign(new Error('GIF not found.'), { status: 404 });
+  }
+  return { gif, file };
+}
+
+function cleanMusicSelection(source, rawSelection) {
+  const start = boundedNumber(rawSelection?.start, 0, Math.max(0, source.trackDuration - 1), 0);
+  const remaining = Math.max(1, source.trackDuration - start);
+  const clipDuration = boundedNumber(rawSelection?.clipDuration ?? rawSelection?.duration, 1, Math.min(30, remaining), Math.min(30, remaining));
+  return { ...source, start, clipDuration };
+}
+
+async function streamCatalogAudio(req, res, rawUrl) {
+  const headers = { Accept: 'audio/*', 'Accept-Encoding': 'identity' };
+  const requestedRange = String(req.headers.range || '');
+  if (requestedRange && !/^bytes=(?:\d+-\d*|-\d+)$/.test(requestedRange)) {
+    res.writeHead(416, { 'Content-Range': 'bytes */*', 'Cache-Control': 'no-store' });
+    return res.end();
+  }
+  if (requestedRange) headers.Range = requestedRange;
+  const response = await fetchCatalogMedia(rawUrl, 'audio', { headers });
+  if (response.status === 416) {
+    const contentRange = response.headers.get('content-range') || 'bytes */*';
+    res.writeHead(416, { 'Content-Range': contentRange, 'Cache-Control': 'no-store' });
+    response.body?.cancel?.().catch(() => {});
+    return res.end();
+  }
+  if (![200, 206].includes(response.status) || !response.body) throw Object.assign(new Error('That track is temporarily unavailable.'), { status: 502 });
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.startsWith('audio/')) {
+    response.body.cancel?.().catch(() => {});
+    throw Object.assign(new Error('That catalog item is not an audio track.'), { status: 502 });
+  }
+  const responseHeaders = {
+    'Content-Type': contentType,
+    'Cache-Control': 'private, max-age=3600',
+    'X-Content-Type-Options': 'nosniff'
+  };
+  if (response.headers.get('accept-ranges')) responseHeaders['Accept-Ranges'] = response.headers.get('accept-ranges');
+  for (const name of ['content-length', 'content-range']) {
+    const value = response.headers.get(name);
+    if (value) responseHeaders[name.replace(/(^|-)(\w)/g, (_, prefix, char) => `${prefix}${char.toUpperCase()}`)] = value;
+  }
+  res.writeHead(response.status, responseHeaders);
+  const cancelUpstream = () => response.body.cancel?.().catch(() => {});
+  const bodyTimer = setTimeout(cancelUpstream, 2 * 60 * 1000);
+  bodyTimer.unref?.();
+  res.once('close', cancelUpstream);
+  try {
+    await pipeline(Readable.fromWeb(response.body), res);
+  } catch (error) {
+    if (!res.destroyed) res.destroy(error);
+  } finally {
+    clearTimeout(bodyTimer);
+    res.off('close', cancelUpstream);
+  }
+}
+
 async function cloneStoredFile(file, ownerId, scope) {
   if (!file?.diskPath || !fs.existsSync(file.diskPath)) return null;
   const ext = path.extname(file.originalName || '') || extensionForMime(file.mime);
@@ -1916,7 +2492,7 @@ function canAccessFile(userId, file) {
     return canViewStory(story, userId);
   }
   if (file.scope === 'post') {
-    const post = Object.values(db.posts).find((item) => item.fileId === file.id);
+    const post = Object.values(db.posts).find((item) => postMediaFileIds(item).includes(file.id));
     return canViewPost(post, userId);
   }
   if (file.scope === 'note-audio') {
@@ -1983,6 +2559,85 @@ function verifyTotp(secret, code) {
 }
 
 async function handleApi(req, res, pathname, query) {
+  if (req.method === 'GET' && pathname === '/api/media/gifs') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const term = cleanText(query.get('q') || 'happy animated', 80) || 'happy animated';
+    const queryKey = `gifs:${term.toLowerCase()}`;
+    const data = catalogCacheGet(openverseQueryCache, queryKey) || catalogCacheSet(openverseQueryCache, queryKey, await openverseJson('images/', {
+        q: term,
+        source: 'wikimedia',
+        extension: 'gif',
+        mature: 'false',
+        page_size: 18
+      }));
+    const gifs = (data.results || []).map(normalizeOpenverseGif).filter(Boolean).map((gif) => {
+      catalogCacheSet(openverseDetailCache, `gif:${gif.catalogId}`, gif);
+      return {
+        id: gif.id,
+        catalogId: gif.catalogId,
+        title: gif.title,
+        tags: gif.tags,
+        provider: gif.provider,
+        creator: gif.creator,
+        sourceUrl: gif.sourceUrl,
+        license: gif.license,
+        licenseUrl: gif.licenseUrl,
+        attribution: gif.attribution,
+        file: { url: gif.mediaUrl, mime: 'image/gif', external: true }
+      };
+    });
+    return sendJson(res, 200, { gifs, provider: 'Openverse', query: term });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/media/music') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const term = cleanText(query.get('q') || 'instrumental', 80) || 'instrumental';
+    const queryKey = `music:${term.toLowerCase()}`;
+    const data = catalogCacheGet(openverseQueryCache, queryKey) || catalogCacheSet(openverseQueryCache, queryKey, await openverseJson('audio/', {
+        q: term,
+        source: 'jamendo',
+        category: 'music',
+        license: 'by,cc0,pdm',
+        mature: 'false',
+        page_size: 20
+      }));
+    const tracks = (data.results || []).map(normalizeOpenverseMusic).filter(Boolean).map((track) => {
+      catalogCacheSet(openverseDetailCache, `audio:${track.catalogId}`, track);
+      return publicMusicSelection({ ...track, start: 0, clipDuration: Math.min(30, track.trackDuration) }, `/api/media/music/${track.catalogId}/preview`);
+    });
+    return sendJson(res, 200, { tracks, provider: 'Openverse', query: term });
+  }
+
+  const musicPreviewMatch = /^\/api\/media\/music\/([^/]+)\/preview$/.exec(pathname);
+  if (req.method === 'GET' && musicPreviewMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const track = await resolveOpenverseMedia('audio', decodeURIComponent(musicPreviewMatch[1]));
+    return streamCatalogAudio(req, res, track.url);
+  }
+
+  const postMusicMatch = /^\/api\/posts\/([^/]+)\/music$/.exec(pathname);
+  if (req.method === 'GET' && postMusicMatch) {
+    const viewer = sessionFromRequest(req)?.user || null;
+    const post = db.posts[decodeURIComponent(postMusicMatch[1])];
+    if (!post || post.deletedAt || !post.music || !canViewPost(post, viewer?.id || null)) return sendError(res, 404, 'Track not found.');
+    const track = await resolveOpenverseMedia('audio', post.music.catalogId);
+    return streamCatalogAudio(req, res, track.url);
+  }
+
+  const noteMusicMatch = /^\/api\/notes\/([^/]+)\/music$/.exec(pathname);
+  if (req.method === 'GET' && noteMusicMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const noteId = decodeURIComponent(noteMusicMatch[1]);
+    const note = Object.values(db.notes).find((item) => item.id === noteId);
+    if (!note || !note.music || !canViewNote(note, user.id)) return sendError(res, 404, 'Track not found.');
+    const track = await resolveOpenverseMedia('audio', note.music.catalogId);
+    return streamCatalogAudio(req, res, track.url);
+  }
+
   if (req.method === 'POST' && pathname === '/api/auth/register') {
     const body = await readJsonBody(req);
     const username = String(body.username || '').trim();
@@ -2112,58 +2767,17 @@ async function handleApi(req, res, pathname, query) {
     clearSessionCookie(res);
     return sendJson(res, 200, { ok: true });
   }
-  if (req.method === 'GET' && pathname === '/api/music/search') {
-  const user = await requireAuth(req, res);
-  if (!user) return;
 
-  const term = cleanText(query.get('q') || '', 120);
-  if (!term || term.length < 2) return sendJson(res, 200, { tracks: [] });
-
-  try {
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=25`;
-    const r = await fetch(url);
-    const data = await r.json();
-
-    const tracks = (data.results || []).map(t => ({
-      id: String(t.trackId || ''),
-      title: t.trackName || 'Unknown',
-      artist: t.artistName || 'Unknown',
-      album: t.collectionName || '',
-    }));
-
-    return sendJson(res, 200, { tracks });
-  } catch {
-    return sendJson(res, 200, { tracks: [] });
+  if (req.method === 'GET' && pathname === '/api/me') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    return sendJson(res, 200, {
+      user: publicUser(user, user.id),
+      twoFactorEnabled: Boolean(user.twoFactor?.enabled),
+      pendingRequestCount: pendingIncomingRequests(user.id).length,
+      isModerator: isModerator(user.id)
+    });
   }
-}
-
-  if (req.method === 'GET' && pathname === '/api/giphy/search') {
-  const user = await requireAuth(req, res);
-  if (!user) return;
-
-  const term = cleanText(query.get('q') || '', 100);
-  if (!term) return sendJson(res, 200, { gifs: [] });
-
-  const key = process.env.GIPHY_API_KEY;
-  if (!key) return sendJson(res, 200, { gifs: [] });
-
-  try {
-    const url = `https://api.giphy.com/v1/gifs/search?api_key=${key}&q=${encodeURIComponent(term)}&limit=30&rating=g`;
-    const r = await fetch(url);
-    const data = await r.json();
-
-    const gifs = (data.data || []).map(g => ({
-      id: g.id,
-      title: g.title || '',
-      url: g.images?.fixed_height?.url || g.images?.original?.url,
-      preview: g.images?.fixed_height_small?.url || g.images?.preview_gif?.url,
-    }));
-
-    return sendJson(res, 200, { gifs });
-  } catch {
-    return sendJson(res, 200, { gifs: [] });
-  }
-}
 
   if (req.method === 'PATCH' && pathname === '/api/me/profile') {
     const user = await requireAuth(req, res);
@@ -2406,6 +3020,22 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { posts });
   }
 
+  if (req.method === 'GET' && pathname === '/api/clips') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const limit = Math.floor(boundedNumber(query.get('limit') || 40, 1, 100, 40));
+    const posts = activePostsFor()
+      .filter((post) => canViewPost(post, user.id))
+      .filter((post) => {
+        const fileIds = postMediaFileIds(post);
+        return fileIds.length === 1 && String(db.files[fileIds[0]]?.mime || '').startsWith('video/');
+      })
+      .sort((a, b) => postFeedScore(b) - postFeedScore(a) || String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, limit)
+      .map((post) => publicPost(post, user.id));
+    return sendJson(res, 200, { posts });
+  }
+
   const userPostsMatch = /^\/api\/users\/([^/]+)\/posts$/.exec(pathname);
   if (req.method === 'GET' && userPostsMatch) {
     const viewer = sessionFromRequest(req)?.user || null;
@@ -2433,21 +3063,43 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const body = await readJsonBody(req);
     const upload = body.file || body.media;
-    const pendingFileId = cleanText(body.fileId || '', 120);
-    let file;
-    let mime;
-    if (pendingFileId) {
-      file = db.files[pendingFileId];
-      if (!file || file.ownerId !== user.id || file.scope !== 'post-pending' || !file.diskPath || !fs.existsSync(file.diskPath)) {
-        return sendError(res, 404, 'Pending post upload not found.');
+    const hasFileIds = Object.prototype.hasOwnProperty.call(body, 'fileIds');
+    let pendingFileIds = [];
+    if (hasFileIds) {
+      if (!Array.isArray(body.fileIds) || body.fileIds.length < 1 || body.fileIds.length > 20) {
+        return sendError(res, 400, 'Choose between 1 and 20 photos or videos to post.');
       }
-      mime = String(file.mime || '').toLowerCase();
-      if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
-      const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
-      if (!file.size || file.size > maximum) return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+      for (const rawFileId of body.fileIds) {
+        if (typeof rawFileId !== 'string') return sendError(res, 400, 'Every post upload must have a valid file ID.');
+        const pendingFileId = cleanText(rawFileId, 120);
+        if (!pendingFileId) return sendError(res, 400, 'Every post upload must have a valid file ID.');
+        if (pendingFileIds.includes(pendingFileId)) return sendError(res, 400, 'Each photo or video can only appear once in a post.');
+        pendingFileIds.push(pendingFileId);
+      }
+    } else {
+      const pendingFileId = cleanText(body.fileId || '', 120);
+      if (pendingFileId) pendingFileIds = [pendingFileId];
+    }
+
+    let files = [];
+    if (pendingFileIds.length) {
+      for (const pendingFileId of pendingFileIds) {
+        const file = db.files[pendingFileId];
+        if (!file || file.ownerId !== user.id || file.scope !== 'post-pending' || !file.diskPath || !fs.existsSync(file.diskPath)) {
+          return sendError(res, 404, 'Pending post upload not found.');
+        }
+        const mime = String(file.mime || '').toLowerCase();
+        if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain only images or videos.');
+        const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
+        const size = Number(file.size);
+        if (!Number.isFinite(size) || size <= 0 || size > maximum) {
+          return sendError(res, 413, `This ${mime.startsWith('video/') ? 'video' : 'image'} is too large.`);
+        }
+        files.push(file);
+      }
     } else {
       if (!upload?.dataUrl) return sendError(res, 400, 'Choose one photo or video to post.');
-      mime = mimeFromDataUrl(upload.dataUrl);
+      const mime = mimeFromDataUrl(upload.dataUrl);
       if (!mime.startsWith('image/') && !mime.startsWith('video/')) return sendError(res, 400, 'Posts must contain an image or video.');
       const decoded = dataUrlToBuffer(upload.dataUrl);
       const maximum = mime.startsWith('video/') ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES;
@@ -2455,21 +3107,45 @@ async function handleApi(req, res, pathname, query) {
     }
     const title = cleanText(body.title || '', 100);
     const description = cleanText(body.description || body.caption || '', 2200);
-    const personTags = cleanPersonTags(body.personTags || body.taggedPeople || body.taggedUsers || body.tags, user.id);
+    let personTags = cleanPersonTags(body.personTags || body.taggedPeople || body.taggedUsers || body.tags, user.id);
     const inlineHashtags = description.match(/#[\p{L}\p{N}_]+/gu) || [];
     const suppliedHashtags = body.hashtags ?? ((typeof body.tags === 'string' || (Array.isArray(body.tags) && body.tags.every((tag) => typeof tag === 'string'))) ? body.tags : '');
-    if (!file) file = await saveUpload(upload, user.id, 'post');
-    else file.scope = 'post';
+    let music = null;
+    if (body.music?.catalogId) {
+      const mediaCount = files.length || (upload?.dataUrl ? 1 : 0);
+      const mediaMime = String(files[0]?.mime || mimeFromDataUrl(upload?.dataUrl || '')).toLowerCase();
+      if (mediaCount !== 1 || !mediaMime.startsWith('video/')) {
+        return sendError(res, 400, 'Music can only be added to a single video clip.');
+      }
+      const source = await resolveOpenverseMedia('audio', body.music.catalogId);
+      music = cleanMusicSelection(source, body.music);
+    }
+    const usesInlineUpload = !files.length;
+    if (usesInlineUpload) files = [await saveUpload(upload, user.id, 'post')];
+    const previousFileScopes = files.map((file) => file.scope);
+    const mediaFileIds = files.map((file) => file.id);
+    personTags = personTags.filter((tag) => Number(tag.mediaIndex || 0) < mediaFileIds.length);
+    const mediaEdits = cleanPostMediaEdits(body, mediaFileIds);
+    const rawAltTexts = Array.isArray(body.altTexts) ? body.altTexts : [];
+    const altTexts = mediaFileIds.map((_, index) => cleanText(rawAltTexts[index] ?? (index === 0 ? body.altText : ''), 500));
+    if (!usesInlineUpload) files.forEach((file) => { file.scope = 'post'; });
     const post = {
       id: id('post'),
       ownerId: user.id,
-      fileId: file.id,
+      fileId: mediaFileIds[0],
+      mediaFileIds,
       title,
       description,
+      location: cleanText(body.location || '', 100),
+      altTexts,
       hashtags: cleanHashtags([...(Array.isArray(suppliedHashtags) ? suppliedHashtags : String(suppliedHashtags || '').split(/[\s,]+/)), ...inlineHashtags]),
       personTags,
-      edits: cleanPostEdits(body),
+      edits: mediaEdits[0],
+      mediaEdits,
+      music,
       allowReposts: body.allowReposts !== false,
+      allowComments: body.allowComments !== false,
+      hideLikeCounts: Boolean(body.hideLikeCounts),
       likes: [],
       savedBy: [],
       repostedBy: [],
@@ -2479,14 +3155,55 @@ async function handleApi(req, res, pathname, query) {
       updatedAt: nowIso(),
       deletedAt: null
     };
+    const notificationRecords = [];
+    const notificationSnapshots = new Map();
+    const rememberNotifications = (target) => {
+      if (!target?.id || notificationSnapshots.has(target.id)) return;
+      const exists = Object.prototype.hasOwnProperty.call(db.notifications, target.id);
+      notificationSnapshots.set(target.id, {
+        exists,
+        list: structuredClone(db.notifications[target.id] || [])
+      });
+    };
     db.posts[post.id] = post;
-    for (const tag of personTags) {
-      if (tag.userId === user.id) continue;
-      const note = addNotification(tag.userId, 'post_tag', user.id, null, `${user.username} tagged you in a post.`, { postId: post.id });
-      if (note) pushToUser(tag.userId, { type: 'notification:new', notification: publicNotification(note, tag.userId) });
+    try {
+      const notifiedTagUsers = new Set();
+      for (const tag of personTags) {
+        if (tag.userId === user.id || notifiedTagUsers.has(tag.userId)) continue;
+        notifiedTagUsers.add(tag.userId);
+        rememberNotifications(db.users[tag.userId]);
+        const note = addNotification(tag.userId, 'post_tag', user.id, null, `${user.username} tagged you in a post.`, { postId: post.id });
+        if (note) notificationRecords.push({ target: db.users[tag.userId], note });
+      }
+      notificationRecords.push(...notifyMentions(user, `${title} ${description}`, 'in a post', { broadcast: false, beforeAdd: rememberNotifications }));
+      await Promise.all([saveFiles(), savePosts(), saveNotifications()]);
+    } catch (error) {
+      delete db.posts[post.id];
+      if (usesInlineUpload) {
+        for (const file of files) {
+          delete db.files[file.id];
+          try {
+            if (file.diskPath && fs.existsSync(file.diskPath)) fs.unlinkSync(file.diskPath);
+          } catch {}
+        }
+      } else {
+        files.forEach((file, index) => { file.scope = previousFileScopes[index]; });
+      }
+      for (const [targetId, snapshot] of notificationSnapshots) {
+        if (snapshot.exists) db.notifications[targetId] = snapshot.list;
+        else delete db.notifications[targetId];
+      }
+      await Promise.allSettled([saveFiles(), savePosts(), saveNotifications()]);
+      throw error;
     }
-    notifyMentions(user, `${title} ${description}`, 'in a post');
-    await Promise.all([saveFiles(), savePosts(), saveNotifications()]);
+    for (const { target, note } of notificationRecords) {
+      if (!target?.id || !note) continue;
+      pushToUser(target.id, {
+        type: 'notification:new',
+        pendingRequestCount: pendingIncomingRequests(target.id).length,
+        notification: publicNotification(note, target.id)
+      });
+    }
     return sendJson(res, 201, { post: publicPost(post, user.id), user: publicUser(user, user.id) });
   }
 
@@ -2537,21 +3254,109 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const post = db.posts[decodeURIComponent(postCommentMatch[1])];
     if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    if (post.allowComments === false) return sendError(res, 403, 'Comments are turned off for this post.');
     const body = await readJsonBody(req);
     const text = cleanText(body.text || '', 1000);
     if (!text) return sendError(res, 400, 'Write a comment first.');
-    const comment = { id: id('comment'), userId: user.id, text, createdAt: nowIso(), deletedAt: null };
     if (!Array.isArray(post.comments)) post.comments = [];
+    const parent = body.replyTo
+      ? post.comments.find((item) => item.id === cleanText(body.replyTo, 120) && !item.deletedAt)
+      : null;
+    const comment = {
+      id: id('comment'),
+      userId: user.id,
+      text,
+      replyTo: parent?.id || null,
+      likes: [],
+      pinnedAt: null,
+      createdAt: nowIso(),
+      deletedAt: null
+    };
     post.comments.push(comment);
     post.comments = post.comments.slice(-500);
     const mentionNotes = notifyMentions(user, text, 'in a post comment');
-    let notification = null;
-    if (post.ownerId !== user.id && !mentionNotes.some(({ target }) => target.id === post.ownerId)) {
-      notification = addNotification(post.ownerId, 'post_comment', user.id, null, `${user.username} commented on your post.`, { postId: post.id, commentId: comment.id });
+    const notifiedUserIds = new Set(mentionNotes.map(({ target }) => target.id));
+    const notifications = [];
+    if (parent && parent.userId !== user.id && !notifiedUserIds.has(parent.userId)) {
+      const note = addNotification(parent.userId, 'post_comment_reply', user.id, null, `${user.username} replied to your comment.`, {
+        postId: post.id,
+        commentId: comment.id
+      });
+      if (note) notifications.push({ targetId: parent.userId, note });
+      notifiedUserIds.add(parent.userId);
+    }
+    if (post.ownerId !== user.id && !notifiedUserIds.has(post.ownerId)) {
+      const note = addNotification(post.ownerId, 'post_comment', user.id, null, `${user.username} commented on your post.`, { postId: post.id, commentId: comment.id });
+      if (note) notifications.push({ targetId: post.ownerId, note });
     }
     await Promise.all([savePosts(), saveNotifications()]);
-    if (notification) pushToUser(post.ownerId, { type: 'notification:new', notification: publicNotification(notification, post.ownerId) });
-    return sendJson(res, 201, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id) });
+    notifications.forEach(({ targetId, note }) => pushToUser(targetId, { type: 'notification:new', notification: publicNotification(note, targetId) }));
+    return sendJson(res, 201, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id, post) });
+  }
+
+  const postCommentActionMatch = /^\/api\/posts\/([^/]+)\/comments\/([^/]+)\/(like|pin)$/.exec(pathname);
+  if (req.method === 'POST' && postCommentActionMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postCommentActionMatch[1])];
+    if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    const comment = (post.comments || []).find((item) => item.id === decodeURIComponent(postCommentActionMatch[2]) && !item.deletedAt);
+    if (!comment) return sendError(res, 404, 'Comment not found.');
+    const action = postCommentActionMatch[3];
+    let notification = null;
+    if (action === 'like') {
+      if (!Array.isArray(comment.likes)) comment.likes = [];
+      const wasLiked = comment.likes.includes(user.id);
+      comment.likes = wasLiked ? comment.likes.filter((userId) => userId !== user.id) : [...comment.likes, user.id];
+      if (!wasLiked && comment.userId !== user.id) {
+        const creatorLike = user.id === post.ownerId;
+        notification = addNotification(
+          comment.userId,
+          creatorLike ? 'post_comment_creator_like' : 'post_comment_like',
+          user.id,
+          null,
+          creatorLike ? `${user.username} liked your comment on their post.` : `${user.username} liked your comment.`,
+          { postId: post.id, commentId: comment.id }
+        );
+      }
+    } else {
+      if (post.ownerId !== user.id) return sendError(res, 403, 'Only the post owner can pin comments.');
+      if (comment.replyTo) return sendError(res, 409, 'Only top-level comments can be pinned.');
+      if (comment.pinnedAt) comment.pinnedAt = null;
+      else {
+        const pinnedCount = (post.comments || []).filter((item) => !item.deletedAt && item.pinnedAt).length;
+        if (pinnedCount >= 3) return sendError(res, 409, 'You can pin up to 3 comments.');
+        comment.pinnedAt = nowIso();
+        if (comment.userId !== user.id) {
+          notification = addNotification(comment.userId, 'post_comment_pinned', user.id, null, `${user.username} pinned your comment.`, {
+            postId: post.id,
+            commentId: comment.id
+          });
+        }
+      }
+    }
+    post.updatedAt = nowIso();
+    await Promise.all([savePosts(), notification ? saveNotifications() : Promise.resolve()]);
+    if (notification) pushToUser(comment.userId, { type: 'notification:new', notification: publicNotification(notification, comment.userId) });
+    return sendJson(res, 200, { post: publicPost(post, user.id), comment: publicPostComment(comment, user.id, post) });
+  }
+
+  const postCommentDeleteMatch = /^\/api\/posts\/([^/]+)\/comments\/([^/]+)$/.exec(pathname);
+  if (req.method === 'DELETE' && postCommentDeleteMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postCommentDeleteMatch[1])];
+    if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    const comment = (post.comments || []).find((item) => item.id === decodeURIComponent(postCommentDeleteMatch[2]) && !item.deletedAt);
+    if (!comment) return sendError(res, 404, 'Comment not found.');
+    if (comment.userId !== user.id && post.ownerId !== user.id) {
+      return sendError(res, 403, 'You can only delete your own comments or comments on your post.');
+    }
+    comment.deletedAt = nowIso();
+    comment.pinnedAt = null;
+    post.updatedAt = nowIso();
+    await savePosts();
+    return sendJson(res, 200, { ok: true, commentId: comment.id, post: publicPost(post, user.id) });
   }
 
   if (req.method === 'DELETE' && postMatch) {
@@ -2584,13 +3389,19 @@ async function handleApi(req, res, pathname, query) {
     if (Array.from(textValue).length > 60) return sendError(res, 400, 'Notes can be at most 60 characters.');
     const text = Array.from(textValue).slice(0, 60).join('');
     const audioUpload = body.audio?.dataUrl ? body.audio : null;
+    if (audioUpload && body.music?.catalogId) return sendError(res, 400, 'Choose either uploaded audio or catalog music for a note, not both.');
+    let music = null;
+    if (body.music?.catalogId) {
+      const source = await resolveOpenverseMedia('audio', body.music.catalogId);
+      music = cleanMusicSelection(source, body.music);
+    }
     const durationRaw = body.audioDuration ?? body.audio?.durationSeconds ?? body.audio?.duration;
-    const audioDuration = durationRaw === undefined || durationRaw === null || durationRaw === '' ? null : Number(durationRaw);
-    const audioStart = boundedNumber(body.audioStart ?? body.audio?.start, 0, 60 * 60, 0);
+    const audioDuration = music?.clipDuration ?? (durationRaw === undefined || durationRaw === null || durationRaw === '' ? null : Number(durationRaw));
+    const audioStart = music?.start ?? boundedNumber(body.audioStart ?? body.audio?.start, 0, 60 * 60, 0);
     if (audioDuration !== null && (!Number.isFinite(audioDuration) || audioDuration < 0 || audioDuration > 30)) {
       return sendError(res, 400, 'Note audio snippets can be at most 30 seconds.');
     }
-    if (!text && !audioUpload && !body.audioTitle) return sendError(res, 400, 'Write a note or choose an audio snippet.');
+    if (!text && !audioUpload && !music) return sendError(res, 400, 'Write a note or choose an audio snippet.');
     let audioFile = null;
     if (audioUpload) {
       if (!mimeFromDataUrl(audioUpload.dataUrl).startsWith('audio/')) return sendError(res, 400, 'Note audio must be an audio file.');
@@ -2602,24 +3413,43 @@ async function handleApi(req, res, pathname, query) {
       ownerId: user.id,
       text,
       audioFileId: audioFile?.id || null,
-      audioTitle: cleanText(body.audioTitle || body.audio?.title || '', 100),
-      audioArtist: cleanText(body.audioArtist || body.audio?.artist || '', 100),
+      music,
+      audioTitle: music?.title || cleanText(body.audioTitle || body.audio?.title || '', 100),
+      audioArtist: music?.artist || cleanText(body.audioArtist || body.audio?.artist || '', 100),
       audioDuration,
       audioStart,
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + NOTE_LIFETIME_MS).toISOString(),
       deletedAt: null
     };
+    const previousNote = db.notes[user.id] || null;
     db.notes[user.id] = note;
-    await saveNotes();
+    try {
+      await saveNotes();
+    } catch (error) {
+      if (previousNote) db.notes[user.id] = previousNote;
+      else delete db.notes[user.id];
+      if (audioFile) await deleteStoredFile(audioFile.id, 'note-audio').catch(() => {});
+      throw error;
+    }
+    if (previousNote?.audioFileId && previousNote.audioFileId !== audioFile?.id) {
+      await deleteStoredFile(previousNote.audioFileId, 'note-audio').catch(() => {});
+    }
     return sendJson(res, 201, { note: publicNote(note, user.id) });
   }
 
   if (req.method === 'DELETE' && pathname === '/api/me/note') {
     const user = await requireAuth(req, res);
     if (!user) return;
-    if (db.notes[user.id]) delete db.notes[user.id];
-    await saveNotes();
+    const previousNote = db.notes[user.id] || null;
+    if (previousNote) delete db.notes[user.id];
+    try {
+      await saveNotes();
+    } catch (error) {
+      if (previousNote) db.notes[user.id] = previousNote;
+      throw error;
+    }
+    if (previousNote?.audioFileId) await deleteStoredFile(previousNote.audioFileId, 'note-audio').catch(() => {});
     return sendJson(res, 200, { ok: true });
   }
 
@@ -2634,7 +3464,7 @@ async function handleApi(req, res, pathname, query) {
         if (!canViewPost(post, user.id)) continue;
         for (const comment of post.comments || []) {
           if (comment.userId !== user.id || comment.deletedAt) continue;
-          items.push({ id: comment.id, type: 'comment', createdAt: comment.createdAt, comment: publicPostComment(comment, user.id), post: publicPost(post, user.id) });
+          items.push({ id: comment.id, type: 'comment', createdAt: comment.createdAt, comment: publicPostComment(comment, user.id, post), post: publicPost(post, user.id) });
         }
       }
     } else {
@@ -2655,6 +3485,7 @@ async function handleApi(req, res, pathname, query) {
     const term = cleanText(query.get('q') || '', 80).toLowerCase();
     const gifs = Object.values(db.gifs)
       .filter((gif) => gif.status === status)
+      .filter((gif) => gif.provider !== 'openverse')
       .filter((gif) => !term || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(term))
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       .slice(0, 80)
@@ -3440,7 +4271,7 @@ async function handleApi(req, res, pathname, query) {
       .filter((group) => (group.memberIds || []).includes(user.id))
       .map((group) => {
         const latest = latestVisibleMessage(db.messages[group.id] || [], user.id);
-        return { ...publicGroup(group, user.id), latest: latest ? decorateMessage(latest) : null };
+        return { ...publicGroup(group, user.id), latest: latest ? decorateMessage(latest, user.id) : null };
       })
       .sort((a, b) => String(b.latest?.createdAt || b.updatedAt || '').localeCompare(String(a.latest?.createdAt || a.updatedAt || '')));
     return sendJson(res, 200, { groups });
@@ -3645,23 +4476,31 @@ async function handleApi(req, res, pathname, query) {
       if (before) visible = visible.filter((message) => String(message.createdAt) < before);
       const hasMore = visible.length > limit;
       return sendJson(res, 200, {
-        messages: visible.slice(Math.max(0, visible.length - limit)).map(decorateMessage),
+        messages: visible.slice(Math.max(0, visible.length - limit)).map((message) => decorateMessage(message, user.id)),
         hasMore,
         group: publicGroup(group, user.id)
       });
     }
     const body = await readJsonBody(req);
-    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(body.kind) ? body.kind : 'text';
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
+    let sharedPost = null;
+    if (kind === 'post') {
+      const validation = validateSharedPostForRecipients(
+        body.postId || body.sharedPostId,
+        user.id,
+        group.memberIds
+      );
+      if (!validation.post) return sendError(res, validation.status, validation.error);
+      sharedPost = validation.post;
+    }
     let file = null;
-    if (kind === 'gif' && body.gifId) {
-      const gif = db.gifs[cleanText(body.gifId || '', 120)];
-      if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
-      file = db.files[gif.fileId];
+    if (kind === 'gif' && (body.gifCatalogId || body.gifId)) {
+      ({ file } = await resolveMessageGif(body, user.id));
     } else if (kind === 'gif') {
       return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
-    } else if (body.file?.dataUrl) {
+    } else if (kind !== 'post' && body.file?.dataUrl) {
       const incomingMime = mimeFromDataUrl(body.file.dataUrl);
       if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
       if (kind === 'image' && isAnimatedImageDataUrl(body.file.dataUrl)) return sendError(res, 403, 'Animated images must be approved in the shared GIF pool before they can be sent.');
@@ -3682,6 +4521,7 @@ async function handleApi(req, res, pathname, query) {
       text,
       replyTo: body.replyTo && list.some((item) => item.id === body.replyTo) ? body.replyTo : null,
       attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      sharedPostId: sharedPost?.id || null,
       stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
       hiddenFor: [],
       reactions: {},
@@ -3722,7 +4562,7 @@ async function handleApi(req, res, pathname, query) {
     if (!group) return sendError(res, 404, 'Group not found.');
     const messages = (db.messages[group.id] || [])
       .filter((message) => !(message.hiddenFor || []).includes(user.id))
-      .map(decorateMessage);
+      .map((message) => decorateMessage(message, user.id));
     const created = new Date().toISOString().replace(/[:.]/g, '-');
     const safeName = group.name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'group';
     const format = query.get('format') === 'html' ? 'html' : 'json';
@@ -3734,7 +4574,7 @@ async function handleApi(req, res, pathname, query) {
           : `${escapeHtml(message.text || '')}${message.attachment ? `<br><a href="${escapeHtml(message.attachment.downloadUrl)}">${escapeHtml(message.attachment.name)}</a>` : ''}`;
         return `<article><small>${escapeHtml(`${new Date(message.createdAt).toLocaleString()} | ${sender?.username || message.senderId} | ${message.kind}`)}</small><p>${content}</p></article>`;
       }).join('\n');
-      const html = `<!doctype html><meta charset="utf-8"><title>Group chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#4fd2c2}</style><h1>${escapeHtml(group.name)}</h1>${rows}`;
+      const html = `<!doctype html><meta charset="utf-8"><title>Group chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#397db4}</style><h1>${escapeHtml(group.name)}</h1>${rows}`;
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': `attachment; filename="group-${safeName}-${created}.html"` });
       return res.end(html);
     }
@@ -3754,12 +4594,12 @@ async function handleApi(req, res, pathname, query) {
       const chatId = chatIdFor(user.id, peer.id);
       for (const message of db.messages[chatId] || []) {
         if ((message.hiddenFor || []).includes(user.id)) continue;
-        if (!messageSearchText(message).toLowerCase().includes(term)) continue;
+        if (!messageSearchText(message, user.id).toLowerCase().includes(term)) continue;
         results.push({
           chatId,
           peer: publicUser(peer, user.id),
           sender: basicPublicUser(db.users[message.senderId]),
-          message: decorateMessage(message),
+          message: decorateMessage(message, user.id),
           snippet: messageSnippet(message)
         });
       }
@@ -3768,12 +4608,12 @@ async function handleApi(req, res, pathname, query) {
       if (!(group.memberIds || []).includes(user.id)) continue;
       for (const message of db.messages[group.id] || []) {
         if ((message.hiddenFor || []).includes(user.id)) continue;
-        if (!messageSearchText(message).toLowerCase().includes(term)) continue;
+        if (!messageSearchText(message, user.id).toLowerCase().includes(term)) continue;
         results.push({
           chatId: group.id,
           group: publicGroup(group, user.id),
           sender: basicPublicUser(db.users[message.senderId]),
-          message: decorateMessage(message),
+          message: decorateMessage(message, user.id),
           snippet: messageSnippet(message)
         });
       }
@@ -3794,7 +4634,7 @@ async function handleApi(req, res, pathname, query) {
         return {
           id: chatId,
           peer: publicUser(peer, user.id),
-          latest: latest ? decorateMessage(latest) : null
+          latest: latest ? decorateMessage(latest, user.id) : null
         };
       })
       .filter(Boolean)
@@ -3811,7 +4651,7 @@ async function handleApi(req, res, pathname, query) {
     const chatId = chatIdFor(user.id, peer.id);
     const messages = (db.messages[chatId] || [])
       .filter((message) => !(message.hiddenFor || []).includes(user.id))
-      .map(decorateMessage);
+      .map((message) => decorateMessage(message, user.id));
     const created = new Date().toISOString().replace(/[:.]/g, '-');
     const baseName = `chat-${peer.username}-${created}`;
     const format = query.get('format') === 'html' ? 'html' : 'json';
@@ -3824,7 +4664,7 @@ async function handleApi(req, res, pathname, query) {
           : `${escapeHtml(message.text || '')}${message.attachment ? `<br><a href="${escapeHtml(message.attachment.downloadUrl)}">${escapeHtml(message.attachment.name)}</a>` : ''}`;
         return `<article><small>${escapeHtml(meta)}</small><p>${content}</p></article>`;
       }).join('\n');
-      const html = `<!doctype html><meta charset="utf-8"><title>Chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#4fd2c2}</style><h1>Chat with ${escapeHtml(peer.username)}</h1>${rows}`;
+      const html = `<!doctype html><meta charset="utf-8"><title>Chat export</title><style>body{font:16px system-ui;background:#05070b;color:#f4f7fb;padding:24px}article{border-bottom:1px solid #263241;padding:12px 0}small{color:#8996a7}a{color:#397db4}</style><h1>Chat with ${escapeHtml(peer.username)}</h1>${rows}`;
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Disposition': `attachment; filename="${baseName}.html"`
@@ -3875,7 +4715,7 @@ async function handleApi(req, res, pathname, query) {
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     if (before) visible = visible.filter((message) => String(message.createdAt) < before);
     const hasMore = visible.length > limit;
-    const page = visible.slice(Math.max(0, visible.length - limit)).map(decorateMessage);
+    const page = visible.slice(Math.max(0, visible.length - limit)).map((message) => decorateMessage(message, user.id));
     return sendJson(res, 200, { messages: page, hasMore, peer: publicUser(peer, user.id) });
   }
 
@@ -3888,18 +4728,27 @@ async function handleApi(req, res, pathname, query) {
     const body = await readJsonBody(req);
     const chatId = chatIdFor(user.id, peer.id);
     const list = ensureChatMessages(chatId);
-    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif'].includes(body.kind) ? body.kind : 'text';
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
 
+    let sharedPost = null;
+    if (kind === 'post') {
+      const validation = validateSharedPostForRecipients(
+        body.postId || body.sharedPostId,
+        user.id,
+        [peer.id]
+      );
+      if (!validation.post) return sendError(res, validation.status, validation.error);
+      sharedPost = validation.post;
+    }
+
     let file = null;
-    if (kind === 'gif' && body.gifId) {
-      const gif = db.gifs[cleanText(body.gifId || '', 120)];
-      if (!gif || gif.status !== 'approved' || !db.files[gif.fileId]) return sendError(res, 404, 'GIF not found.');
-      file = db.files[gif.fileId];
+    if (kind === 'gif' && (body.gifCatalogId || body.gifId)) {
+      ({ file } = await resolveMessageGif(body, user.id));
     } else if (kind === 'gif') {
       return sendError(res, 403, 'GIFs must be approved in the shared pool before they can be sent.');
-    } else if (body.file?.dataUrl) {
+    } else if (kind !== 'post' && body.file?.dataUrl) {
       const incomingMime = mimeFromDataUrl(body.file.dataUrl);
       if (kind === 'image' && !incomingMime.startsWith('image/')) return sendError(res, 400, 'That file is not an image.');
       if (kind === 'image' && isAnimatedImageDataUrl(body.file.dataUrl)) return sendError(res, 403, 'Animated images must be approved in the shared GIF pool before they can be sent.');
@@ -3928,6 +4777,7 @@ async function handleApi(req, res, pathname, query) {
         mime: file.mime,
         size: file.size
       } : null,
+      sharedPostId: sharedPost?.id || null,
       stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
       hiddenFor: [],
       reactions: {},
@@ -4102,6 +4952,16 @@ async function handleApi(req, res, pathname, query) {
     const targetGroup = body.groupId ? groupForMember(cleanText(body.groupId, 120), user.id) : null;
     const peer = targetGroup ? null : db.users[cleanText(body.recipientId || '', 120)];
     if (!targetGroup && (!peer || !canChat(user.id, peer.id))) return sendError(res, 404, 'Chat not found.');
+    let sharedPost = null;
+    if (source.kind === 'post') {
+      const validation = validateSharedPostForRecipients(
+        source.sharedPostId || source.postId,
+        user.id,
+        targetGroup?.memberIds || [peer.id]
+      );
+      if (!validation.post) return sendError(res, validation.status, validation.error);
+      sharedPost = validation.post;
+    }
     const chatId = targetGroup?.id || chatIdFor(user.id, peer.id);
     const list = ensureChatMessages(chatId);
     const sourceFile = source.attachment?.id ? db.files[source.attachment.id] : null;
@@ -4119,6 +4979,7 @@ async function handleApi(req, res, pathname, query) {
       text: source.text || '',
       replyTo: null,
       attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      sharedPostId: sharedPost?.id || null,
       stickerId: source.stickerId || null,
       hiddenFor: [],
       reactions: {},
@@ -4177,8 +5038,16 @@ async function handleApi(req, res, pathname, query) {
     message.deletedAt = message.deletedAt || nowIso();
     message.deletedBy = user.id;
     await saveMessages();
-    pushToUsers(participantsForChatId(chatId), { type: 'message:deleted', chatId, messageId: message.id, deletedAt: message.deletedAt, deletedBy: user.id });
-    return sendJson(res, 200, { ok: true });
+    const decorated = decorateMessage(message);
+    pushToUsers(participantsForChatId(chatId), {
+      type: 'message:deleted',
+      chatId,
+      messageId: message.id,
+      deletedAt: message.deletedAt,
+      deletedBy: user.id,
+      message: decorated
+    });
+    return sendJson(res, 200, { ok: true, message: decorated });
   }
 
   const fileDownloadMatch = /^\/api\/files\/([^/]+)\/download$/.exec(pathname);
