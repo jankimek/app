@@ -157,6 +157,7 @@
     clipMode: 'for_you',
     clipViewer: null,
     clipMuted: localStorage.getItem('clipMuted') !== '0',
+    feedMuted: localStorage.getItem('feedMuted') !== '0',
     notes: [],
     instants: { piles: [], sent: [] },
     inboxFeature: null,
@@ -192,7 +193,7 @@
     gifPool: [],
     chatGifResults: [],
     chatGifLoading: false,
-    chatGifProvider: '',
+    chatGifProvider: 'GIPHY',
     chatGifError: '',
     sendingGifId: null,
     pendingGifs: [],
@@ -1101,7 +1102,7 @@
   }
 
   function tabIndex(tab) {
-    return { home: 0, notifications: 0, search: 1, clips: 2, chats: 3, profile: 4 }[tab] ?? 0;
+    return { home: 0, notifications: 0, clips: 1, chats: 2, search: 3, profile: 4 }[tab] ?? 0;
   }
 
   function hasActiveConversation() {
@@ -1198,6 +1199,12 @@
         state.instantViewer = null;
         renderApp();
       }
+      else {
+        const scrollHost = document.querySelector(`.side-content[data-tab="${nextTab}"]`);
+        const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+        scrollHost?.scrollTo?.({ top: 0, behavior });
+        if (nextTab === 'home') requestAnimationFrame(playMostVisibleHomeVideo);
+      }
       return;
     }
     const leavingPublicProfile = state.searchProfileOpen;
@@ -1242,7 +1249,7 @@
   }
 
   function tabSwipeTarget(dx) {
-    const tabs = ['home', 'search', 'clips', 'chats', 'profile'];
+    const tabs = ['home', 'clips', 'chats', 'search', 'profile'];
     const index = tabIndex(state.tab);
     const targetIndex = index + (dx < 0 ? 1 : -1);
     return tabs[targetIndex] || null;
@@ -1722,6 +1729,7 @@
       attachStoryEditorVideo();
       attachStoryViewerVideo();
       initializePostCarousels();
+      attachHomeFeedPlayback();
       attachClipPlayback();
       state.chatReturnAnimation = false;
       state.chatOpening = false;
@@ -1880,10 +1888,10 @@
         <nav class="bottom-tabs" aria-label="Main navigation">
           <div class="desktop-brand" aria-label="New Around">New Around</div>
           ${navButton('home', 'Home', 'home')}
-          ${navButton('search', 'Search', 'search')}
           ${navButton('clips', 'Clips', 'clips')}
-          <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
           ${navButton('chats', 'Messages', 'messages')}
+          ${navButton('search', 'Search', 'search')}
+          <button class="bottom-tab bottom-tab-create" data-action="open-post-create" title="Create post" aria-label="Create post">${icon('plus')}</button>
           ${navButton('profile', 'Profile', 'profile')}
         </nav>
       </aside>
@@ -2030,7 +2038,7 @@
       const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
       const aspect = String(crop.aspect || crop.aspectRatio || '');
       const label = item.altText || `Open video by ${postAuthor(post)?.username || 'user'}`;
-      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(label)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="Turn sound on">${icon('mute')}</button>`}`;
+      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-feed-video data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(label)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="${state.feedMuted ? 'Turn sound on' : 'Mute video'}" aria-pressed="${state.feedMuted ? 'false' : 'true'}">${icon(state.feedMuted ? 'mute' : 'volume')}</button>`}`;
     }
     return `<img src="${esc(media.url)}" style="${esc(postCropStyle(visual))}" alt="${esc(item.altText || post.title || `Post by ${postAuthor(post)?.username || 'user'}`)}" loading="lazy">`;
   }
@@ -2099,10 +2107,119 @@
         }
       });
     });
+    if (state.tab === 'home') requestAnimationFrame(playMostVisibleHomeVideo);
   }
 
   function initializePostCarousels(root = document) {
     root.querySelectorAll?.('.post-carousel-track').forEach(syncPostCarousel);
+  }
+
+  let homeFeedPlaybackObserver = null;
+
+  function feedVideoCanPlay(video) {
+    const slide = video?.closest('.post-carousel-slide');
+    return Boolean(
+      video?.isConnected &&
+      state.tab === 'home' &&
+      !state.clipViewer &&
+      document.visibilityState !== 'hidden' &&
+      (!slide || slide.getAttribute('aria-hidden') !== 'true')
+    );
+  }
+
+  function syncHomeVideoUi(video) {
+    const frame = video?.closest('.post-carousel-slide, .post-media-frame');
+    const cue = frame?.querySelector('.post-video-open-cue');
+    if (cue) cue.hidden = !video.paused;
+    const sound = frame?.querySelector('.post-video-sound');
+    if (sound) {
+      sound.innerHTML = icon(video.muted ? 'mute' : 'volume');
+      sound.setAttribute('aria-label', video.muted ? 'Turn sound on' : 'Mute video');
+      sound.setAttribute('aria-pressed', video.muted ? 'false' : 'true');
+    }
+  }
+
+  function stopHomeFeedPlayback() {
+    homeFeedPlaybackObserver?.disconnect();
+    homeFeedPlaybackObserver = null;
+    document.querySelectorAll('.post-video-preview').forEach((video) => {
+      video.pause();
+      syncHomeVideoUi(video);
+    });
+  }
+
+  function homeVideoVisibleRatio(video, rootRect) {
+    if (!feedVideoCanPlay(video)) return 0;
+    const rect = video.getBoundingClientRect();
+    if (!rect.width || !rect.height) return 0;
+    const left = Math.max(rect.left, rootRect.left);
+    const right = Math.min(rect.right, rootRect.right);
+    const top = Math.max(rect.top, rootRect.top);
+    const bottom = Math.min(rect.bottom, rootRect.bottom);
+    return Math.max(0, right - left) * Math.max(0, bottom - top) / (rect.width * rect.height);
+  }
+
+  function playMostVisibleHomeVideo() {
+    const root = document.querySelector('.side-content[data-tab="home"]');
+    const videos = Array.from(root?.querySelectorAll('.post-video-preview[data-feed-video]') || []);
+    if (!root || !videos.length || state.tab !== 'home' || document.visibilityState === 'hidden') {
+      videos.forEach((video) => video.pause());
+      return;
+    }
+    const rootRect = root.getBoundingClientRect();
+    let selected = null;
+    let selectedRatio = 0.54;
+    videos.forEach((video) => {
+      const ratio = homeVideoVisibleRatio(video, rootRect);
+      if (ratio > selectedRatio) {
+        selected = video;
+        selectedRatio = ratio;
+      }
+    });
+    videos.forEach((video) => {
+      if (video !== selected) {
+        video.pause();
+        syncHomeVideoUi(video);
+        return;
+      }
+      video.muted = state.feedMuted;
+      video.play().then(() => syncHomeVideoUi(video)).catch(() => {
+        state.feedMuted = true;
+        localStorage.setItem('feedMuted', '1');
+        video.muted = true;
+        video.play().catch(() => {});
+        syncHomeVideoUi(video);
+      });
+    });
+  }
+
+  function attachHomeFeedPlayback() {
+    homeFeedPlaybackObserver?.disconnect();
+    homeFeedPlaybackObserver = null;
+    const root = document.querySelector('.side-content[data-tab="home"]');
+    const videos = Array.from(root?.querySelectorAll('.post-video-preview[data-feed-video]') || []);
+    if (!root || !videos.length || state.tab !== 'home' || state.clipViewer) {
+      document.querySelectorAll('.post-video-preview').forEach((video) => video.pause());
+      return;
+    }
+    videos.forEach((video) => {
+      if (!video._homePlaybackBound) {
+        video._homePlaybackBound = true;
+        video.addEventListener('play', () => syncHomeVideoUi(video));
+        video.addEventListener('pause', () => syncHomeVideoUi(video));
+      }
+      syncHomeVideoUi(video);
+    });
+    if (!('IntersectionObserver' in window)) {
+      playMostVisibleHomeVideo();
+      return;
+    }
+    homeFeedPlaybackObserver = new IntersectionObserver(() => requestAnimationFrame(playMostVisibleHomeVideo), {
+      root,
+      threshold: [0, 0.25, 0.5, 0.55, 0.75, 1]
+    });
+    videos.forEach((video) => homeFeedPlaybackObserver.observe(video));
+    requestAnimationFrame(playMostVisibleHomeVideo);
   }
 
   function movePostCarousel(postId, direction) {
@@ -2122,13 +2239,8 @@
       <div class="post-comments">
         ${topComment ? `
           <button class="post-comment-preview" data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Open comments. Latest from ${esc(topComment.user.username || 'user')}: ${esc(topComment.text || '')}">
-            <span class="highlight-comment-preview-card">
-              ${avatarHtml(topComment.user)}
-              <span class="highlight-comment-preview-copy">
-                <strong>${esc(topComment.user.username || 'user')}</strong>
-                <span>${esc(topComment.text || '')}</span>
-              </span>
-            </span>
+            <strong>${esc(topComment.user.username || 'user')}</strong>
+            <span>${renderMentionText(topComment.text || '')}</span>
           </button>
         ` : ''}
         ${comments.length > 1 ? `<button class="post-comments-more" data-action="open-post-comments" data-post-id="${esc(post.id)}">View all ${comments.length} comments</button>` : ''}
@@ -2334,9 +2446,12 @@
   function toggleHomeVideoSound(button) {
     const video = button?.closest('.post-carousel-slide, .post-media-frame')?.querySelector('.post-video-preview');
     if (!video) return;
-    video.muted = !video.muted;
-    button.innerHTML = icon(video.muted ? 'mute' : 'volume');
-    button.setAttribute('aria-label', video.muted ? 'Turn sound on' : 'Mute video');
+    state.feedMuted = !video.muted;
+    localStorage.setItem('feedMuted', state.feedMuted ? '1' : '0');
+    document.querySelectorAll('.post-video-preview[data-feed-video]').forEach((item) => {
+      item.muted = state.feedMuted;
+      syncHomeVideoUi(item);
+    });
     const cue = video.parentElement?.querySelector('.post-video-open-cue');
     if (!video.muted) video.play().then(() => { if (cue) cue.hidden = true; }).catch(() => {});
   }
@@ -2926,21 +3041,29 @@
     }).join('');
   }
 
+  function musicPlayableDuration(track) {
+    if (!track) return 30;
+    const trackDuration = Math.max(1, Number(track.trackDuration || 30));
+    const providerDefault = track.provider === 'iTunes' ? Math.min(30, trackDuration) : trackDuration;
+    return Math.max(1, Math.min(trackDuration, Number(track.previewDuration || providerDefault)));
+  }
+
   function renderMusicPicker() {
     const picker = state.musicPicker;
     if (!picker) return '';
     const track = picker.selected || null;
-    const clipDuration = track ? Math.min(Number(picker.clipDuration || 30), Number(track.trackDuration || 30)) : 30;
-    const maxStart = track ? Math.max(0, Number(track.trackDuration || 0) - clipDuration) : 0;
+    const playableDuration = track ? musicPlayableDuration(track) : 30;
+    const clipDuration = track ? Math.min(Number(picker.clipDuration || 30), playableDuration) : 30;
+    const maxStart = track ? Math.max(0, playableDuration - clipDuration) : 0;
     const start = track ? clamp(Number(picker.start || 0), 0, maxStart) : 0;
-    const durationChoices = track ? ([15, 30].filter((seconds) => seconds <= Number(track.trackDuration || 0)) || []) : [];
-    if (track && !durationChoices.length) durationChoices.push(Math.max(1, Math.floor(Number(track.trackDuration || clipDuration))));
+    const durationChoices = track ? [15, 30].filter((seconds) => seconds <= playableDuration) : [];
+    if (track && !durationChoices.length) durationChoices.push(Math.max(1, Math.floor(playableDuration)));
     return `
       <div class="music-picker-overlay" data-action="close-music-picker">
         <section class="music-picker-sheet" data-stop-close role="dialog" aria-modal="true" aria-label="Add music">
           <header class="music-picker-head">
             <button data-action="${track ? 'music-picker-back' : 'close-music-picker'}" aria-label="${track ? 'Back to music search' : 'Close music'}">${icon(track ? 'back' : 'x')}</button>
-            <span><strong>${track ? 'Choose a section' : 'Add music'}</strong>${track ? '<small>Drag the waveform or use the start slider</small>' : '<small>Openly licensed tracks</small>'}</span>
+            <span><strong>${track ? 'Choose a section' : 'Add music'}</strong>${track ? `<small>${track.provider === 'iTunes' ? 'Choose from the playable 30-second preview' : 'Drag the waveform to choose a section'}</small>` : `<small>${picker.provider === 'iTunes' ? 'Songs and 30-second Apple previews' : 'Search the music catalog'}</small>`}</span>
             ${track ? '<button class="music-picker-done" data-action="apply-music-selection">Done</button>' : '<span></span>'}
           </header>
           ${track ? `
@@ -2950,7 +3073,7 @@
                 <span><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></span>
                 <button class="music-preview-toggle" data-action="toggle-music-segment-preview" aria-label="Play selected section" aria-pressed="false">${icon('play')}</button>
               </div>
-              <audio id="music-picker-audio" src="${esc(track.audioUrl)}" preload="metadata" data-start="${start}" data-end="${start + clipDuration}"></audio>
+              <audio id="music-picker-audio" src="${esc(track.audioUrl)}" preload="metadata" data-start="${start}" data-end="${start + clipDuration}" data-preview-duration="${playableDuration}"></audio>
               <div class="music-segment-summary"><strong>${esc(formatClipTime(start))}–${esc(formatClipTime(start + clipDuration))}</strong><span>${Math.round(clipDuration)} seconds</span></div>
               <div class="music-waveform-window" style="--music-position:${maxStart ? start / maxStart : 0}">
                 <div class="music-waveform-bars">${musicWaveformBars(track.catalogId)}</div>
@@ -3173,8 +3296,10 @@
       ${renderInboxConnectionRail()}
       ${renderNoteRail()}
       <section class="messages-head">
-        <div class="messages-search-row">
-          <input class="search-input conversation-search" id="conversation-search" placeholder="Search conversations" autocomplete="off" value="${esc(state.conversationQuery)}">
+        <div class="messages-search-row" role="search">
+          <span class="messages-search-icon" aria-hidden="true">${icon('search')}</span>
+          <input class="search-input conversation-search" id="conversation-search" type="search" placeholder="Search" aria-label="Search conversations" autocomplete="off" value="${esc(state.conversationQuery)}">
+          ${state.conversationQuery ? `<button type="button" class="messages-search-clear" data-action="clear-conversation-search" aria-label="Clear conversation search">${icon('x')}</button>` : ''}
         </div>
       </section>
       <section class="panel-heading">
@@ -3279,7 +3404,7 @@
       <section class="search-profile-page">
         <header class="page-header search-profile-header">
           <button class="icon-btn" data-action="close-search-profile" aria-label="Back">${icon('back')}</button>
-          <h2>@${esc(user.username)}</h2>
+          <h2>${esc(user.username)}</h2>
           <button class="icon-btn" data-action="open-profile-menu" data-user-id="${esc(user.id)}" aria-label="Profile options">${icon('more')}</button>
         </header>
         <section class="search-profile-hero">
@@ -3313,7 +3438,7 @@
       <section class="social-page">
         <header class="page-header">
           <button class="icon-btn" data-action="close-search-social" aria-label="Back">${icon('back')}</button>
-          <h2>@${esc(user.username)}</h2>
+          <h2>${esc(user.username)}</h2>
         </header>
         <div class="segmented social-switch is-${view} ${state.socialTransition ? `social-switch-${state.socialTransition}` : ''}">
           <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-search-social" data-social="followers"><strong>${user.followerCount ?? 0}</strong> Followers</button>
@@ -3332,7 +3457,7 @@
     const story = activeProfileStory(state.me);
     return `
       <header class="profile-page-header">
-        <strong>@${esc(state.me.username)}</strong>
+        <strong>${esc(state.me.username)}</strong>
         <button class="icon-btn" data-action="open-settings" aria-label="Settings">${icon('menu')}</button>
       </header>
       <section class="profile-hero">
@@ -3422,7 +3547,7 @@
       <section class="social-page">
         <header class="page-header">
           <button class="icon-btn" data-action="close-social" aria-label="Back">${icon('back')}</button>
-          <h2>@${esc(state.me.username)}</h2>
+          <h2>${esc(state.me.username)}</h2>
         </header>
         <div class="segmented social-switch is-${view} ${state.socialTransition ? `social-switch-${state.socialTransition}` : ''}">
           <button type="button" class="${view === 'followers' ? 'active' : ''}" data-action="open-social" data-social="followers"><strong>${state.me.followerCount ?? 0}</strong> Followers</button>
@@ -6109,10 +6234,8 @@
 
   function renderStickerPanel() {
     const tab = state.chatTrayTab === 'gifs' ? 'gifs' : 'stickers';
-    const gifQuery = state.chatGifQuery.trim().toLowerCase();
-    const localGifs = state.gifPool.filter((gif) => !gifQuery || `${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase().includes(gifQuery));
     const catalogGifs = state.chatGifResults || [];
-    const gifs = [...localGifs, ...catalogGifs];
+    const gifs = catalogGifs;
     return `
       <section class="sticker-panel chat-media-tray ${tab === 'stickers' ? 'stickers-tray' : 'gifs-tray'}">
         <header class="chat-tray-head">
@@ -6143,20 +6266,15 @@
           </div>
         ` : `
           <div class="chat-gif-search">
-            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIFs" aria-label="Search GIFs" autocomplete="off">
-            <button data-action="chat-gif-upload" aria-label="Upload GIF">${icon('plus')}</button>
-            <input id="chat-gif-input" type="file" accept="image/gif,image/webp" hidden>
+            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIPHY" aria-label="Search GIPHY" autocomplete="off">
           </div>
           <div class="chat-gif-grid">
-            ${localGifs.map((gif) => `<button data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${(gif.tags || []).join(' ')}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"></button>`).join('')}
-            ${catalogGifs.map((gif) => `<button class="catalog-gif ${state.sendingGifId === gif.id ? 'sending' : ''}" data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${gif.creator || ''}`.toLowerCase())}" aria-label="Send ${esc(gif.title)} by ${esc(gif.creator || 'unknown creator')}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"><small>${state.sendingGifId === gif.id ? 'Sending…' : esc(gif.creator || gif.license || 'Openverse')}</small></button>`).join('')}
+            ${catalogGifs.map((gif) => `<button class="catalog-gif ${state.sendingGifId === gif.id ? 'sending' : ''}" data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${gif.creator || ''}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}${gif.creator ? ` by ${esc(gif.creator)}` : ''}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"></button>`).join('')}
             ${state.chatGifLoading ? '<div class="chat-gif-loading"><i></i><span>Searching GIFs…</span></div>' : ''}
-            ${state.chatGifError ? `<p class="chat-gif-empty is-error">${esc(state.chatGifError)} <button data-action="retry-chat-gif-search">Try again</button></p>` : `<p class="chat-gif-empty" ${gifs.length || state.chatGifLoading ? 'hidden' : ''}>No matching GIFs. Try another word or upload your own.</p>`}
+            ${state.chatGifError ? `<p class="chat-gif-empty is-error">${esc(state.chatGifError)} <button data-action="retry-chat-gif-search">Try again</button></p>` : `<p class="chat-gif-empty" ${gifs.length || state.chatGifLoading ? 'hidden' : ''}>No matching GIFs. Try another search.</p>`}
           </div>
           <footer class="chat-gif-provider">
-            ${state.chatGifProvider === 'GIPHY'
-              ? '<a href="https://giphy.com" target="_blank" rel="noopener noreferrer">Powered by GIPHY</a><span>GIFs are stored in the chat when sent</span>'
-              : '<a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Openverse</a><span>Creator and license stay attached when sent</span>'}
+            <a href="https://giphy.com" target="_blank" rel="noopener noreferrer">Powered by GIPHY</a><span>Tap a GIF to send</span>
           </footer>
         `}
       </section>
@@ -8662,7 +8780,7 @@
     stopMusicCatalogPreview();
     picker.selected = { ...track };
     picker.start = 0;
-    picker.clipDuration = Math.min(30, Number(track.trackDuration || 30));
+    picker.clipDuration = Math.min(30, musicPlayableDuration(track));
     updateMusicPickerSlot();
   }
 
@@ -8677,7 +8795,7 @@
     const audio = new Audio(track.audioUrl);
     audio.dataset.trackId = trackId;
     audio.preload = 'metadata';
-    const stopAt = 12;
+    const stopAt = Math.min(30, musicPlayableDuration(track));
     audio.ontimeupdate = () => { if (audio.currentTime >= stopAt) stopMusicCatalogPreview(); };
     audio.onended = stopMusicCatalogPreview;
     audio.onerror = stopMusicCatalogPreview;
@@ -8699,12 +8817,18 @@
       }
       return;
     }
-    const start = Math.max(0, Number(audio.dataset.start || 0));
-    const end = Math.max(start + 1, Number(audio.dataset.end || start + 30));
-    if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end) audio.currentTime = start;
+    const playableDuration = Math.max(1, Math.min(
+      Number(audio.dataset.previewDuration || 30),
+      Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : Number(audio.dataset.previewDuration || 30)
+    ));
+    const start = clamp(Number(audio.dataset.start || 0), 0, Math.max(0, playableDuration - 0.25));
+    const end = clamp(Number(audio.dataset.end || start + 30), start + 0.25, playableDuration);
+    try {
+      if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end) audio.currentTime = start;
+    } catch {}
     audio.ontimeupdate = () => {
-      const liveStart = Math.max(0, Number(audio.dataset.start || 0));
-      const liveEnd = Math.max(liveStart + 1, Number(audio.dataset.end || liveStart + 30));
+      const liveStart = clamp(Number(audio.dataset.start || 0), 0, Math.max(0, playableDuration - 0.25));
+      const liveEnd = clamp(Number(audio.dataset.end || liveStart + 30), liveStart + 0.25, playableDuration);
       if (audio.currentTime >= liveEnd) {
         audio.pause();
         audio.currentTime = liveStart;
@@ -8722,19 +8846,32 @@
         button.setAttribute('aria-pressed', 'false');
       }
     };
-    audio.play().then(() => {
+    const startPlayback = () => {
+      try {
+        if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end) audio.currentTime = start;
+      } catch {}
+      return audio.play().then(() => {
       if (button) {
         button.innerHTML = icon('pause');
         button.setAttribute('aria-label', 'Pause selected section');
         button.setAttribute('aria-pressed', 'true');
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (button) {
+        button.innerHTML = icon('play');
+        button.setAttribute('aria-label', 'Play selected section');
+        button.setAttribute('aria-pressed', 'false');
+      }
+      });
+    };
+    if (audio.readyState >= 1) startPlayback();
+    else audio.addEventListener('loadedmetadata', startPlayback, { once: true });
   }
 
   function updateMusicSegmentStart(value) {
     if (!state.musicPicker?.selected) return;
     const duration = Number(state.musicPicker.clipDuration || 30);
-    const maxStart = Math.max(0, Number(state.musicPicker.selected.trackDuration || 0) - duration);
+    const maxStart = Math.max(0, musicPlayableDuration(state.musicPicker.selected) - duration);
     const start = clamp(Number(value || 0), 0, maxStart);
     state.musicPicker.start = start;
     document.querySelectorAll('[data-music-segment-start]').forEach((input) => { input.value = String(start); });
@@ -12672,8 +12809,9 @@
       if (action === 'preview-music-track') previewMusicTrack(target.dataset.trackId, target);
       if (action === 'toggle-music-segment-preview') toggleMusicSegmentPreview();
       if (action === 'set-music-duration' && state.musicPicker?.selected) {
-        state.musicPicker.clipDuration = Math.min(Number(target.dataset.duration || 30), Number(state.musicPicker.selected.trackDuration || 30));
-        state.musicPicker.start = Math.min(Number(state.musicPicker.start || 0), Math.max(0, Number(state.musicPicker.selected.trackDuration || 0) - state.musicPicker.clipDuration));
+        const playableDuration = musicPlayableDuration(state.musicPicker.selected);
+        state.musicPicker.clipDuration = Math.min(Number(target.dataset.duration || 30), playableDuration);
+        state.musicPicker.start = Math.min(Number(state.musicPicker.start || 0), Math.max(0, playableDuration - state.musicPicker.clipDuration));
         updateMusicPickerSlot();
       }
       if (action === 'apply-music-selection') applyMusicSelection();
@@ -12821,7 +12959,7 @@
       }
       if (action === 'set-chat-tray') {
         state.chatTrayTab = target.dataset.tray === 'gifs' ? 'gifs' : 'stickers';
-        if (state.chatTrayTab === 'gifs') await Promise.all([loadGifPool(), loadChatGifResults(state.chatGifQuery)]);
+        if (state.chatTrayTab === 'gifs') await loadChatGifResults(state.chatGifQuery);
         document.activeElement?.blur?.();
         updateChatFooter({ suppressFocus: true });
       }
@@ -13504,6 +13642,15 @@
         state.searchResults = [];
         renderSidebarState();
         setTimeout(focusUserSearch, 0);
+      }
+      if (action === 'clear-conversation-search') {
+        clearTimeout(conversationTimer);
+        conversationSearchId += 1;
+        state.conversationQuery = '';
+        state.conversationResults = [];
+        state.conversationSearching = false;
+        renderSidebarState();
+        setTimeout(() => document.getElementById('conversation-search')?.focus(), 0);
       }
       if (action === 'accept-request') {
         await acceptRequest(target.dataset.requestId);
@@ -15519,7 +15666,21 @@
 
   window.addEventListener('pagehide', () => {
     if (state.postComposer) closePostComposer();
+    stopHomeFeedPlayback();
+    stopMusicCatalogPreview();
     stopCameraStream();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      stopHomeFeedPlayback();
+      document.querySelectorAll('.clip-video, .clip-music, #music-picker-audio').forEach((media) => media.pause?.());
+      return;
+    }
+    requestAnimationFrame(() => {
+      attachHomeFeedPlayback();
+      attachClipPlayback();
+    });
   });
 
   init().catch((error) => {

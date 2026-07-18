@@ -232,10 +232,18 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function searchGiphy/);
   assert.match(clientSource, /bundle', 'messaging_non_clips'/);
   assert.match(clientSource, /Powered by GIPHY/);
+  const chatGifPanelSource = sourceSection(clientSource, 'function renderStickerPanel', 'function renderNotificationsPage');
+  assert.doesNotMatch(chatGifPanelSource, /localGifs|Openverse|<small>\$\{state\.sendingGifId/);
+  assert.doesNotMatch(chatGifPanelSource, /data-action="chat-gif-upload"/);
+  assert.match(chatGifPanelSource, /placeholder="Search GIPHY"/);
   const chatGifLoaderSource = sourceSection(clientSource, 'async function loadChatGifResults', 'async function submitGif');
   assert.doesNotMatch(chatGifLoaderSource, /\/api\/media\/gifs/);
   assert.match(chatGifLoaderSource, /GIPHY is not configured on this server/);
   assert.match(clientSource, /Search powered by iTunes/);
+  assert.match(clientSource, /function musicPlayableDuration/);
+  assert.match(clientSource, /data-preview-duration/);
+  assert.match(serverSource, /previewDuration: Math\.min\(30, trackDuration\)/);
+  assert.match(serverSource, /const playableDuration = Math\.max\(1, Math\.min/);
   assert.match(clientSource, /function renderInboxMap/);
   assert.match(clientSource, /function renderInstantComposer/);
   assert.match(clientSource, /openCameraCapture\('instant'/);
@@ -246,15 +254,19 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(serverSource, /pathname === '\/api\/instants'/);
   assert.match(serverSource, /function resolveCatalogMusic/);
   assert.match(clientSource, /data-action="open-home-video"/);
+  assert.match(clientSource, /function attachHomeFeedPlayback/);
+  assert.match(clientSource, /function playMostVisibleHomeVideo/);
+  assert.match(clientSource, /threshold: \[0, 0\.25, 0\.5, 0\.55, 0\.75, 1\]/);
+  assert.match(clientSource, /document\.addEventListener\('visibilitychange'/);
   assert.match(clientSource, /data-action="toggle-post-share-target"/);
   assert.match(clientSource, /class="shared-post-card"/);
   assert.match(clientSource, /if \(active && video\.matches\('\[data-action="open-home-video"\]'\)\) video\.tabIndex = 0/);
   assert.match(clientSource, /const letterbox = aspect\.name === 'mixed' \|\| aspect\.ratio > 1\.15/);
   assert.match(clientSource, /role="dialog" aria-modal="true"/);
   assert.match(clientSource, /function sharedPostIdFromLocation/);
-  assert.match(styleSource, /grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
+  assert.match(styleSource, /Current mobile navigation[\s\S]*?grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
   const navSidebarSource = sourceSection(clientSource, 'function renderSidebar()', 'function renderTabContent');
-  const mobileNavOrder = ["navButton('home'", "navButton('search'", "navButton('clips'", 'bottom-tab-create', "navButton('chats'", "navButton('profile'"];
+  const mobileNavOrder = ["navButton('home'", "navButton('clips'", "navButton('chats'", "navButton('search'", 'bottom-tab-create', "navButton('profile'"];
   mobileNavOrder.reduce((previousIndex, marker) => {
     const index = navSidebarSource.indexOf(marker);
     assert.ok(index > previousIndex, `${marker} must keep its requested navigation position`);
@@ -398,9 +410,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(sidebarSource, /navButton\('create'/);
   assert.match(styleSource, /\.bottom-tab-create \{[\s\S]*?order: 0;[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/);
   assert.doesNotMatch(styleSource, /\.bottom-tab-create \{[^}]*linear-gradient/);
+  assert.match(styleSource, /Current mobile navigation[\s\S]*?\.bottom-tabs \.bottom-tab-create \{[\s\S]*?display: none;/);
   assert.match(styleSource, /@media \(min-width: 861px\) \{[\s\S]*?\.app-shell\.home-root \{[\s\S]*?grid-template-columns: 360px minmax\(0, 1fr\);[\s\S]*?\.app-shell\.home-root > \.sidebar > \.bottom-tabs \{[\s\S]*?width: 360px;/);
   const swipeTabSource = sourceSection(clientSource, 'function tabSwipeTarget', 'function ensureTabSwipePreview');
   for (const tab of ['home', 'search', 'clips', 'chats', 'profile']) assert.match(swipeTabSource, new RegExp(`['"]${tab}['"]`));
+  assert.match(swipeTabSource, /\['home', 'clips', 'chats', 'search', 'profile'\]/);
   assert.doesNotMatch(swipeTabSource, /create|notifications/);
 
   const homeStorySource = sourceSection(clientSource, 'function homeStoryUsers', 'function postAuthor');

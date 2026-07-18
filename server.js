@@ -440,6 +440,11 @@ function publicGif(gif, viewerId) {
 
 function publicMusicSelection(music, audioUrl) {
   if (!music) return null;
+  const trackDuration = Math.max(0, Number(music.trackDuration || 0));
+  const previewDuration = Math.max(1, Math.min(
+    trackDuration || 30,
+    Number(music.previewDuration || (String(music.provider || '').toLowerCase() === 'itunes' ? 30 : trackDuration || 30))
+  ));
   return {
     catalogId: music.catalogId || '',
     provider: music.provider || 'iTunes',
@@ -450,7 +455,8 @@ function publicMusicSelection(music, audioUrl) {
     license: music.license || '',
     licenseUrl: music.licenseUrl || '',
     attribution: music.attribution || '',
-    trackDuration: Number(music.trackDuration || 0),
+    trackDuration,
+    previewDuration,
     start: Number(music.start || 0),
     clipDuration: Number(music.clipDuration || 0),
     audioUrl
@@ -2240,6 +2246,7 @@ function normalizeItunesMusic(raw) {
     licenseUrl: 'https://www.apple.com/legal/internet-services/itunes/',
     attribution: 'Preview provided by Apple',
     trackDuration,
+    previewDuration: Math.min(30, trackDuration),
     url: previewUrl
   };
 }
@@ -2596,10 +2603,11 @@ async function resolveMessageGif(body, userId) {
 }
 
 function cleanMusicSelection(source, rawSelection) {
-  const start = boundedNumber(rawSelection?.start, 0, Math.max(0, source.trackDuration - 1), 0);
-  const remaining = Math.max(1, source.trackDuration - start);
+  const playableDuration = Math.max(1, Math.min(Number(source.trackDuration || 0), Number(source.previewDuration || source.trackDuration || 30)));
+  const start = boundedNumber(rawSelection?.start, 0, Math.max(0, playableDuration - 1), 0);
+  const remaining = Math.max(1, playableDuration - start);
   const clipDuration = boundedNumber(rawSelection?.clipDuration ?? rawSelection?.duration, 1, Math.min(30, remaining), Math.min(30, remaining));
-  return { ...source, start, clipDuration };
+  return { ...source, previewDuration: playableDuration, start, clipDuration };
 }
 
 async function streamCatalogAudio(req, res, rawUrl) {
@@ -2820,7 +2828,7 @@ async function handleApi(req, res, pathname, query) {
       }));
       const tracks = (data.results || []).map(normalizeItunesMusic).filter(Boolean).map((track) => {
         catalogCacheSet(openverseDetailCache, track.catalogId, track);
-        return publicMusicSelection({ ...track, start: 0, clipDuration: Math.min(30, track.trackDuration) }, `/api/media/music/${encodeURIComponent(track.catalogId)}/preview`);
+        return publicMusicSelection({ ...track, start: 0, clipDuration: Math.min(30, track.previewDuration || track.trackDuration) }, `/api/media/music/${encodeURIComponent(track.catalogId)}/preview`);
       });
       return sendJson(res, 200, { tracks, provider: 'iTunes', query: term });
     }

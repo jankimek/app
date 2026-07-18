@@ -15961,6 +15961,197 @@ button.note-item,
   }
 }
 
+/* Current mobile navigation and feed behavior: Home, Reels, DMs, Search, Profile. */
+@media (max-width: 860px) {
+  .bottom-tabs {
+    height: calc(50px + env(safe-area-inset-bottom));
+    min-height: calc(50px + env(safe-area-inset-bottom));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0;
+    padding: 0 max(4px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left));
+    background: rgba(0, 0, 0, .96);
+  }
+
+  .bottom-tab[data-tab="home"] { order: 1; }
+  .bottom-tab[data-tab="clips"] { order: 2; }
+  .bottom-tab[data-tab="chats"] { order: 3; }
+  .bottom-tab[data-tab="search"] { order: 4; }
+  .bottom-tab[data-tab="profile"] { order: 5; }
+
+  .bottom-tabs .bottom-tab-create {
+    display: none;
+  }
+
+  .bottom-tab {
+    min-width: 44px;
+    min-height: 48px;
+    border-radius: 0;
+  }
+
+  .bottom-tab .ui-icon {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* Feed videos start silently when mostly visible and expose only the compact sound control. */
+.post-video-open-cue {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+  transition: opacity 140ms ease, transform 180ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.post-video-open-cue[hidden] {
+  display: grid;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(.82);
+}
+
+.post-video-sound {
+  width: 32px;
+  height: 32px;
+  right: 10px;
+  bottom: 10px;
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.post-video-sound:active {
+  transform: scale(.9);
+}
+
+/* Instagram-style feed density: compact identity rows and inline comment previews. */
+.home-page {
+  background: #000;
+}
+
+.feed-post {
+  background: #000;
+}
+
+.post-head {
+  min-height: 54px;
+  padding: 7px 10px;
+}
+
+.post-head > a {
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 9px;
+}
+
+.post-head .avatar {
+  width: 34px;
+  height: 34px;
+}
+
+.post-comment-preview {
+  min-height: 28px !important;
+  display: block;
+  overflow: hidden;
+  padding: 0 !important;
+  color: var(--soft) !important;
+  font-size: 13px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.post-comment-preview > strong {
+  margin-right: 4px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.post-comment-preview > span {
+  color: var(--soft);
+}
+
+.post-comment-preview .inline-mention {
+  min-height: 0;
+  padding: 0;
+}
+
+/* The DM GIF picker is an edge-to-edge two-column media grid without tile captions. */
+.gifs-tray.chat-media-tray {
+  height: min(390px, 48vh);
+  padding: 6px 0 0;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 0;
+  background: #000;
+}
+
+.gifs-tray .chat-tray-head {
+  margin: 0 8px 6px;
+}
+
+.gifs-tray .chat-gif-search {
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 7px;
+  min-height: 38px;
+  margin: 0 10px 8px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: #262626;
+}
+
+.gifs-tray .chat-gif-search input {
+  height: 38px;
+  font-size: 16px;
+}
+
+.gifs-tray .chat-gif-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: clamp(116px, 32vw, 164px);
+  gap: 2px;
+  padding: 0;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.gifs-tray .chat-gif-grid::-webkit-scrollbar {
+  display: none;
+}
+
+.gifs-tray .chat-gif-grid button {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  border-radius: 0;
+  background: #111;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.gifs-tray .chat-gif-grid button:active {
+  opacity: .72;
+  transform: scale(.985);
+}
+
+.gifs-tray .chat-gif-grid img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.gifs-tray .chat-gif-provider {
+  min-height: 26px;
+  padding: 5px 10px max(5px, env(safe-area-inset-bottom));
+  border-top: 0;
+  background: #000;
+  font-size: 8px;
+}
+
+.gifs-tray .chat-gif-grid button small {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .post-video-open-cue,
+  .post-video-sound,
+  .gifs-tray .chat-gif-grid button {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
 @media (max-width: 370px) {
   .inbox-connection-rail { padding-right: 10px; padding-left: 10px; }
   .inbox-connection-rail > button { min-height: 54px; padding: 6px 9px; }
@@ -17383,5 +17574,165 @@ button.note-item,
   .note-selected-music {
     grid-template-columns: 42px minmax(0, 1fr) 38px 38px;
     gap: 5px;
+  }
+}
+
+/* Final mobile-parity cascade guard. Keep these after legacy component rules. */
+.messages-head {
+  margin: 0;
+  padding: 10px 14px 8px;
+}
+
+.messages-search-row {
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  color: #a8a8a8;
+  background: #262626;
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.messages-search-row:focus-within {
+  background: #303030;
+  box-shadow: inset 0 0 0 1px #3a3a3a;
+}
+
+.messages-search-icon,
+.messages-search-clear {
+  display: grid;
+  place-items: center;
+}
+
+.messages-search-icon .ui-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.messages-search-clear {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #8e8e8e;
+  background: transparent;
+}
+
+.messages-search-clear .ui-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.conversation-search,
+.conversation-search:is(:hover, :focus) {
+  width: 100%;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  color: #f5f5f5;
+  background: transparent;
+  box-shadow: none;
+  font-size: 16px;
+}
+
+.conversation-search::-webkit-search-cancel-button {
+  display: none;
+}
+
+.profile-avatar-wrap .profile-avatar-btn {
+  display: grid;
+  place-items: center;
+  line-height: 1;
+}
+
+.explore-grid,
+.profile-post-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.explore-grid > button,
+.profile-post-grid > button {
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 0;
+}
+
+.explore-grid > button > span {
+  display: none;
+}
+
+.post-media-grid .post-video-mark,
+.post-media-grid .post-carousel-mark {
+  top: 7px;
+  right: 7px;
+  bottom: auto;
+  left: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 0;
+  background: transparent;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .85));
+}
+
+.post-media-grid .post-video-mark .ui-icon,
+.post-media-grid .post-carousel-mark .ui-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.gifs-tray .chat-gif-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: clamp(116px, 32vw, 164px);
+  gap: 2px;
+  padding: 0;
+}
+
+.gifs-tray .chat-gif-grid button {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+
+.gifs-tray .chat-gif-grid button small {
+  display: none;
+}
+
+.gifs-tray .chat-gif-provider {
+  min-height: 28px;
+  padding: 6px 10px max(6px, env(safe-area-inset-bottom));
+  border-top: 0;
+  font-size: 10px;
+}
+
+.music-picker-head small,
+.music-license-copy {
+  font-size: 10px;
+}
+
+.music-segment-summary span,
+.music-segment-slider {
+  font-size: 11px;
+}
+
+.post-video-sound {
+  right: 10px;
+  bottom: 10px;
+  width: 32px;
+  height: 32px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .messages-search-row {
+    transition: none;
   }
 }
