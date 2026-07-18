@@ -8840,28 +8840,15 @@
     state.chatGifError = '';
     if (state.stickerPanel && state.chatTrayTab === 'gifs') updateChatFooter({ suppressFocus: true });
     try {
-      let gifs = null;
-      let provider = '';
-      if (state.mediaConfig.giphy?.enabled) {
-        try {
-          gifs = await searchGiphy(term);
-          provider = 'GIPHY';
-        } catch {
-          // Keep GIFs available if a beta key is rate limited or GIPHY is offline.
-        }
-      }
-      if (!gifs) {
-        const data = await api(`/api/media/gifs${term ? `?q=${encodeURIComponent(term)}` : ''}`);
-        gifs = data.gifs || [];
-        provider = data.provider || 'Openverse';
-      }
+      if (!state.mediaConfig.giphy?.enabled) throw new Error('GIPHY is not configured on this server. Add GIPHY_API_KEY and restart the service.');
+      const gifs = await searchGiphy(term);
       if (requestId !== chatGifSearchRequestId || term !== state.chatGifQuery.trim()) return;
       state.chatGifResults = gifs;
-      state.chatGifProvider = provider;
+      state.chatGifProvider = 'GIPHY';
     } catch (error) {
       if (requestId !== chatGifSearchRequestId) return;
       state.chatGifResults = [];
-      state.chatGifProvider = '';
+      state.chatGifProvider = 'GIPHY';
       state.chatGifError = error.message || 'GIF search is temporarily unavailable.';
     } finally {
       if (requestId === chatGifSearchRequestId) {

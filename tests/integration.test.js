@@ -232,6 +232,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function searchGiphy/);
   assert.match(clientSource, /bundle', 'messaging_non_clips'/);
   assert.match(clientSource, /Powered by GIPHY/);
+  const chatGifLoaderSource = sourceSection(clientSource, 'async function loadChatGifResults', 'async function submitGif');
+  assert.doesNotMatch(chatGifLoaderSource, /\/api\/media\/gifs/);
+  assert.match(chatGifLoaderSource, /GIPHY is not configured on this server/);
   assert.match(clientSource, /Search powered by iTunes/);
   assert.match(clientSource, /function renderInboxMap/);
   assert.match(clientSource, /function renderInstantComposer/);

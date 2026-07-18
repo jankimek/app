@@ -22,7 +22,7 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Inbox Map for location-tagged posts with explicit, device-only current-location controls, plus camera-only Instants that disappear from recipients after opening and remain in a private one-year sender archive.
 - Account, privacy, interaction, blocked-user, comment-history, and repost settings.
 - Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, interactive polls/quizzes/sliders, mentions, maps, live weather, audio clips, and downloads.
-- Searchable GIPHY GIFs in chat when `GIPHY_API_KEY` is configured, with an automatic credited Openverse fallback and a separate shared upload pool with moderator approval; the usernames in `MODERATOR_USERNAMES` can approve submissions.
+- Searchable GIPHY GIFs in chat when `GIPHY_API_KEY` is configured, with a separate shared upload pool under moderator control; the usernames in `MODERATOR_USERNAMES` can approve or remove submissions. The chat picker does not fall back to another catalog.
 - Searchable iTunes music previews for single-video clips and Notes, with canonical title/artist metadata and a 15- or 30-second section picker; Openverse/Jamendo remains available through `MUSIC_PROVIDER=openverse`.
 - Full-screen story/highlight viewer with progress, navigation, likes, comments, and private-account access control.
 - Phone-first bottom navigation for Home, Search, Create, Clips, and Profile, with Messages in the Home header; desktop uses an expanded navigation rail.
