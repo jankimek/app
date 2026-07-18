@@ -256,6 +256,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="open-home-video"/);
   assert.match(clientSource, /function attachHomeFeedPlayback/);
   assert.match(clientSource, /function playMostVisibleHomeVideo/);
+  assert.match(clientSource, /function attachHomePullRefresh/);
+  assert.match(clientSource, /You're all caught up/);
+  assert.match(clientSource, /document\.startViewTransition\(openViewer\)/);
+  assert.match(clientSource, /overlay-video-identity/);
+  assert.match(clientSource, /class="post-meta-cycle/);
   assert.match(clientSource, /threshold: \[0, 0\.25, 0\.5, 0\.55, 0\.75, 1\]/);
   assert.match(clientSource, /document\.addEventListener\('visibilitychange'/);
   assert.match(clientSource, /data-action="toggle-post-share-target"/);
@@ -331,6 +336,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /class="story-gif-grid"/);
   assert.match(clientSource, /function renderAccountIdentity[\s\S]*?href="\$\{esc\(accountProfileHref\(user\)\)\}"/);
   assert.match(clientSource, /class="chat-pane searched-profile-pane"/);
+  for (const category of ['For you', 'Accounts', 'Reels', 'Audio', 'Tags', 'Places']) assert.match(clientSource, new RegExp(`['"]${category}['"]`));
+  assert.match(clientSource, /\/api\/me\/search-history/);
+  assert.match(clientSource, /function renderReplyPreviewContent/);
+  assert.match(clientSource, /class="reply-preview-media/);
+  assert.match(clientSource, /data-action="toggle-note-music-preview"/);
+  assert.match(clientSource, /data-note-audio/);
   assert.match(clientSource, /function restoreNavigationView/);
   assert.match(clientSource, /function renderProfileSuggestions/);
   assert.match(clientSource, /function renderRecommendationCard/);
@@ -428,7 +439,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(homePanelSource, /renderHomeStories\(\)/);
   assert.match(homePanelSource, /data-action="open-post-create"/);
   assert.match(homePanelSource, /data-action="open-notifications"/);
-  assert.match(homePanelSource, /feed\.map\(renderPostCard\)/);
+  assert.match(homePanelSource, /feed\.map\(\(post, index\) => renderPostCard\(post, index\)\)/);
   assert.match(homePanelSource, /function renderClipsPanel/);
   assert.match(homePanelSource, /data-action="set-clip-mode"/);
   assert.match(styleSource, /\.clips-feed \{[\s\S]*?scroll-snap-type: y mandatory;/);
@@ -436,8 +447,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(clipCardSource, /\scontrols(?:\s|>)/);
   assert.match(clipCardSource, /playsinline webkit-playsinline/);
   assert.match(clipCardSource, /disablepictureinpicture disableremoteplayback/);
+  assert.match(clipCardSource, /caption\.length > 68 \? 'two-lines' : 'one-line'/);
   const postVisualSource = sourceSection(clientSource, 'function renderPostVisual', 'function renderPostPersonTags');
   assert.doesNotMatch(postVisualSource, /\scontrols(?:\s|>)/);
+  assert.match(styleSource, /html\.clip-view-transition::view-transition-group\(active-post-video\)/);
+  assert.match(styleSource, /\.clip-progress\.is-segmented::after/);
+  assert.match(styleSource, /\.profile-post-grid > button \{ aspect-ratio: 3 \/ 4; \}/);
   const postCardSource = sourceSection(clientSource, 'function renderPostComments', 'function renderHomePanel');
   assert.match(postCardSource, /const topComment = comments\.at\(-1\)/);
   assert.match(postCardSource, /class="post-comment-preview" data-action="open-post-comments"/);
@@ -560,9 +575,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(serverSource, /body\.username !== undefined[\s\S]{0,180}?permanent and cannot be changed/);
   assert.match(serverSource, /DISPLAY_NAME_COOLDOWN_MS[\s\S]{0,500}?once every 14 days/);
 
-  const noteUiSource = sourceSection(clientSource, 'function renderNoteRail()', 'function renderChatsPanel');
-  assert.match(noteUiSource, /data-action="play-note"/);
-  assert.match(noteUiSource, /<audio[^>]*preload="none"/);
+  const noteUiSource = sourceSection(clientSource, 'function renderNoteRailItem', 'function renderChatsPanel');
+  assert.match(noteUiSource, /const action = hasAudio \? 'play-note'/);
+  assert.match(noteUiSource, /data-action="\$\{action\}"/);
+  assert.match(noteUiSource, /<audio[^>]*preload="metadata"/);
   assert.doesNotMatch(noteUiSource, /autoplay/);
   assert.match(noteUiSource, /id="note-text" maxlength="60"/);
   assert.match(noteUiSource, /up to 30 seconds/);
@@ -570,7 +586,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(noteBehaviorSource, /duration > 30\.15/);
   assert.match(noteBehaviorSource, /setTimeout\(\(\) => stopNoteRecording\(\), 30000\)/);
   assert.match(noteBehaviorSource, /function playNote\(noteId\)/);
-  assert.match(noteBehaviorSource, /selected\.play\(\)\.catch\(\(\) => \{\}\)/);
+  assert.match(noteBehaviorSource, /selected\.play\(\)\.catch\(\(\) => selected\.onerror\?\.\(\)\)/);
   assert.match(noteBehaviorSource, /selected\.currentTime >= end/);
   assert.match(serverSource, /Array\.from\(textValue\)\.length > 60/);
   assert.match(serverSource, /audioDuration > 30/);
@@ -2337,6 +2353,18 @@ test('open media search imports GIFs and applies canonical music sections safely
   assert.ok(!(await alice.request('/api/gifs')).data.gifs.some((gif) => gif.provider === 'openverse'));
   const receivedMessages = await bob.request(`/api/chats/${aliceUser.id}/messages?limit=20`);
   assert.ok(receivedMessages.data.messages.some((message) => message.id === gifMessage.data.message.id && message.mediaCredit?.creator === 'GIF Artist'));
+  const gifReply = await sendMessage(bob, aliceUser.id, { kind: 'text', text: 'This one', replyTo: gifMessage.data.message.id });
+  assert.equal(gifReply.status, 201);
+  assert.equal(gifReply.data.message.replyPreview.kind, 'gif');
+  assert.match(gifReply.data.message.replyPreview.attachment.url, /^\/api\/files\//);
+
+  const savedSearch = await alice.request('/api/me/search-history', { method: 'POST', body: { query: 'catalog bob', category: 'accounts', itemId: bobUser.id } });
+  assert.equal(savedSearch.status, 200);
+  assert.equal(savedSearch.data.searches[0].query, 'catalog bob');
+  assert.equal(savedSearch.data.searches[0].category, 'accounts');
+  assert.equal((await alice.request('/api/me/search-history')).data.searches.length, 1);
+  assert.equal((await bob.request('/api/me/search-history')).data.searches.length, 0);
+  assert.equal((await alice.request(`/api/me/search-history?id=${encodeURIComponent(savedSearch.data.searches[0].id)}`, { method: 'DELETE' })).data.searches.length, 0);
 
   const note = await alice.request('/api/me/note', {
     method: 'POST',
@@ -2386,6 +2414,10 @@ test('open media search imports GIFs and applies canonical music sections safely
   assert.equal(post.data.post.music.artist, 'Catalog Artist');
   assert.equal(post.data.post.music.start, 25);
   assert.equal(post.data.post.music.clipDuration, 30);
+  const combinedSearch = await bob.request('/api/search?q=canonical');
+  assert.equal(combinedSearch.status, 200);
+  assert.ok(combinedSearch.data.posts.some((item) => item.id === post.data.post.id));
+  assert.ok(combinedSearch.data.reels.some((item) => item.id === post.data.post.id));
   const postAudio = await bob.request(`/api/posts/${post.data.post.id}/music`, { headers: { Range: 'bytes=4-8' } });
   assert.equal(postAudio.status, 206);
   assert.equal(postAudio.headers.get('content-range'), `bytes 4-8/${audioBytes.length}`);

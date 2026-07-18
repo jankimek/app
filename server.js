@@ -1690,6 +1690,7 @@ function messagePreview(message, viewerId = null) {
   if (!message) return null;
   if (message.deletedAt) return { id: message.id, kind: message.kind, deletedAt: message.deletedAt };
   const sharedPost = sharedPostForMessage(message, viewerId);
+  const attachment = message.attachment?.id ? publicFile(db.files[message.attachment.id]) : null;
   return {
     id: message.id,
     kind: message.kind,
@@ -1698,11 +1699,7 @@ function messagePreview(message, viewerId = null) {
     createdAt: message.createdAt,
     sharedPostId: sharedPost?.id || null,
     sharedPost,
-    attachment: message.attachment ? {
-      name: message.attachment.name,
-      mime: message.attachment.mime,
-      size: message.attachment.size
-    } : null
+    attachment
   };
 }
 
@@ -4312,6 +4309,102 @@ async function handleApi(req, res, pathname, query) {
     user.twoFactor = { enabled: false, secret: null, pendingSecret: null };
     await saveUsers();
     return sendJson(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/me/search-history') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    if (!user.profile || typeof user.profile !== 'object') user.profile = {};
+    const history = Array.isArray(user.profile.searchHistory) ? user.profile.searchHistory : [];
+    if (req.method === 'GET') {
+      return sendJson(res, 200, { searches: history.slice(0, 30) });
+    }
+    if (req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const searchQuery = cleanText(body.query || '', 80).trim();
+      const allowedCategories = new Set(['for_you', 'accounts', 'reels', 'audio', 'tags', 'places']);
+      const category = allowedCategories.has(String(body.category || '').toLowerCase()) ? String(body.category).toLowerCase() : 'for_you';
+      if (searchQuery.length < 2) return sendError(res, 400, 'Search history entries need at least 2 characters.');
+      const normalized = searchQuery.toLowerCase();
+      const entry = {
+        id: id('search'),
+        query: searchQuery,
+        category,
+        itemId: cleanText(body.itemId || '', 120),
+        createdAt: nowIso()
+      };
+      user.profile.searchHistory = [entry, ...history.filter((item) => (
+        String(item?.query || '').trim().toLowerCase() !== normalized || String(item?.category || 'for_you') !== category
+      ))].slice(0, 30);
+      await saveUsers();
+      return sendJson(res, 200, { searches: user.profile.searchHistory });
+    }
+    if (req.method === 'DELETE') {
+      const entryId = cleanText(query.get('id') || '', 120);
+      user.profile.searchHistory = entryId ? history.filter((item) => item.id !== entryId) : [];
+      await saveUsers();
+      return sendJson(res, 200, { searches: user.profile.searchHistory });
+    }
+  }
+
+  if (req.method === 'GET' && pathname === '/api/search') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const q = cleanText(query.get('q') || '', 80).trim().toLowerCase();
+    if (q.length < 2) return sendJson(res, 200, { accounts: [], posts: [], reels: [], tags: [], places: [] });
+    const accounts = Object.values(db.users)
+      .filter((item) => item.id !== user.id)
+      .filter((item) => item.profile?.searchable !== false)
+      .filter((item) => !isBlockedBetween(user.id, item.id))
+      .map((item) => {
+        const username = item.usernameLower;
+        const displayName = (item.profile.displayName || '').toLowerCase();
+        let rank = 99;
+        if (username === q) rank = 0;
+        else if (displayName === q) rank = 1;
+        else if (username.startsWith(q)) rank = 2;
+        else if (displayName.startsWith(q)) rank = 3;
+        else if (username.includes(q)) rank = 4;
+        else if (displayName.includes(q)) rank = 5;
+        return { item, rank };
+      })
+      .filter(({ rank }) => rank < 99)
+      .sort((a, b) => a.rank - b.rank || a.item.usernameLower.localeCompare(b.item.usernameLower))
+      .slice(0, 18)
+      .map(({ item }) => publicUser(item, user.id));
+    const matchedPosts = activePostsFor()
+      .filter((post) => canViewPost(post, user.id))
+      .map((post) => {
+        const author = db.users[post.ownerId];
+        const fields = [post.title, post.description, post.caption, post.location, ...(post.hashtags || []), author?.username, author?.profile?.displayName]
+          .filter(Boolean)
+          .map((value) => String(value).toLowerCase());
+        const exactTag = (post.hashtags || []).some((tag) => String(tag).toLowerCase() === q);
+        const starts = fields.some((field) => field.startsWith(q));
+        const includes = fields.some((field) => field.includes(q));
+        return { post, rank: exactTag ? 0 : starts ? 1 : includes ? 2 : 99 };
+      })
+      .filter(({ rank }) => rank < 99)
+      .sort((a, b) => a.rank - b.rank || postFeedScore(b.post) - postFeedScore(a.post) || String(b.post.createdAt).localeCompare(String(a.post.createdAt)))
+      .slice(0, 60);
+    const posts = matchedPosts.slice(0, 36).map(({ post }) => publicPost(post, user.id));
+    const reels = matchedPosts
+      .filter(({ post }) => postMediaFileIds(post).some((fileId) => String(db.files[fileId]?.mime || '').startsWith('video/')))
+      .slice(0, 36)
+      .map(({ post }) => publicPost(post, user.id));
+    const tagCounts = new Map();
+    const placeCounts = new Map();
+    activePostsFor().filter((post) => canViewPost(post, user.id)).forEach((post) => {
+      (post.hashtags || []).forEach((tag) => {
+        const label = String(tag || '').replace(/^#/, '').trim();
+        if (label.toLowerCase().includes(q)) tagCounts.set(label, (tagCounts.get(label) || 0) + 1);
+      });
+      const place = String(post.location || '').trim();
+      if (place && place.toLowerCase().includes(q)) placeCounts.set(place, (placeCounts.get(place) || 0) + 1);
+    });
+    const tags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 30).map(([name, postCount]) => ({ name, postCount }));
+    const places = [...placeCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 30).map(([name, postCount]) => ({ name, postCount }));
+    return sendJson(res, 200, { accounts, posts, reels, tags, places });
   }
 
   if (req.method === 'GET' && pathname === '/api/users/search') {

@@ -133,6 +133,10 @@
     searchResults: [],
     userQuery: '',
     userSearching: false,
+    searchCategory: 'for_you',
+    searchData: { accounts: [], posts: [], reels: [], audio: [], tags: [], places: [] },
+    searchHistory: [],
+    searchAudioLoading: false,
     searchProfileOpen: false,
     searchProfileSocialView: null,
     profileReturnScroll: null,
@@ -151,6 +155,7 @@
     feedMode: localStorage.getItem('feedMode') || 'for_you',
     feedMenuOpen: false,
     feedLoading: false,
+    homeRefreshStatus: '',
     explorePosts: [],
     exploreLoading: false,
     clips: [],
@@ -1050,6 +1055,7 @@
       alignRight: '<svg viewBox="0 0 24 24"><path d="M6 6h14M10 10h10M6 14h14M12 18h8"/></svg>',
       sparkle: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>',
       location: '<svg viewBox="0 0 24 24"><path d="M12 22s7-5.3 7-12a7 7 0 0 0-14 0c0 6.7 7 12 7 12Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+      hashtag: '<svg viewBox="0 0 24 24"><path d="M9 3 7 21M17 3l-2 18M4 9h17M3 15h17"/></svg>',
       more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
       undo: '<svg viewBox="0 0 24 24"><path d="m9 8-5 4 5 4"/><path d="M20 18a7 7 0 0 0-7-7H4"/></svg>',
       pause: '<svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>',
@@ -1207,6 +1213,7 @@
       }
       return;
     }
+    if (state.tab === 'search' && nextTab !== 'search') stopSearchAudioPreview();
     const leavingPublicProfile = state.searchProfileOpen;
     const profileReturnScroll = state.profileReturnScroll;
     state.lastTab = state.tab;
@@ -1286,6 +1293,18 @@
     if (message.text) return message.text;
     if (message.attachment?.name) return `${message.kind}: ${message.attachment.name}`;
     return message.kind || 'message';
+  }
+
+  function renderReplyPreviewContent(message, compact = false) {
+    if (!message) return '';
+    const attachment = message.attachment;
+    if (message.kind === 'gif' && attachment?.url) {
+      return `<span class="reply-preview-media ${compact ? 'compact' : ''}"><img src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" loading="eager"><span><strong>GIF</strong>${message.text ? `<small>${esc(message.text).slice(0, 80)}</small>` : ''}</span></span>`;
+    }
+    if (message.kind === 'image' && attachment?.url) {
+      return `<span class="reply-preview-media ${compact ? 'compact' : ''}"><img src="${esc(attachment.url)}" alt="${esc(attachment.name || 'Photo')}" loading="eager"><span><strong>Photo</strong>${message.text ? `<small>${esc(message.text).slice(0, 80)}</small>` : ''}</span></span>`;
+    }
+    return `<span class="reply-preview-text">${esc(describeMessage(message)).slice(0, compact ? 90 : 160)}</span>`;
   }
 
   async function init() {
@@ -1730,6 +1749,7 @@
       attachStoryViewerVideo();
       initializePostCarousels();
       attachHomeFeedPlayback();
+      attachHomePullRefresh();
       attachClipPlayback();
       state.chatReturnAnimation = false;
       state.chatOpening = false;
@@ -1824,6 +1844,7 @@
 
   function updateNoteComposerSlot() {
     document.getElementById('note-composer-audio')?.pause?.();
+    document.getElementById('note-composer-music')?.pause?.();
     return updateSlot('note-composer-slot', renderNoteComposer());
   }
 
@@ -1924,6 +1945,8 @@
 
   function renderHomeStories() {
     const users = homeStoryUsers();
+    const storyIds = new Set(users.map((user) => user.id));
+    const suggested = visibleRecommendations().filter((user) => !storyIds.has(user.id)).slice(0, 8);
     return `
       <section class="home-story-rail" aria-label="Stories" data-scroll-memory="home-stories">
         ${users.map((user) => {
@@ -1939,6 +1962,12 @@
             </button>
           `;
         }).join('')}
+        ${suggested.map((user) => `
+          <button class="home-story suggested-profile" data-action="view-user-profile" data-username="${esc(user.username)}" aria-label="View ${esc(user.username)}'s profile">
+            <span class="home-story-avatar">${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}<i>${icon('profile')}</i></span>
+            <small>${esc(user.username)}</small>
+          </button>
+        `).join('')}
       </section>
     `;
   }
@@ -2038,7 +2067,7 @@
       const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
       const aspect = String(crop.aspect || crop.aspectRatio || '');
       const label = item.altText || `Open video by ${postAuthor(post)?.username || 'user'}`;
-      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-feed-video data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(label)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="${state.feedMuted ? 'Turn sound on' : 'Mute video'}" aria-pressed="${state.feedMuted ? 'false' : 'true'}">${icon(state.feedMuted ? 'mute' : 'volume')}</button>`}`;
+      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="${esc(options.preload || 'metadata')}" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-feed-video data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(label)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="${state.feedMuted ? 'Turn sound on' : 'Mute video'}" aria-pressed="${state.feedMuted ? 'false' : 'true'}">${icon(state.feedMuted ? 'mute' : 'volume')}</button>`}`;
     }
     return `<img src="${esc(media.url)}" style="${esc(postCropStyle(visual))}" alt="${esc(item.altText || post.title || `Post by ${postAuthor(post)?.username || 'user'}`)}" loading="lazy">`;
   }
@@ -2060,7 +2089,7 @@
     if (options.grid) {
       return `
         <div class="post-media-frame post-media-grid aspect-${esc(aspect.name)}" style="--post-aspect:${aspect.ratio}">
-          ${renderPostVisual(first, post, { grid: true, mediaIndex: 0 })}
+          ${renderPostVisual(first, post, { grid: true, mediaIndex: 0, preload: options.preload })}
           ${isVideo ? `<span class="post-video-mark">${icon('play')}</span>` : ''}
           ${items.length > 1 ? `<span class="post-carousel-mark" aria-label="${items.length} items">${icon('clips')}</span>` : ''}
         </div>
@@ -2069,7 +2098,7 @@
     return `
       <div class="post-media-frame aspect-${esc(aspect.name)} ${items.length > 1 ? 'has-carousel' : ''}" style="--post-aspect:${aspect.ratio}" data-post-carousel="${esc(post.id)}">
         <div class="post-carousel-track" data-post-id="${esc(post.id)}">
-          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post, { mediaIndex: index })}${renderPostPersonTags(post, index)}</div>`).join('')}
+          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post, { mediaIndex: index, preload: options.preload })}${renderPostPersonTags(post, index)}</div>`).join('')}
         </div>
         ${items.length > 1 ? `
           <span class="post-carousel-count" aria-live="polite"><b>1</b>/${items.length}</span>
@@ -2222,6 +2251,78 @@
     requestAnimationFrame(playMostVisibleHomeVideo);
   }
 
+  function attachHomePullRefresh() {
+    const root = document.querySelector('.side-content[data-tab="home"]');
+    const page = root?.querySelector('.home-page');
+    const indicator = root?.querySelector('.home-refresh-indicator');
+    if (!root || !page || !indicator || root._homePullBound) return;
+    root._homePullBound = true;
+    let startX = 0;
+    let startY = 0;
+    let distance = 0;
+    let pulling = false;
+    const resetPull = () => {
+      page.style.transform = '';
+      indicator.style.removeProperty('--pull-progress');
+      indicator.classList.remove('is-ready');
+      distance = 0;
+    };
+    root.addEventListener('touchstart', (event) => {
+      if (root.scrollTop > 0 || state.homeRefreshStatus || event.touches.length !== 1) return;
+      startX = event.touches[0].clientX;
+      startY = event.touches[0].clientY;
+      distance = 0;
+      pulling = true;
+    }, { passive: true });
+    root.addEventListener('touchmove', (event) => {
+      if (!pulling || event.touches.length !== 1) return;
+      const dx = event.touches[0].clientX - startX;
+      const dy = event.touches[0].clientY - startY;
+      if (dy <= 0 || Math.abs(dx) > dy * 0.8 || root.scrollTop > 0) {
+        pulling = false;
+        resetPull();
+        return;
+      }
+      event.preventDefault();
+      distance = Math.min(104, dy * 0.58);
+      page.style.transform = `translateY(${Math.min(52, distance * 0.5)}px)`;
+      indicator.style.setProperty('--pull-progress', String(clamp(distance / 68, 0, 1)));
+      indicator.classList.toggle('is-ready', distance >= 68);
+    }, { passive: false });
+    const release = () => {
+      if (!pulling) return;
+      pulling = false;
+      page.style.transform = '';
+      if (distance >= 68) refreshHomeFromPull().catch((error) => {
+        state.homeRefreshStatus = '';
+        updateSidebar();
+        pushToast({ key: `refresh-${Date.now()}`, kind: 'social', title: 'Could not refresh', body: error.message });
+      });
+      else resetPull();
+    };
+    root.addEventListener('touchend', release, { passive: true });
+    root.addEventListener('touchcancel', release, { passive: true });
+  }
+
+  async function refreshHomeFromPull() {
+    state.homeRefreshStatus = 'refreshing';
+    updateSidebar();
+    await Promise.all([
+      loadFeed(state.feedMode, { render: false }),
+      loadNotes().catch(() => {}),
+      loadExplore().catch(() => {})
+    ]);
+    state.homeRefreshStatus = 'caught-up';
+    updateSidebar();
+    setTimeout(() => {
+      if (state.homeRefreshStatus !== 'caught-up') return;
+      state.homeRefreshStatus = '';
+      const indicator = document.querySelector('.home-refresh-indicator');
+      indicator?.classList.add('is-leaving');
+      setTimeout(() => indicator?.remove(), 220);
+    }, 1500);
+  }
+
   function movePostCarousel(postId, direction) {
     const selectorId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
     const track = document.querySelector(`.post-carousel-track[data-post-id="${selectorId}"]`);
@@ -2248,9 +2349,11 @@
     `;
   }
 
-  function renderPostCard(post) {
+  function renderPostCard(post, feedIndex = 0) {
     const author = postAuthor(post);
     if (!author) return '';
+    const firstMedia = postMediaItems(post)[0];
+    const overlayIdentity = firstMedia?.mediaType === 'video' && postAspect(firstMedia).ratio <= 0.82;
     const description = String(post.description || post.caption || '');
     const expanded = state.expandedPosts.has(post.id) || description.length <= 135;
     const hashtags = post.hashtags || post.tags || [];
@@ -2258,16 +2361,18 @@
     const saved = Boolean(post.savedByMe);
     const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
     const reposted = Boolean(post.repostedByMe);
+    const postDate = `${post.location ? `${post.location} · ` : ''}${shortTime(post.createdAt)}`;
+    const audioLabel = post.music ? `${post.music.title || 'Original audio'}${post.music.artist ? ` · ${post.music.artist}` : ''}` : '';
     return `
-      <article class="feed-post" data-post-id="${esc(post.id)}">
+      <article class="feed-post ${overlayIdentity ? 'overlay-video-identity' : ''}" data-post-id="${esc(post.id)}">
         <header class="post-head">
           <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">
             ${avatarHtml(author)}
-            <span><strong>${esc(author.username)}</strong><small>${post.location ? `${esc(post.location)} · ` : ''}${esc(shortTime(post.createdAt))}</small></span>
+            <span><strong>${esc(author.username)}</strong><small class="post-meta-cycle ${audioLabel ? 'has-audio' : ''}">${audioLabel ? `<span>${icon('music')}${esc(audioLabel)}</span>` : ''}<span>${esc(postDate)}</span></small></span>
           </a>
           ${author.id === state.me?.id ? `<button data-action="post-owner-menu" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>` : ''}
         </header>
-        ${renderPostMedia(post)}
+        ${renderPostMedia(post, { preload: feedIndex < 2 ? 'auto' : 'metadata' })}
         <div class="post-action-row">
           <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}" aria-pressed="${liked}">${icon('heart')}</button>
           <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comment">${icon('comment')}</button>
@@ -2293,6 +2398,7 @@
     const suggestions = visibleRecommendations().slice(0, 5);
     return `
       <section class="home-page">
+        <div class="home-refresh-indicator ${esc(state.homeRefreshStatus)}" aria-live="polite"><span>${state.homeRefreshStatus === 'caught-up' ? icon('check') : icon('refresh')}</span><strong>${state.homeRefreshStatus === 'caught-up' ? "You're all caught up" : state.homeRefreshStatus === 'refreshing' ? 'Checking for new posts' : 'Pull to refresh'}</strong></div>
         <header class="home-topbar">
           <div class="feed-picker-wrap">
             <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}" aria-label="Choose feed"><span class="home-brand">New Around</span>${icon('chevron')}</button>
@@ -2316,7 +2422,7 @@
               ${state.feedLoading
                 ? '<div class="feed-loading"><i></i><i></i><i></i></div>'
                 : feed.length
-                  ? feed.map(renderPostCard).join('')
+                  ? feed.map((post, index) => renderPostCard(post, index)).join('')
                   : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${state.feedMode === 'favorites' ? 'Favorite an account from their profile to build this feed.' : 'Share the first post or follow more accounts.'}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
             </section>
           </main>
@@ -2397,7 +2503,7 @@
       <article class="clip-card" data-post-id="${esc(post.id)}" data-media-index="${mediaIndex}">
         <div class="clip-stage">
           <div class="clip-viewport ${letterbox ? 'letterbox' : ''}">
-            <video class="clip-video" data-clip-video src="${esc(media.url)}" style="object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline webkit-playsinline loop ${state.clipMuted || music ? 'muted' : ''} preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" tabindex="0" aria-label="${esc(item.altText || `Clip by ${author.username}. Tap to pause or play.`)}"></video>
+            <video class="clip-video" data-clip-video src="${esc(media.url)}" style="object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(item))}" playsinline webkit-playsinline loop ${state.clipMuted || music ? 'muted' : ''} preload="${esc(options.preload || 'metadata')}" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" tabindex="0" aria-label="${esc(item.altText || `Clip by ${author.username}. Tap to pause or play.`)}"></video>
             ${music?.audioUrl ? `<audio class="clip-music" src="${esc(music.audioUrl)}" preload="metadata" data-start="${Number(music.start || 0)}" data-end="${Number(music.start || 0) + Number(music.clipDuration || 30)}"></audio>` : ''}
             <div class="clip-shade" aria-hidden="true"></div>
             <span class="clip-play-indicator" aria-hidden="true">${icon('play')}</span>
@@ -2407,7 +2513,7 @@
                 <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
                 ${followControl}
               </div>
-              ${caption ? `<p>${renderMentionText(caption)}</p>` : ''}
+              ${caption ? `<p class="${caption.length > 68 ? 'two-lines' : 'one-line'}">${renderMentionText(caption)}</p>` : ''}
               <small class="clip-audio-line">${icon('music')} ${music ? `${esc(music.title)} · ${esc(music.artist)}` : `Original audio · ${esc(author.username)}`}</small>
             </div>
             <span class="clip-progress" aria-hidden="true"><i></i></span>
@@ -2437,7 +2543,7 @@
           <button class="clips-sound" data-action="toggle-clip-sound" aria-label="${state.clipMuted ? 'Turn sound on' : 'Mute clips'}" aria-pressed="${state.clipMuted ? 'true' : 'false'}">${icon(state.clipMuted ? 'mute' : 'volume')}</button>
         </header>
         <div class="clips-feed" data-scroll-memory="${viewer ? `clip-viewer-feed:${esc(state.clipViewer?.postId || '')}` : 'clips-feed'}">
-          ${entries.length ? entries.map(({ post, mediaIndex }) => renderClipCard(post, { mediaIndex })).join('') : `<div class="clips-empty">${icon('clips')}<strong>No clips yet</strong><small>Share a video post and it will appear here.</small><button class="primary" data-action="open-post-create">Share a video</button></div>`}
+          ${entries.length ? entries.map(({ post, mediaIndex }, index) => renderClipCard(post, { mediaIndex, preload: index < 2 ? 'auto' : 'metadata' })).join('') : `<div class="clips-empty">${icon('clips')}<strong>No clips yet</strong><small>Share a video post and it will appear here.</small><button class="primary" data-action="open-post-create">Share a video</button></div>`}
         </div>
       </section>
     `;
@@ -2461,19 +2567,38 @@
     const items = postMediaItems(post);
     const index = clamp(Number(mediaIndex || 0), 0, Math.max(0, items.length - 1));
     if (!post || items[index]?.mediaType !== 'video') return false;
-    const url = new URL(location.href);
-    url.searchParams.set('clip', post.id);
-    url.searchParams.set('media', String(index));
-    beginDetailNavigation('clip-viewer', url.toString());
     const sourceTime = Number(sourceVideo?.currentTime || 0);
     if (sourceVideo && !sourceVideo.muted) {
       state.clipMuted = false;
       localStorage.setItem('clipMuted', '0');
     }
-    sourceVideo?.pause?.();
-    state.clipViewer = { postId: post.id, mediaIndex: index, sourceTab: state.tab, sourceTime };
-    state.actionSheet = null;
-    renderApp();
+    const openViewer = () => {
+      // The forward-navigation preview keeps the old shell in the DOM. Its
+      // shared-element name has already been captured, so clear the live node
+      // before rendering to keep the new snapshot's name unique.
+      sourceVideo?.style.removeProperty('view-transition-name');
+      const url = new URL(location.href);
+      url.searchParams.set('clip', post.id);
+      url.searchParams.set('media', String(index));
+      beginDetailNavigation('clip-viewer', url.toString());
+      sourceVideo?.pause?.();
+      state.clipViewer = { postId: post.id, mediaIndex: index, sourceTab: state.tab, sourceTime };
+      state.actionSheet = null;
+      renderApp();
+      const targetVideo = document.querySelector('.side-content[data-tab="clip-viewer"] .clip-video');
+      if (targetVideo) targetVideo.style.viewTransitionName = 'active-post-video';
+    };
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (sourceVideo && typeof document.startViewTransition === 'function' && !reducedMotion) {
+      sourceVideo.style.viewTransitionName = 'active-post-video';
+      document.documentElement.classList.add('clip-view-transition');
+      const transition = document.startViewTransition(openViewer);
+      transition.finished.finally(() => {
+        document.documentElement.classList.remove('clip-view-transition');
+        sourceVideo.style.viewTransitionName = '';
+        document.querySelector('.clip-video[style*="view-transition-name"]')?.style.removeProperty('view-transition-name');
+      });
+    } else openViewer();
     return true;
   }
 
@@ -2537,6 +2662,7 @@
     const progress = Number.isFinite(video.duration) && video.duration > 0 ? clamp(video.currentTime / video.duration, 0, 1) : 0;
     const line = card.querySelector('.clip-progress i');
     if (line) line.style.transform = `scaleX(${progress})`;
+    card.querySelector('.clip-progress')?.classList.toggle('is-segmented', Number.isFinite(video.duration) && video.duration >= 45);
     syncClipMusic(video);
   }
 
@@ -2955,33 +3081,42 @@
     `;
   }
 
+  function renderNoteRailItem(note, own = false) {
+    const owner = note.owner || note.user || state.me;
+    const hasAudio = Boolean(note.audio?.url);
+    const action = hasAudio ? 'play-note' : own ? 'open-note-composer' : 'open-chat';
+    const targetData = action === 'play-note' ? `data-note-id="${esc(note.id)}"` : action === 'open-chat' ? `data-user-id="${esc(owner.id)}"` : '';
+    const title = note.audioTitle || note.music?.title || 'Music';
+    const artist = note.audioArtist || note.music?.artist || owner.displayName || owner.username;
+    return `
+      <article class="note-item ${own ? 'own-note' : ''}" data-note-card="${esc(note.id)}">
+        <button class="note-main" data-action="${action}" ${targetData} aria-label="${hasAudio ? `Play ${esc(title)}` : own ? 'Edit your note' : `Message ${esc(owner.username)}`}" aria-pressed="false">
+          <span class="note-bubble">
+            ${hasAudio ? `<b>${esc(title)}</b><em>${esc(artist)}</em><span class="note-play-state">${icon('play')}</span>` : ''}
+            ${esc(note.text || '')}
+          </span>
+          <span class="note-avatar">${owner.avatar?.url ? `<img src="${esc(owner.avatar.url)}" alt="">` : esc(initials(owner))}</span>
+          <small>${own ? 'You' : esc(owner.username)}</small>
+        </button>
+        ${own ? `<button class="note-edit" data-action="open-note-composer" aria-label="Edit your note">${icon('plus')}</button>` : ''}
+        ${hasAudio ? `<audio id="note-audio-${esc(note.id)}" src="${esc(note.audio.url)}" preload="metadata" data-note-audio data-start="${Number(note.audioStart || note.music?.start || 0)}" data-duration="${Number(note.audioDuration || note.music?.clipDuration || 0)}"></audio>` : ''}
+      </article>
+    `;
+  }
+
   function renderNoteRail() {
     const notes = state.notes || [];
     const mine = notes.find((note) => (note.owner || note.user)?.id === state.me?.id);
-    const ordered = mine ? [mine, ...notes.filter((note) => note !== mine)] : notes;
     return `
       <section class="note-rail" aria-label="Notes" data-scroll-memory="chat-notes">
-        <button class="note-item own-note" data-action="open-note-composer">
-          <span class="note-bubble">${mine ? esc(mine.text || 'Your note') : 'Leave a note'}</span>
-          <span class="note-avatar">${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}<i>+</i></span>
-          <small>You</small>
-        </button>
-        ${ordered.filter((note) => (note.owner || note.user)?.id !== state.me?.id).map((note) => {
-          const owner = note.owner || note.user;
-          return `
-            <article class="note-item">
-              <button class="note-main" data-action="play-note" data-note-id="${esc(note.id)}">
-                <span class="note-bubble">
-                  ${note.audio ? `<b>${esc(note.audioTitle || 'Audio note')}</b><em>${esc(note.audioArtist || owner.displayName || owner.username)}</em>` : ''}
-                  ${esc(note.text || '')}
-                </span>
-                <span class="note-avatar">${owner.avatar?.url ? `<img src="${esc(owner.avatar.url)}" alt="">` : esc(initials(owner))}</span>
-                <small>${esc(owner.username)}</small>
-              </button>
-              ${note.audio?.url ? `<audio id="note-audio-${esc(note.id)}" src="${esc(note.audio.url)}" preload="none"></audio>` : ''}
-            </article>
-          `;
-        }).join('')}
+        ${mine ? renderNoteRailItem(mine, true) : `
+          <button class="note-item own-note" data-action="open-note-composer">
+            <span class="note-bubble">Leave a note</span>
+            <span class="note-avatar">${state.me.avatar?.url ? `<img src="${esc(state.me.avatar.url)}" alt="">` : esc(initials(state.me))}<i>+</i></span>
+            <small>You</small>
+          </button>
+        `}
+        ${notes.filter((note) => (note.owner || note.user)?.id !== state.me?.id).map((note) => renderNoteRailItem(note)).join('')}
       </section>
     `;
   }
@@ -3006,9 +3141,11 @@
               <div class="note-selected-music">
                 <span class="music-artwork">${selectedMusic.artworkUrl ? `<img src="${esc(selectedMusic.artworkUrl)}" alt="">` : icon('music')}</span>
                 <span><strong>${esc(selectedMusic.title)}</strong><small>${esc(selectedMusic.artist)} · ${esc(formatClipTime(selectedMusic.start || 0))}–${esc(formatClipTime(Number(selectedMusic.start || 0) + Number(selectedMusic.clipDuration || 30)))}</small></span>
+                <button data-action="toggle-note-music-preview" aria-label="Play selected music" aria-pressed="false">${icon('play')}</button>
                 <button data-action="open-note-music" aria-label="Change music">${icon('edit')}</button>
                 <button data-action="remove-note-music" aria-label="Remove music">${icon('x')}</button>
               </div>
+              <audio id="note-composer-music" src="${esc(selectedMusic.audioUrl || '')}" preload="metadata" data-start="${Number(selectedMusic.start || 0)}" data-duration="${Number(selectedMusic.clipDuration || 30)}"></audio>
             ` : composer.audio ? `
               <div class="note-selected-music local-audio">
                 <span class="music-artwork">${icon('mic')}</span>
@@ -3325,6 +3462,63 @@
     return renderSearchBrowsePanel();
   }
 
+  function searchCategoryOptions() {
+    return [
+      ['for_you', 'For you'],
+      ['accounts', 'Accounts'],
+      ['reels', 'Reels'],
+      ['audio', 'Audio'],
+      ['tags', 'Tags'],
+      ['places', 'Places']
+    ];
+  }
+
+  function renderSearchHistory() {
+    if (!state.searchHistory.length) return '';
+    return `
+      <section class="search-recent">
+        <header><strong>Recent</strong><button data-action="clear-search-history">Clear all</button></header>
+        <div>
+          ${state.searchHistory.slice(0, 12).map((entry) => `
+            <article class="search-recent-row">
+              <button data-action="use-recent-search" data-query="${esc(entry.query)}" data-category="${esc(entry.category || 'for_you')}">${icon(entry.category === 'accounts' ? 'profile' : entry.category === 'reels' ? 'clips' : entry.category === 'audio' ? 'music' : entry.category === 'places' ? 'location' : entry.category === 'tags' ? 'hashtag' : 'search')}<span><strong>${esc(entry.query)}</strong><small>${esc(searchCategoryOptions().find(([value]) => value === entry.category)?.[1] || 'For you')}</small></span></button>
+              <button data-action="remove-search-history" data-search-id="${esc(entry.id)}" aria-label="Remove ${esc(entry.query)} from recent searches">${icon('x')}</button>
+            </article>
+          `).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderSearchMediaGrid(posts, className = '') {
+    if (!posts.length) return `<div class="search-empty compact">${icon('grid')}<strong>No matching posts</strong><small>Try a different word or category.</small></div>`;
+    return `<div class="search-content-grid ${esc(className)}">${posts.map((post) => `<button data-action="open-explore-post" data-post-id="${esc(post.id)}" aria-label="Open ${esc(post.title || 'post')}">${renderPostMedia(post, { grid: true, preload: 'metadata' })}</button>`).join('')}</div>`;
+  }
+
+  function renderSearchCategoryResults() {
+    const query = state.userQuery.trim();
+    if (query.length < 2) return `<div class="search-empty compact">${icon('search')}<strong>Keep typing</strong><small>Use at least 2 characters.</small></div>`;
+    if (state.userSearching) return `<div class="search-category-loading">${Array.from({ length: 6 }, () => '<i></i>').join('')}</div>`;
+    const data = state.searchData;
+    if (state.searchCategory === 'accounts') return `<div class="result-list">${data.accounts.length ? data.accounts.map((user) => renderAccountRow(user)).join('') : `<div class="search-empty">${icon('profile')}<strong>No accounts found</strong><small>Check the spelling or try another name.</small></div>`}</div>`;
+    if (state.searchCategory === 'reels') return renderSearchMediaGrid(data.reels, 'reels-results');
+    if (state.searchCategory === 'audio') {
+      if (state.searchAudioLoading) return `<div class="search-category-loading">${Array.from({ length: 5 }, () => '<i></i>').join('')}</div>`;
+      return data.audio.length ? `<div class="search-audio-results">${data.audio.map((track) => `
+        <article><span class="music-artwork">${track.artworkUrl ? `<img src="${esc(track.artworkUrl)}" alt="">` : icon('music')}</span><span><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></span><button data-action="preview-search-audio" data-track-id="${esc(track.catalogId)}" aria-label="Preview ${esc(track.title)}">${icon('play')}</button></article>
+      `).join('')}</div>` : `<div class="search-empty">${icon('music')}<strong>No audio found</strong><small>Try a song title or artist.</small></div>`;
+    }
+    if (state.searchCategory === 'tags') return data.tags.length ? `<div class="search-token-results">${data.tags.map((tag) => `<button data-action="use-search-token" data-query="${esc(tag.name)}" data-category="for_you"><span>#</span><span><strong>#${esc(tag.name)}</strong><small>${Number(tag.postCount || 0).toLocaleString()} posts</small></span>${icon('chevron')}</button>`).join('')}</div>` : `<div class="search-empty">${icon('hashtag')}<strong>No tags found</strong><small>Try a broader keyword.</small></div>`;
+    if (state.searchCategory === 'places') return data.places.length ? `<div class="search-token-results">${data.places.map((place) => `<button data-action="use-search-token" data-query="${esc(place.name)}" data-category="for_you">${icon('location')}<span><strong>${esc(place.name)}</strong><small>${Number(place.postCount || 0).toLocaleString()} posts</small></span>${icon('chevron')}</button>`).join('')}</div>` : `<div class="search-empty">${icon('location')}<strong>No places found</strong><small>Try a city or venue name.</small></div>`;
+    const accountPreview = data.accounts.slice(0, 4);
+    const hasAny = accountPreview.length || data.posts.length;
+    if (!hasAny) return `<div class="search-empty">${icon('search')}<strong>No results for “${esc(query)}”</strong><small>Try another keyword or category.</small></div>`;
+    return `
+      ${accountPreview.length ? `<section class="search-top-accounts"><header><strong>Accounts</strong><button data-action="set-search-category" data-category="accounts">See all</button></header>${accountPreview.map((user) => renderAccountRow(user)).join('')}</section>` : ''}
+      <section class="search-top-posts"><header><strong>Posts</strong></header>${renderSearchMediaGrid(data.posts)}</section>
+    `;
+  }
+
   function renderSearchBrowsePanel() {
     const recommendations = visibleRecommendations();
     const query = state.userQuery.trim();
@@ -3336,11 +3530,10 @@
           ${state.userQuery ? `<button class="search-clear" data-action="clear-user-search" aria-label="Clear search">${icon('x')}</button>` : ''}
         </header>
         ${query ? `
-          <section class="search-results-section">
-            <div class="section-heading"><h2>Accounts</h2></div>
-            <div class="result-list" id="search-results">${renderSearchResults()}</div>
-          </section>
+          <nav class="search-category-tabs" aria-label="Search categories" role="tablist">${searchCategoryOptions().map(([value, label]) => `<button class="${state.searchCategory === value ? 'active' : ''}" data-action="set-search-category" data-category="${value}" role="tab" aria-selected="${state.searchCategory === value}">${label}</button>`).join('')}</nav>
+          <section class="search-results-section" id="search-results">${renderSearchCategoryResults()}</section>
         ` : `
+          ${renderSearchHistory()}
           <section class="search-explore-section">
             <div class="section-heading"><h2>Explore</h2><small>Popular right now</small></div>
             ${renderExploreGrid()}
@@ -3466,7 +3659,7 @@
             <div class="profile-avatar-wrap">
               ${profilePictureElement(state.me, 'profile-avatar-btn', { own: true })}
               ${story ? `<button class="profile-story-view" data-action="view-story" data-story-id="${esc(story.id)}" aria-label="View your story">${icon('play')}</button>` : ''}
-              <button class="profile-avatar-add" data-action="open-story-create" aria-label="Create story">+</button>
+              <button class="profile-avatar-add" data-action="open-story-create" aria-label="Create story">${icon('plus')}</button>
               ${state.notes.find((note) => (note.owner || note.user)?.id === state.me.id) ? `<button class="profile-note-bubble" data-action="open-note-composer">${esc(state.notes.find((note) => (note.owner || note.user)?.id === state.me.id)?.text || 'Your note')}</button>` : ''}
             </div>
             <button class="profile-link-icon" data-action="show-profile-link" data-link="${esc(profileUrl)}" aria-label="Share profile link">${icon('link')}</button>
@@ -5585,7 +5778,7 @@
           <div class="composer">
             ${state.replyTo ? `
               <div class="replying-to">
-                <span>Replying to: ${esc(describeMessage(state.replyTo)).slice(0, 120)}</span>
+                <span><small>Replying to</small>${renderReplyPreviewContent(state.replyTo, true)}</span>
                 <button class="icon-btn" title="Cancel reply" aria-label="Cancel reply" data-action="clear-reply">${icon('x')}</button>
               </div>
             ` : ''}
@@ -5931,7 +6124,7 @@
         ${state.activeGroup && sender ? `<span class="group-message-sender" title="${esc(sender.displayName || sender.username)}">${avatarHtml(sender)}</span>` : ''}
         <div class="bubble">
           ${message.forwardedFrom ? '<span class="forwarded-label">Forwarded</span>' : ''}
-          ${message.replyPreview ? `<div class="reply-preview">${esc(describeMessage(message.replyPreview)).slice(0, 160)}</div>` : ''}
+          ${message.replyPreview ? `<div class="reply-preview">${renderReplyPreviewContent(message.replyPreview)}</div>` : ''}
           ${renderMessageBody(message)}
           ${renderMessageStickerOverlays(message)}
           <div class="swipe-time">${esc(formatTime(message.createdAt))}</div>
@@ -7513,6 +7706,7 @@
       loadExplore().catch(() => { state.explorePosts = []; state.exploreLoading = false; }),
       loadClips().catch(() => { state.clips = []; }),
       loadNotes().catch(() => { state.notes = []; }),
+      loadSearchHistory().catch(() => { state.searchHistory = []; }),
       loadProfilePosts(state.me, state.profileMediaTab, { render: false }).catch(() => [])
     ]);
     if (options.render) updateSidebar();
@@ -8503,32 +8697,91 @@
     await loadNotes({ render: true });
   }
 
+  function syncNotePlayerUi(audio, status = audio?.paused ? 'paused' : 'playing') {
+    const card = audio?.closest('[data-note-card]');
+    const button = card?.querySelector('.note-main');
+    const marker = card?.querySelector('.note-play-state');
+    card?.classList.toggle('is-loading', status === 'loading');
+    card?.classList.toggle('is-playing', status === 'playing');
+    if (button) {
+      button.setAttribute('aria-busy', status === 'loading' ? 'true' : 'false');
+      button.setAttribute('aria-pressed', status === 'playing' ? 'true' : 'false');
+    }
+    if (marker) marker.innerHTML = status === 'loading' ? '<i></i><i></i><i></i>' : icon(status === 'playing' ? 'pause' : 'play');
+  }
+
   function playNote(noteId) {
     const selected = document.getElementById(`note-audio-${noteId}`);
-    const note = state.notes.find((item) => item.id === noteId);
-    document.querySelectorAll('.note-rail audio').forEach((audio) => {
-      if (audio !== selected) audio.pause();
-    });
     if (!selected) return;
-    if (!selected.paused) {
+    const wasPlaying = !selected.paused;
+    document.querySelectorAll('.note-rail audio[data-note-audio]').forEach((audio) => {
+      if (audio !== selected) audio.pause();
+      syncNotePlayerUi(audio, 'paused');
+    });
+    if (wasPlaying) {
       selected.pause();
+      syncNotePlayerUi(selected, 'paused');
       return;
     }
-    const start = Math.max(0, Number(note?.audioStart || note?.music?.start || 0));
-    const duration = Math.max(0, Number(note?.audioDuration || note?.music?.clipDuration || 0));
-    const end = duration ? start + duration : Infinity;
+    syncNotePlayerUi(selected, 'loading');
     const begin = () => {
-      if (!Number.isFinite(selected.currentTime) || selected.currentTime < start || selected.currentTime >= end) selected.currentTime = start;
-      selected.play().catch(() => {});
-    };
-    selected.ontimeupdate = () => {
-      if (selected.currentTime >= end) {
-        selected.pause();
-        selected.currentTime = start;
-      }
+      const available = Number.isFinite(selected.duration) && selected.duration > 0 ? selected.duration : Infinity;
+      const requestedStart = Math.max(0, Number(selected.dataset.start || 0));
+      const start = Math.min(requestedStart, Math.max(0, available - 0.25));
+      const requestedDuration = Math.max(0, Number(selected.dataset.duration || 0));
+      const end = requestedDuration ? Math.min(available, start + requestedDuration) : available;
+      try {
+        if (!Number.isFinite(selected.currentTime) || selected.currentTime < start || selected.currentTime >= end) selected.currentTime = start;
+      } catch {}
+      selected.ontimeupdate = () => {
+        if (selected.currentTime >= end) {
+          selected.pause();
+          try { selected.currentTime = start; } catch {}
+          syncNotePlayerUi(selected, 'paused');
+        }
+      };
+      selected.onplay = () => syncNotePlayerUi(selected, 'playing');
+      selected.onpause = () => { if (selected.currentTime < end) syncNotePlayerUi(selected, 'paused'); };
+      selected.onerror = () => {
+        syncNotePlayerUi(selected, 'paused');
+        pushToast({ key: `note-audio-${noteId}`, kind: 'social', title: 'Music unavailable', body: 'This preview could not be played. Try again in a moment.' });
+      };
+      selected.play().catch(() => selected.onerror?.());
     };
     if (selected.readyState >= 1) begin();
     else selected.addEventListener('loadedmetadata', begin, { once: true });
+  }
+
+  function toggleNoteComposerMusicPreview(button) {
+    const audio = document.getElementById('note-composer-music');
+    if (!audio?.src) return;
+    const setButton = (playing) => {
+      button.innerHTML = icon(playing ? 'pause' : 'play');
+      button.setAttribute('aria-label', playing ? 'Pause selected music' : 'Play selected music');
+      button.setAttribute('aria-pressed', playing ? 'true' : 'false');
+    };
+    if (!audio.paused) {
+      audio.pause();
+      setButton(false);
+      return;
+    }
+    const begin = () => {
+      const available = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 30;
+      const start = Math.min(Math.max(0, Number(audio.dataset.start || 0)), Math.max(0, available - 0.25));
+      const end = Math.min(available, start + Math.max(1, Number(audio.dataset.duration || 30)));
+      if (audio.currentTime < start || audio.currentTime >= end) audio.currentTime = start;
+      audio.ontimeupdate = () => {
+        if (audio.currentTime >= end) {
+          audio.pause();
+          audio.currentTime = start;
+          setButton(false);
+        }
+      };
+      audio.onended = () => setButton(false);
+      audio.play().then(() => setButton(true)).catch(() => setButton(false));
+    };
+    if (audio.readyState >= 1) begin();
+    else audio.addEventListener('loadedmetadata', begin, { once: true });
   }
 
   async function loadContactsAndChats() {
@@ -10989,6 +11242,85 @@
   }
 
   let userSearchId = 0;
+  let searchAudioPreviewAudio = null;
+
+  async function loadSearchHistory() {
+    const data = await api('/api/me/search-history');
+    state.searchHistory = data.searches || [];
+    return state.searchHistory;
+  }
+
+  async function saveSearchHistory(query = state.userQuery, category = state.searchCategory, itemId = '') {
+    const cleanQuery = String(query || '').trim();
+    if (cleanQuery.length < 2) return;
+    const data = await api('/api/me/search-history', { method: 'POST', body: { query: cleanQuery, category, itemId } });
+    state.searchHistory = data.searches || [];
+  }
+
+  async function removeSearchHistory(entryId = '') {
+    const suffix = entryId ? `?id=${encodeURIComponent(entryId)}` : '';
+    const data = await api(`/api/me/search-history${suffix}`, { method: 'DELETE' });
+    state.searchHistory = data.searches || [];
+    updateSidebar();
+  }
+
+  function stopSearchAudioPreview() {
+    searchAudioPreviewAudio?.pause?.();
+    searchAudioPreviewAudio = null;
+    document.querySelectorAll('[data-action="preview-search-audio"]').forEach((button) => {
+      button.innerHTML = icon('play');
+      button.setAttribute('aria-pressed', 'false');
+    });
+  }
+
+  function previewSearchAudio(trackId, button) {
+    const track = state.searchData.audio.find((item) => item.catalogId === trackId);
+    if (!track?.audioUrl) return;
+    if (searchAudioPreviewAudio?.dataset?.trackId === trackId && !searchAudioPreviewAudio.paused) {
+      stopSearchAudioPreview();
+      return;
+    }
+    stopSearchAudioPreview();
+    const audio = new Audio(track.audioUrl);
+    audio.dataset.trackId = trackId;
+    audio.preload = 'metadata';
+    audio.onended = stopSearchAudioPreview;
+    audio.onerror = stopSearchAudioPreview;
+    searchAudioPreviewAudio = audio;
+    button.innerHTML = icon('pause');
+    button.setAttribute('aria-pressed', 'true');
+    audio.play().catch(stopSearchAudioPreview);
+    saveSearchHistory(track.title || state.userQuery, 'audio', track.catalogId).catch(() => {});
+  }
+
+  async function loadSearchAudio() {
+    const query = state.userQuery.trim();
+    if (query.length < 2 || state.searchAudioLoading) return;
+    const searchId = userSearchId;
+    state.searchAudioLoading = true;
+    renderSidebarState();
+    try {
+      const data = await api(`/api/media/music?q=${encodeURIComponent(query)}&provider=itunes`);
+      if (searchId !== userSearchId || query !== state.userQuery.trim()) return;
+      state.searchData.audio = data.tracks || [];
+    } finally {
+      state.searchAudioLoading = false;
+      renderSidebarState();
+      setTimeout(focusUserSearch, 0);
+    }
+  }
+
+  function runRecentSearch(query, category = 'for_you') {
+    state.userQuery = String(query || '').trim();
+    state.searchCategory = searchCategoryOptions().some(([value]) => value === category) ? category : 'for_you';
+    state.searchResults = [];
+    state.searchData = { accounts: [], posts: [], reels: [], audio: [], tags: [], places: [] };
+    state.userSearching = state.userQuery.length >= 2;
+    updateSidebar();
+    searchUsers(state.userQuery).then(() => {
+      if (state.searchCategory === 'audio') loadSearchAudio().catch(() => {});
+    }).catch((error) => alert(error.message));
+  }
 
   function focusUserSearch() {
     const input = document.getElementById('user-search');
@@ -11003,14 +11335,16 @@
     state.userQuery = query;
     if (trimmed.length < 2) {
       state.searchResults = [];
+      state.searchData = { accounts: [], posts: [], reels: [], audio: [], tags: [], places: [] };
       state.userSearching = false;
       renderSidebarState();
       setTimeout(focusUserSearch, 0);
       return;
     }
-    const data = await api(`/api/users/search?q=${encodeURIComponent(trimmed)}`);
+    const data = await api(`/api/search?q=${encodeURIComponent(trimmed)}`);
     if (searchId !== userSearchId || trimmed !== state.userQuery.trim()) return;
-    state.searchResults = data.users || [];
+    state.searchData = { accounts: data.accounts || [], posts: data.posts || [], reels: data.reels || [], audio: [], tags: data.tags || [], places: data.places || [] };
+    state.searchResults = state.searchData.accounts;
     state.userSearching = false;
     renderSidebarState();
     setTimeout(focusUserSearch, 0);
@@ -12720,6 +13054,9 @@
         togglePostCommentReplies(target.dataset.commentId);
       }
       if (action === 'open-explore-post' || action === 'open-profile-post') {
+        if (action === 'open-explore-post' && state.tab === 'search' && state.userQuery.trim()) {
+          saveSearchHistory(state.userQuery, state.searchCategory, target.dataset.postId).catch(() => {});
+        }
         const post = postById(target.dataset.postId);
         if (post) {
           state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
@@ -12773,6 +13110,7 @@
         state.noteComposer.music = null;
         updateNoteComposerSlot();
       }
+      if (action === 'toggle-note-music-preview') toggleNoteComposerMusicPreview(target);
       if (action === 'toggle-note-local-preview') {
         const audio = document.getElementById('note-composer-audio');
         if (!audio) return;
@@ -13608,6 +13946,9 @@
         openOwnProfileFromStoryComments();
       }
       if (action === 'view-user-profile') {
+        if (state.tab === 'search' && state.userQuery.trim()) {
+          saveSearchHistory(state.userQuery, 'accounts', target.dataset.username).catch(() => {});
+        }
         if (target.closest('.story-comment-row')) {
           clearStoryAdvance();
           state.actionSheet = null;
@@ -13637,12 +13978,29 @@
       if (action === 'clear-user-search') {
         clearTimeout(searchTimer);
         userSearchId += 1;
+        stopSearchAudioPreview();
         state.userQuery = '';
         state.userSearching = false;
         state.searchResults = [];
+        state.searchCategory = 'for_you';
+        state.searchData = { accounts: [], posts: [], reels: [], audio: [], tags: [], places: [] };
         renderSidebarState();
         setTimeout(focusUserSearch, 0);
       }
+      if (action === 'set-search-category') {
+        stopSearchAudioPreview();
+        state.searchCategory = searchCategoryOptions().some(([value]) => value === target.dataset.category) ? target.dataset.category : 'for_you';
+        renderSidebarState();
+        setTimeout(focusUserSearch, 0);
+        if (state.searchCategory === 'audio' && !state.searchData.audio.length) await loadSearchAudio();
+      }
+      if (action === 'use-recent-search' || action === 'use-search-token') {
+        runRecentSearch(target.dataset.query, target.dataset.category || 'for_you');
+        saveSearchHistory(target.dataset.query, target.dataset.category || 'for_you').catch(() => {});
+      }
+      if (action === 'remove-search-history') await removeSearchHistory(target.dataset.searchId);
+      if (action === 'clear-search-history') await removeSearchHistory();
+      if (action === 'preview-search-audio') previewSearchAudio(target.dataset.trackId, target);
       if (action === 'clear-conversation-search') {
         clearTimeout(conversationTimer);
         conversationSearchId += 1;
@@ -14422,10 +14780,12 @@
       return;
     }
     if (event.target.id === 'user-search') {
+      stopSearchAudioPreview();
       state.userQuery = event.target.value;
       clearTimeout(searchTimer);
       userSearchId += 1;
       state.searchResults = [];
+      state.searchData = { accounts: [], posts: [], reels: [], audio: [], tags: [], places: [] };
       state.userSearching = state.userQuery.trim().length >= 2;
       renderSidebarState();
       setTimeout(focusUserSearch, 0);
@@ -14492,6 +14852,16 @@
   });
 
   document.addEventListener('keydown', async (event) => {
+    if (event.target.id === 'user-search' && event.key === 'Enter') {
+      event.preventDefault();
+      const query = state.userQuery.trim();
+      if (query.length >= 2) {
+        await searchUsers(query);
+        await saveSearchHistory(query, state.searchCategory).catch(() => {});
+        if (state.searchCategory === 'audio' && !state.searchData.audio.length) await loadSearchAudio();
+      }
+      return;
+    }
     if (state.musicPicker && event.key === 'Tab') {
       const dialog = document.querySelector('#music-picker-slot .music-picker-sheet');
       const focusable = Array.from(dialog?.querySelectorAll('input:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])

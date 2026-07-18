@@ -17736,3 +17736,487 @@ button.note-item,
     transition: none;
   }
 }
+
+/* Feed video identity, metadata cycling, and fullscreen handoff. */
+.feed-post.overlay-video-identity {
+  position: relative;
+}
+
+.feed-post.overlay-video-identity > .post-head {
+  position: absolute;
+  z-index: 9;
+  top: 0;
+  right: 0;
+  left: 0;
+  min-height: 62px;
+  padding-top: 9px;
+  color: #fff;
+  background: linear-gradient(rgba(0, 0, 0, .62), transparent);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .9);
+}
+
+.feed-post.overlay-video-identity .post-head > a,
+.feed-post.overlay-video-identity .post-head small,
+.feed-post.overlay-video-identity .post-head > button {
+  color: #fff;
+}
+
+.feed-post.overlay-video-identity .post-head .avatar {
+  border-color: rgba(255, 255, 255, .9);
+}
+
+.post-meta-cycle {
+  position: relative;
+  height: 15px;
+  display: block;
+  overflow: hidden;
+}
+
+.post-meta-cycle > span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.post-meta-cycle > span .ui-icon {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+}
+
+.post-meta-cycle.has-audio > span {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation: postMetaFirst 6s ease-in-out infinite;
+}
+
+.post-meta-cycle.has-audio > span:last-child {
+  animation-name: postMetaSecond;
+}
+
+@keyframes postMetaFirst {
+  0%, 40% { opacity: 1; transform: translateY(0); }
+  48%, 92% { opacity: 0; transform: translateY(-7px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes postMetaSecond {
+  0%, 42% { opacity: 0; transform: translateY(7px); }
+  50%, 90% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-7px); }
+}
+
+html.clip-view-transition .app-shell.route-page-entering {
+  animation: none !important;
+}
+
+html.clip-view-transition::view-transition-group(active-post-video) {
+  z-index: 999;
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(.2, .82, .2, 1);
+}
+
+html.clip-view-transition::view-transition-old(active-post-video),
+html.clip-view-transition::view-transition-new(active-post-video) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  animation-duration: 340ms;
+}
+
+html.clip-view-transition::view-transition-old(root) {
+  animation: clipChromeOut 240ms ease both;
+}
+
+html.clip-view-transition::view-transition-new(root) {
+  animation: clipChromeIn 320ms ease both;
+}
+
+@keyframes clipChromeOut { to { opacity: .18; } }
+@keyframes clipChromeIn { from { opacity: .18; } }
+
+/* Reels use one or two caption lines according to content length and split the
+   progress rail for longer videos. */
+.clip-copy p.one-line { -webkit-line-clamp: 1; }
+.clip-copy p.two-lines { -webkit-line-clamp: 2; }
+
+.clip-progress.is-segmented::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  background: #000;
+  transform: translateX(-50%);
+}
+
+/* Pull-to-refresh feedback and caught-up confirmation. */
+.home-page {
+  position: relative;
+  transition: transform 180ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.home-refresh-indicator {
+  position: absolute;
+  z-index: 30;
+  top: -48px;
+  right: 0;
+  left: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: #f5f5f5;
+  background: #000;
+  opacity: var(--pull-progress, 0);
+  pointer-events: none;
+}
+
+.home-refresh-indicator > span {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #363636;
+  border-radius: 50%;
+  transform: rotate(calc(var(--pull-progress, 0) * 240deg));
+}
+
+.home-refresh-indicator .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.home-refresh-indicator strong {
+  font-size: 12px;
+}
+
+.home-refresh-indicator.refreshing,
+.home-refresh-indicator.caught-up {
+  position: relative;
+  top: auto;
+  height: 44px;
+  opacity: 1;
+  animation: homeRefreshDrop 220ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.home-refresh-indicator.refreshing > span {
+  animation: homeRefreshSpin 720ms linear infinite;
+}
+
+.home-refresh-indicator.caught-up > span {
+  color: #fff;
+  border-color: #1b73a3;
+  background: #1b73a3;
+  transform: none;
+}
+
+.home-refresh-indicator.is-leaving { animation: homeRefreshLeave 200ms ease both; }
+@keyframes homeRefreshSpin { to { transform: rotate(360deg); } }
+@keyframes homeRefreshDrop { from { height: 0; opacity: 0; transform: translateY(-12px); } }
+@keyframes homeRefreshLeave { to { height: 0; opacity: 0; transform: translateY(-10px); } }
+
+/* Suggested profiles can be opened directly from the Stories rail. */
+.home-story.suggested-profile .home-story-avatar {
+  border-color: #3a3a3a;
+  background: #171717;
+  color: #f5f5f5;
+}
+
+.home-story.suggested-profile .home-story-avatar i {
+  right: -2px;
+  bottom: -2px;
+  color: #fff;
+  background: #1b73a3;
+}
+
+.home-story.suggested-profile .home-story-avatar i .ui-icon {
+  width: 11px;
+  height: 11px;
+}
+
+/* Notes expose actual preview playback for both your Note and friends' Notes. */
+.note-play-state {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, .58);
+}
+
+.note-play-state .ui-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.note-play-state > i {
+  width: 2px;
+  height: 9px;
+  border-radius: 2px;
+  background: currentColor;
+  animation: noteLoadingBar 650ms ease-in-out infinite alternate;
+}
+
+.note-play-state > i:nth-child(2) { animation-delay: 120ms; }
+.note-play-state > i:nth-child(3) { animation-delay: 240ms; }
+@keyframes noteLoadingBar { from { transform: scaleY(.35); } to { transform: scaleY(1); } }
+
+.note-item.is-playing .note-bubble {
+  border-color: rgba(54, 163, 224, .62);
+  box-shadow: 0 0 0 1px rgba(54, 163, 224, .18), 0 8px 24px rgba(0, 0, 0, .34);
+}
+
+.note-item.is-playing .note-avatar {
+  border-color: #1b73a3;
+}
+
+.note-edit {
+  position: absolute;
+  z-index: 5;
+  right: 8px;
+  bottom: 17px;
+  width: 23px;
+  height: 23px;
+  min-height: 23px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 2px solid #000;
+  border-radius: 50%;
+  color: #fff;
+  background: #1b73a3;
+}
+
+.note-edit .ui-icon { width: 13px; height: 13px; }
+
+.note-selected-music {
+  grid-template-columns: 46px minmax(0, 1fr) 38px 38px 38px;
+}
+
+#note-composer-music { display: none; }
+
+/* Rich media replies retain the GIF/photo instead of degrading to a filename. */
+.reply-preview-media {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.reply-preview-media img {
+  width: 64px;
+  height: 54px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+.reply-preview-media > span,
+.reply-preview-media strong,
+.reply-preview-media small {
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-preview-media.compact { grid-template-columns: 44px minmax(0, 1fr); }
+.reply-preview-media.compact img { width: 44px; height: 38px; }
+.reply-preview-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.replying-to > span > small { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; }
+
+/* Search categories and per-account history. */
+.search-category-tabs {
+  width: 100%;
+  display: flex;
+  gap: 20px;
+  overflow-x: auto;
+  padding: 0 14px;
+  border-bottom: 1px solid #262626;
+  scrollbar-width: none;
+}
+
+.search-category-tabs::-webkit-scrollbar { display: none; }
+
+.search-category-tabs button {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 1px;
+  border-radius: 0;
+  color: #8e8e8e;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.search-category-tabs button.active { color: #fff; }
+.search-category-tabs button.active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: #fff;
+  animation: searchTabIn 170ms ease both;
+}
+
+@keyframes searchTabIn { from { opacity: 0; transform: scaleX(.45); } }
+
+.search-results-section {
+  min-height: 260px;
+  padding: 8px 0 24px;
+}
+
+.search-top-accounts > header,
+.search-top-posts > header,
+.search-recent > header {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+}
+
+.search-top-accounts > header button,
+.search-recent > header button {
+  color: #3797ef;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.search-top-posts { margin-top: 8px; }
+
+.search-content-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.search-content-grid > button {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  overflow: hidden;
+  padding: 0;
+  border-radius: 0;
+  background: #111;
+}
+
+.search-content-grid .post-media-frame { width: 100%; height: 100%; aspect-ratio: auto; }
+
+.search-category-loading {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.search-category-loading i {
+  aspect-ratio: 1;
+  background: linear-gradient(110deg, #111 20%, #202020 45%, #111 70%);
+  background-size: 220% 100%;
+  animation: socialGridShimmer 1.1s linear infinite;
+}
+
+.search-recent { margin-bottom: 10px; border-bottom: 1px solid #262626; }
+.search-recent-row { display: grid; grid-template-columns: minmax(0, 1fr) 42px; align-items: center; }
+.search-recent-row > button:first-child {
+  min-width: 0;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  color: #f5f5f5;
+  background: transparent;
+  text-align: left;
+}
+
+.search-recent-row > button:last-child { color: #8e8e8e; background: transparent; }
+.search-recent-row > button > .ui-icon { width: 21px; height: 21px; }
+.search-recent-row span strong,
+.search-recent-row span small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-recent-row span small { margin-top: 2px; color: #8e8e8e; font-size: 10px; }
+
+.search-token-results > button,
+.search-audio-results > article {
+  min-width: 0;
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 14px;
+  color: #f5f5f5;
+  background: transparent;
+  text-align: left;
+}
+
+.search-token-results > button > span:first-child {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #363636;
+  border-radius: 50%;
+  font-size: 20px;
+}
+
+.search-token-results strong,
+.search-token-results small,
+.search-audio-results strong,
+.search-audio-results small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-token-results small,
+.search-audio-results small { margin-top: 3px; color: #8e8e8e; font-size: 10px; }
+.search-audio-results .music-artwork { width: 44px; height: 44px; }
+.search-audio-results article > button { width: 34px; height: 34px; min-height: 34px; padding: 0; border-radius: 50%; color: #fff; background: #262626; }
+
+/* Current Instagram profile previews are portrait rather than square. */
+.profile-post-grid > button { aspect-ratio: 3 / 4; }
+
+.profile-avatar-add {
+  padding: 0;
+  line-height: 0;
+}
+
+.profile-avatar-add .ui-icon {
+  width: 15px;
+  height: 15px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .post-meta-cycle.has-audio > span,
+  .home-refresh-indicator,
+  .home-refresh-indicator > span,
+  .note-play-state > i,
+  .search-category-tabs button.active::after,
+  .search-category-loading i {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .post-meta-cycle.has-audio > span:first-child { position: static; opacity: 1; }
+  .post-meta-cycle.has-audio > span:last-child { display: none; }
+}
