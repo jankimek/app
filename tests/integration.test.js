@@ -229,6 +229,19 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(clientSource, /const keepDesktopChat/);
   assert.match(clientSource, /clipViewer: state\.clipViewer \? \{ \.\.\.state\.clipViewer \} : null/);
   assert.match(clientSource, /data-action="toggle-clip-sound"/);
+  assert.match(clientSource, /function searchGiphy/);
+  assert.match(clientSource, /bundle', 'messaging_non_clips'/);
+  assert.match(clientSource, /Powered by GIPHY/);
+  assert.match(clientSource, /Search powered by iTunes/);
+  assert.match(clientSource, /function renderInboxMap/);
+  assert.match(clientSource, /function renderInstantComposer/);
+  assert.match(clientSource, /openCameraCapture\('instant'/);
+  assert.match(styleSource, /\.inbox-connection-rail \{/);
+  assert.match(styleSource, /\.instant-composer,[\s\S]*?height: min\(780px, calc\(var\(--visual-height\) - 24px\)\)/);
+  assert.match(styleSource, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.instant-viewer/);
+  assert.match(serverSource, /pathname === '\/api\/media\/config'/);
+  assert.match(serverSource, /pathname === '\/api\/instants'/);
+  assert.match(serverSource, /function resolveCatalogMusic/);
   assert.match(clientSource, /data-action="open-home-video"/);
   assert.match(clientSource, /data-action="toggle-post-share-target"/);
   assert.match(clientSource, /class="shared-post-card"/);
@@ -1268,6 +1281,33 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(connectedBob.data.user.isFollowing, true);
   assert.equal(connectedBob.data.user.followsViewer, true);
 
+  assert.equal((await anonymous.request('/api/instants')).status, 401);
+  const instantCreated = await alice.request('/api/instants', {
+    method: 'POST',
+    body: {
+      caption: 'Right now',
+      audience: 'friends',
+      source: 'camera',
+      file: { name: 'instant.png', type: 'image/png', dataUrl: PNG_DATA }
+    }
+  });
+  assert.equal(instantCreated.status, 201);
+  assert.equal(instantCreated.data.instant.recipientCount, 1);
+  assert.equal((await charlie.request('/api/instants')).data.piles.length, 0);
+  const bobInstantInbox = await bob.request('/api/instants');
+  assert.equal(bobInstantInbox.status, 200);
+  assert.equal(bobInstantInbox.data.piles[0].sender.id, aliceUser.id);
+  assert.equal(bobInstantInbox.data.piles[0].items[0].id, instantCreated.data.instant.id);
+  assert.equal(bobInstantInbox.data.piles[0].items[0].file, undefined);
+  const openedInstant = await bob.request(`/api/instants/${instantCreated.data.instant.id}`);
+  assert.equal(openedInstant.status, 200);
+  assert.equal(openedInstant.data.instant.caption, 'Right now');
+  assert.equal((await bob.request(openedInstant.data.instant.file.url)).status, 200);
+  assert.equal((await bob.request('/api/instants')).data.piles.length, 0);
+  assert.equal((await bob.request(`/api/instants/${instantCreated.data.instant.id}`, { method: 'DELETE' })).status, 404);
+  assert.equal((await alice.request(`/api/instants/${instantCreated.data.instant.id}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await bob.request(openedInstant.data.instant.file.url)).status, 404);
+
   const defaultAppearance = await alice.request(`/api/chats/${bobUser.id}/appearance`);
   assert.equal(defaultAppearance.status, 200);
   assert.equal(defaultAppearance.data.settings.theme, 'midnight');
@@ -2195,6 +2235,7 @@ test('open media search imports GIFs and applies canonical music sections safely
       PORT: String(port),
       DATA_DIR: dataDir,
       UPLOAD_DIR: uploadDir,
+      MUSIC_PROVIDER: 'openverse',
       OPENVERSE_API_BASE: catalogBaseUrl,
       OPENVERSE_ALLOW_HTTP: '1',
       OPENVERSE_MEDIA_HOSTS: '127.0.0.1'

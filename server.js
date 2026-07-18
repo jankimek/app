@@ -8,6 +8,24 @@ const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const ROOT = __dirname;
+
+// Keep local provider credentials out of source control while preserving the
+// deployment-friendly process environment used by systemd and hosting panels.
+const LOCAL_ENV_FILE = path.join(ROOT, '.env');
+if (fs.existsSync(LOCAL_ENV_FILE)) {
+  for (const rawLine of fs.readFileSync(LOCAL_ENV_FILE, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const separator = line.indexOf('=');
+    if (separator < 1) continue;
+    const name = line.slice(0, separator).trim();
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name) || process.env[name] !== undefined) continue;
+    let value = line.slice(separator + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    process.env[name] = value;
+  }
+}
+
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(ROOT, 'data'));
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || path.join(ROOT, 'uploads'));
@@ -22,8 +40,20 @@ const MAIL_FROM = process.env.MAIL_FROM || 'New Around <no-reply@newaround.local
 const SENDMAIL_PATH = process.env.SENDMAIL_PATH || '/usr/sbin/sendmail';
 const DISPLAY_NAME_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 const NOTE_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const INSTANT_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const INSTANT_ARCHIVE_MS = 365 * 24 * 60 * 60 * 1000;
 const EMAIL_VERIFICATION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const GOOGLE_WEATHER_API_KEY = String(process.env.GOOGLE_WEATHER_API_KEY || '').trim();
+const GIPHY_API_KEY = String(process.env.GIPHY_API_KEY || '').trim();
+const GIPHY_API_BASE = String(process.env.GIPHY_API_BASE || 'https://api.giphy.com').trim().replace(/\/+$/, '');
+const GIPHY_RATING = ['g', 'pg', 'pg-13'].includes(String(process.env.GIPHY_RATING || '').toLowerCase())
+  ? String(process.env.GIPHY_RATING).toLowerCase()
+  : 'pg';
+const ITUNES_API_BASE = String(process.env.ITUNES_API_BASE || 'https://itunes.apple.com').trim().replace(/\/+$/, '');
+const ITUNES_COUNTRY = /^[a-z]{2}$/i.test(String(process.env.ITUNES_COUNTRY || 'DE'))
+  ? String(process.env.ITUNES_COUNTRY || 'DE').toUpperCase()
+  : 'DE';
+const MUSIC_PROVIDER = String(process.env.MUSIC_PROVIDER || 'itunes').trim().toLowerCase() === 'openverse' ? 'openverse' : 'itunes';
 const OPENVERSE_API_BASE = String(process.env.OPENVERSE_API_BASE || 'https://api.openverse.org').trim().replace(/\/+$/, '');
 const OPENVERSE_BEARER_TOKEN = String(process.env.OPENVERSE_BEARER_TOKEN || '').trim();
 const OPENVERSE_ALLOW_HTTP = String(process.env.OPENVERSE_ALLOW_HTTP || '') === '1';
@@ -79,6 +109,7 @@ const db = {
   stories: readJson('stories.json', {}),
   posts: readJson('posts.json', {}),
   notes: readJson('notes.json', {}),
+  instants: readJson('instants.json', {}),
   emailVerifications: readJson('emailVerifications.json', {}),
   gifs: readJson('gifs.json', {}),
   reports: readJson('reports.json', []),
@@ -96,6 +127,7 @@ const socketsByUser = new Map();
 const openverseDetailCache = new Map();
 const openverseQueryCache = new Map();
 const openverseGifImports = new Map();
+const giphyGifImports = new Map();
 
 function readJson(fileName, fallback) {
   try {
@@ -221,6 +253,10 @@ function savePosts() {
 
 function saveNotes() {
   return saveJson('notes.json', db.notes);
+}
+
+function saveInstants() {
+  return saveJson('instants.json', db.instants);
 }
 
 function saveEmailVerifications() {
@@ -406,7 +442,7 @@ function publicMusicSelection(music, audioUrl) {
   if (!music) return null;
   return {
     catalogId: music.catalogId || '',
-    provider: music.provider || 'Openverse',
+    provider: music.provider || 'iTunes',
     title: music.title || '',
     artist: music.artist || '',
     artworkUrl: music.artworkUrl || '',
@@ -2152,9 +2188,123 @@ function catalogMediaUrlAllowed(value, kind) {
   if (!link) return false;
   const hostname = new URL(link).hostname.toLowerCase();
   if (OPENVERSE_MEDIA_HOSTS.has(hostname)) return true;
-  if (kind === 'gif') return hostname === 'upload.wikimedia.org';
-  if (kind === 'audio') return hostname === 'storage.jamendo.com' || hostname.endsWith('.storage.jamendo.com');
+  if (kind === 'gif') return hostname === 'upload.wikimedia.org' || hostname === 'giphy.com' || hostname.endsWith('.giphy.com');
+  if (kind === 'audio') {
+    return hostname === 'storage.jamendo.com' || hostname.endsWith('.storage.jamendo.com') ||
+      hostname === 'itunes.apple.com' || hostname.endsWith('.itunes.apple.com') ||
+      hostname === 'mzstatic.com' || hostname.endsWith('.mzstatic.com');
+  }
   return false;
+}
+
+async function externalJson(rawUrl, errorLabel) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(rawUrl, {
+      headers: { Accept: 'application/json', 'User-Agent': 'NewAround/1.0 (social media client)' },
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const status = response.status === 429 ? 429 : response.status === 404 ? 404 : 502;
+      throw Object.assign(new Error(response.status === 429 ? `${errorLabel} is busy. Try again shortly.` : `${errorLabel} could not be reached.`), { status });
+    }
+    return await response.json();
+  } catch (error) {
+    if (error?.status) throw error;
+    throw Object.assign(new Error(`${errorLabel} is temporarily unavailable.`), { status: 502 });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function cleanItunesId(value) {
+  const match = /^(?:itunes:)?(\d{1,20})$/i.exec(String(value || '').trim());
+  return match ? match[1] : '';
+}
+
+function normalizeItunesMusic(raw) {
+  const trackId = cleanItunesId(raw?.trackId);
+  const previewUrl = safeCatalogLink(raw?.previewUrl);
+  const trackDuration = Math.round(Math.max(0, Number(raw?.trackTimeMillis || 0) / 1000) * 10) / 10;
+  if (!trackId || raw?.wrapperType !== 'track' || raw?.kind !== 'song' || !trackDuration || !catalogMediaUrlAllowed(previewUrl, 'audio')) return null;
+  const artwork = safeCatalogLink(String(raw?.artworkUrl100 || '').replace(/100x100bb/i, '320x320bb'));
+  return {
+    catalogId: `itunes:${trackId}`,
+    provider: 'iTunes',
+    title: cleanText(raw.trackName || 'Untitled track', 100),
+    artist: cleanText(raw.artistName || 'Unknown artist', 100),
+    artworkUrl: artwork,
+    sourceUrl: safeCatalogLink(raw.trackViewUrl || raw.collectionViewUrl),
+    license: 'Preview',
+    licenseUrl: 'https://www.apple.com/legal/internet-services/itunes/',
+    attribution: 'Preview provided by Apple',
+    trackDuration,
+    url: previewUrl
+  };
+}
+
+async function itunesJson(resource, params = null) {
+  const url = new URL(`${ITUNES_API_BASE}/${String(resource || '').replace(/^\/+/, '')}`);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
+  });
+  return externalJson(url, 'iTunes music search');
+}
+
+async function resolveItunesMusic(rawId) {
+  const trackId = cleanItunesId(rawId);
+  if (!trackId) throw Object.assign(new Error('Choose a valid iTunes track from search.'), { status: 400 });
+  const cacheKey = `itunes:${trackId}`;
+  const cached = catalogCacheGet(openverseDetailCache, cacheKey);
+  if (cached) return cached;
+  const data = await itunesJson('lookup', { id: trackId, entity: 'song', country: ITUNES_COUNTRY });
+  const track = (data.results || []).map(normalizeItunesMusic).find(Boolean);
+  if (!track) throw Object.assign(new Error('That iTunes preview is no longer available.'), { status: 400 });
+  return catalogCacheSet(openverseDetailCache, cacheKey, track);
+}
+
+async function resolveCatalogMusic(rawId) {
+  return cleanItunesId(rawId) ? resolveItunesMusic(rawId) : resolveOpenverseMedia('audio', rawId);
+}
+
+function cleanGiphyId(value) {
+  const match = /^(?:giphy:)?([a-zA-Z0-9_-]{3,80})$/.exec(String(value || '').trim());
+  return match ? match[1] : '';
+}
+
+function normalizeGiphyGif(raw) {
+  const gifId = cleanGiphyId(raw?.id);
+  const mediaUrl = safeCatalogLink(raw?.images?.original?.url || raw?.images?.downsized?.url);
+  if (!gifId || !catalogMediaUrlAllowed(mediaUrl, 'gif')) return null;
+  return {
+    id: `giphy:${gifId}`,
+    catalogId: `giphy:${gifId}`,
+    provider: 'GIPHY',
+    title: cleanText(raw.title || 'Animated GIF', 100),
+    creator: cleanText(raw.user?.display_name || raw.username || 'GIPHY', 120),
+    mediaUrl,
+    sourceUrl: safeCatalogLink(raw.url),
+    license: 'GIPHY',
+    licenseUrl: 'https://support.giphy.com/hc/en-us/articles/360020027752-GIPHY-User-Terms-of-Service',
+    attribution: 'Powered by GIPHY',
+    tags: []
+  };
+}
+
+async function resolveGiphyGif(rawId) {
+  const gifId = cleanGiphyId(rawId);
+  if (!gifId || !GIPHY_API_KEY) throw Object.assign(new Error('GIPHY is not configured.'), { status: 400 });
+  const cacheKey = `giphy:${gifId}`;
+  const cached = catalogCacheGet(openverseDetailCache, cacheKey);
+  if (cached) return cached;
+  const url = new URL(`${GIPHY_API_BASE}/v1/gifs/${encodeURIComponent(gifId)}`);
+  url.searchParams.set('api_key', GIPHY_API_KEY);
+  url.searchParams.set('rating', GIPHY_RATING);
+  const data = await externalJson(url, 'GIPHY');
+  const gif = normalizeGiphyGif(data.data);
+  if (!gif) throw Object.assign(new Error('That GIPHY result is not available.'), { status: 400 });
+  return catalogCacheSet(openverseDetailCache, cacheKey, gif);
 }
 
 function openverseRequestHeaders() {
@@ -2385,9 +2535,58 @@ async function importOpenverseGif(catalogId, userId) {
   }
 }
 
+async function importGiphyGif(catalogId, userId) {
+  const cleanId = cleanGiphyId(catalogId);
+  if (!cleanId) throw Object.assign(new Error('Choose a valid GIPHY result from search.'), { status: 400 });
+  const existing = Object.values(db.gifs).find((gif) => {
+    const file = db.files[gif.fileId];
+    return gif.provider === 'giphy' && gif.externalId === cleanId && gif.status === 'approved' &&
+      file?.mime === 'image/gif' && file.diskPath && fs.existsSync(file.diskPath);
+  });
+  if (existing) return existing;
+  if (giphyGifImports.has(cleanId)) return giphyGifImports.get(cleanId);
+  const pending = (async () => {
+    const source = await resolveGiphyGif(cleanId);
+    const response = await fetchCatalogMedia(source.mediaUrl, 'gif', { headers: { Accept: 'image/gif' } });
+    if (!response.ok || !String(response.headers.get('content-type') || '').toLowerCase().includes('image/gif')) {
+      throw Object.assign(new Error('That GIPHY result could not be imported.'), { status: 502 });
+    }
+    const buffer = await responseBufferWithin(response, MAX_CATALOG_GIF_BYTES);
+    if (!/^GIF8[79]a/.test(buffer.subarray(0, 6).toString('ascii'))) throw Object.assign(new Error('That GIPHY result is not a valid GIF.'), { status: 400 });
+    const file = await saveUpload({
+      dataUrl: `data:image/gif;base64,${buffer.toString('base64')}`,
+      name: `${safeFileName(source.title || 'giphy').replace(/\.gif$/i, '')}.gif`,
+      lastModified: null
+    }, userId, 'gif');
+    const gif = {
+      id: id('gif'), title: source.title, tags: [], fileId: file.id, submitterId: userId,
+      status: 'approved', provider: 'giphy', externalId: cleanId, creator: source.creator,
+      sourceUrl: source.sourceUrl, license: source.license, licenseUrl: source.licenseUrl,
+      attribution: source.attribution, createdAt: nowIso(), reviewedAt: nowIso(), reviewedBy: 'giphy'
+    };
+    db.gifs[gif.id] = gif;
+    try {
+      await Promise.all([saveGifs(), saveFiles()]);
+      return gif;
+    } catch (error) {
+      delete db.gifs[gif.id];
+      delete db.files[file.id];
+      await fsp.unlink(file.diskPath).catch(() => {});
+      throw error;
+    }
+  })();
+  giphyGifImports.set(cleanId, pending);
+  try {
+    return await pending;
+  } finally {
+    if (giphyGifImports.get(cleanId) === pending) giphyGifImports.delete(cleanId);
+  }
+}
+
 async function resolveMessageGif(body, userId) {
   let gif = null;
-  if (body.gifCatalogId) gif = await importOpenverseGif(body.gifCatalogId, userId);
+  if (String(body.gifCatalogId || '').startsWith('giphy:')) gif = await importGiphyGif(body.gifCatalogId, userId);
+  else if (body.gifCatalogId) gif = await importOpenverseGif(body.gifCatalogId, userId);
   else if (body.gifId) gif = db.gifs[cleanText(body.gifId || '', 120)];
   const file = gif?.fileId ? db.files[gif.fileId] : null;
   if (!gif || gif.status !== 'approved' || !file || !['image/gif', 'image/webp'].includes(file.mime) || !file.diskPath || !fs.existsSync(file.diskPath)) {
@@ -2499,6 +2698,12 @@ function canAccessFile(userId, file) {
     const note = Object.values(db.notes).find((item) => item.audioFileId === file.id);
     return canViewNote(note, userId);
   }
+  if (file.scope === 'instant') {
+    const instant = Object.values(db.instants).find((item) => item.fileId === file.id);
+    if (!instant || instant.deletedAt) return false;
+    if (instant.senderId === userId) return new Date(instant.createdAt).getTime() > Date.now() - INSTANT_ARCHIVE_MS;
+    return new Date(instant.expiresAt).getTime() > Date.now() && (instant.recipientIds || []).includes(userId);
+  }
   if (!userId) return false;
   if (file.ownerId === userId) return true;
   if (!file.messageId) return false;
@@ -2589,12 +2794,37 @@ async function handleApi(req, res, pathname, query) {
     });
     return sendJson(res, 200, { gifs, provider: 'Openverse', query: term });
   }
+  if (req.method === 'GET' && pathname === '/api/media/config') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    return sendJson(res, 200, {
+      giphy: GIPHY_API_KEY ? { enabled: true, apiKey: GIPHY_API_KEY, rating: GIPHY_RATING } : { enabled: false, rating: GIPHY_RATING },
+      music: { provider: MUSIC_PROVIDER === 'itunes' ? 'iTunes' : 'Openverse', country: ITUNES_COUNTRY }
+    }, { 'Cache-Control': 'private, max-age=300' });
+  }
 
   if (req.method === 'GET' && pathname === '/api/media/music') {
     const user = await requireAuth(req, res);
     if (!user) return;
     const term = cleanText(query.get('q') || 'instrumental', 80) || 'instrumental';
-    const queryKey = `music:${term.toLowerCase()}`;
+    const requestedProvider = String(query.get('provider') || MUSIC_PROVIDER).toLowerCase() === 'openverse' ? 'openverse' : 'itunes';
+    if (requestedProvider === 'itunes') {
+      const queryKey = `itunes-search:${ITUNES_COUNTRY}:${term.toLowerCase()}`;
+      const data = catalogCacheGet(openverseQueryCache, queryKey) || catalogCacheSet(openverseQueryCache, queryKey, await itunesJson('search', {
+        term,
+        media: 'music',
+        entity: 'song',
+        limit: 20,
+        country: ITUNES_COUNTRY,
+        explicit: 'No'
+      }));
+      const tracks = (data.results || []).map(normalizeItunesMusic).filter(Boolean).map((track) => {
+        catalogCacheSet(openverseDetailCache, track.catalogId, track);
+        return publicMusicSelection({ ...track, start: 0, clipDuration: Math.min(30, track.trackDuration) }, `/api/media/music/${encodeURIComponent(track.catalogId)}/preview`);
+      });
+      return sendJson(res, 200, { tracks, provider: 'iTunes', query: term });
+    }
+    const queryKey = `music:openverse:${term.toLowerCase()}`;
     const data = catalogCacheGet(openverseQueryCache, queryKey) || catalogCacheSet(openverseQueryCache, queryKey, await openverseJson('audio/', {
         q: term,
         source: 'jamendo',
@@ -2614,7 +2844,7 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'GET' && musicPreviewMatch) {
     const user = await requireAuth(req, res);
     if (!user) return;
-    const track = await resolveOpenverseMedia('audio', decodeURIComponent(musicPreviewMatch[1]));
+    const track = await resolveCatalogMusic(decodeURIComponent(musicPreviewMatch[1]));
     return streamCatalogAudio(req, res, track.url);
   }
 
@@ -2623,7 +2853,7 @@ async function handleApi(req, res, pathname, query) {
     const viewer = sessionFromRequest(req)?.user || null;
     const post = db.posts[decodeURIComponent(postMusicMatch[1])];
     if (!post || post.deletedAt || !post.music || !canViewPost(post, viewer?.id || null)) return sendError(res, 404, 'Track not found.');
-    const track = await resolveOpenverseMedia('audio', post.music.catalogId);
+    const track = await resolveCatalogMusic(post.music.catalogId);
     return streamCatalogAudio(req, res, track.url);
   }
 
@@ -2634,7 +2864,7 @@ async function handleApi(req, res, pathname, query) {
     const noteId = decodeURIComponent(noteMusicMatch[1]);
     const note = Object.values(db.notes).find((item) => item.id === noteId);
     if (!note || !note.music || !canViewNote(note, user.id)) return sendError(res, 404, 'Track not found.');
-    const track = await resolveOpenverseMedia('audio', note.music.catalogId);
+    const track = await resolveCatalogMusic(note.music.catalogId);
     return streamCatalogAudio(req, res, track.url);
   }
 
@@ -3117,7 +3347,7 @@ async function handleApi(req, res, pathname, query) {
       if (mediaCount !== 1 || !mediaMime.startsWith('video/')) {
         return sendError(res, 400, 'Music can only be added to a single video clip.');
       }
-      const source = await resolveOpenverseMedia('audio', body.music.catalogId);
+      const source = await resolveCatalogMusic(body.music.catalogId);
       music = cleanMusicSelection(source, body.music);
     }
     const usesInlineUpload = !files.length;
@@ -3392,7 +3622,7 @@ async function handleApi(req, res, pathname, query) {
     if (audioUpload && body.music?.catalogId) return sendError(res, 400, 'Choose either uploaded audio or catalog music for a note, not both.');
     let music = null;
     if (body.music?.catalogId) {
-      const source = await resolveOpenverseMedia('audio', body.music.catalogId);
+      const source = await resolveCatalogMusic(body.music.catalogId);
       music = cleanMusicSelection(source, body.music);
     }
     const durationRaw = body.audioDuration ?? body.audio?.durationSeconds ?? body.audio?.duration;
@@ -3450,6 +3680,96 @@ async function handleApi(req, res, pathname, query) {
       throw error;
     }
     if (previousNote?.audioFileId) await deleteStoredFile(previousNote.audioFileId, 'note-audio').catch(() => {});
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/instants') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const now = Date.now();
+    const visible = Object.values(db.instants).filter((instant) => (
+      !instant.deletedAt && new Date(instant.expiresAt).getTime() > now &&
+      (instant.recipientIds || []).includes(user.id) && !instant.openedBy?.[user.id]
+    ));
+    const bySender = new Map();
+    visible.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))).forEach((instant) => {
+      if (!bySender.has(instant.senderId)) bySender.set(instant.senderId, []);
+      bySender.get(instant.senderId).push(instant);
+    });
+    const piles = Array.from(bySender.entries()).map(([senderId, items]) => ({
+      sender: basicPublicUser(db.users[senderId], user.id),
+      count: items.length,
+      latestAt: items[items.length - 1]?.createdAt || null,
+      items: items.map((instant) => ({ id: instant.id, caption: instant.caption || '', createdAt: instant.createdAt, expiresAt: instant.expiresAt }))
+    })).filter((pile) => pile.sender).sort((a, b) => String(b.latestAt).localeCompare(String(a.latestAt)));
+    const sent = Object.values(db.instants).filter((instant) => (
+      instant.senderId === user.id && !instant.deletedAt && new Date(instant.createdAt).getTime() > now - INSTANT_ARCHIVE_MS
+    )).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map((instant) => ({
+      id: instant.id,
+      caption: instant.caption || '',
+      audience: instant.audience,
+      createdAt: instant.createdAt,
+      expiresAt: instant.expiresAt,
+      openedCount: Object.keys(instant.openedBy || {}).length,
+      recipientCount: (instant.recipientIds || []).length,
+      file: publicFile(db.files[instant.fileId])
+    }));
+    return sendJson(res, 200, { piles, sent });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/instants') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    if (!body.file?.dataUrl || !mimeFromDataUrl(body.file.dataUrl).startsWith('image/')) return sendError(res, 400, 'Take a photo to share an instant.');
+    const requestedAudience = body.audience === 'favorites' ? 'favorites' : 'friends';
+    const friends = Array.from(new Set(db.contacts[user.id] || [])).filter((userId) => db.users[userId] && canChat(user.id, userId));
+    const favorites = new Set(favoriteUserIdsFor(user));
+    const recipientIds = requestedAudience === 'favorites' ? friends.filter((userId) => favorites.has(userId)) : friends;
+    if (!recipientIds.length) return sendError(res, 400, requestedAudience === 'favorites' ? 'Add a friend to Favorites before sharing with that audience.' : 'Add a friend before sharing an instant.');
+    const file = await saveUpload(body.file, user.id, 'instant');
+    const createdAt = nowIso();
+    const instant = {
+      id: id('instant'), senderId: user.id, recipientIds, audience: requestedAudience,
+      caption: cleanText(body.caption || '', 220), fileId: file.id, openedBy: {},
+      createdAt, expiresAt: new Date(new Date(createdAt).getTime() + INSTANT_LIFETIME_MS).toISOString(), deletedAt: null
+    };
+    db.instants[instant.id] = instant;
+    await Promise.all([saveInstants(), saveFiles()]);
+    pushToUsers(recipientIds, { type: 'instant:new', sender: basicPublicUser(user), instant: { id: instant.id, caption: instant.caption, createdAt, expiresAt: instant.expiresAt } });
+    return sendJson(res, 201, { instant: { id: instant.id, caption: instant.caption, audience: instant.audience, createdAt, expiresAt: instant.expiresAt, recipientCount: recipientIds.length, openedCount: 0, file: publicFile(file) } });
+  }
+
+  const instantMatch = /^\/api\/instants\/([^/]+)$/.exec(pathname);
+  if (req.method === 'GET' && instantMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const instant = db.instants[decodeURIComponent(instantMatch[1])];
+    const senderArchiveAccess = instant?.senderId === user.id && new Date(instant.createdAt).getTime() > Date.now() - INSTANT_ARCHIVE_MS;
+    const recipientAccess = new Date(instant?.expiresAt || 0).getTime() > Date.now() && (instant?.recipientIds || []).includes(user.id);
+    const allowed = instant && !instant.deletedAt && (senderArchiveAccess || recipientAccess);
+    if (!allowed) return sendError(res, 404, 'Instant not found.');
+    if (instant.senderId !== user.id && !instant.openedBy?.[user.id]) {
+      if (!instant.openedBy || typeof instant.openedBy !== 'object') instant.openedBy = {};
+      instant.openedBy[user.id] = nowIso();
+      await saveInstants();
+    }
+    return sendJson(res, 200, {
+      instant: {
+        id: instant.id, sender: basicPublicUser(db.users[instant.senderId], user.id), caption: instant.caption || '',
+        createdAt: instant.createdAt, expiresAt: instant.expiresAt, file: publicFile(db.files[instant.fileId]),
+        mine: instant.senderId === user.id
+      }
+    });
+  }
+  if (req.method === 'DELETE' && instantMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const instant = db.instants[decodeURIComponent(instantMatch[1])];
+    if (!instant || instant.senderId !== user.id || instant.deletedAt) return sendError(res, 404, 'Instant not found.');
+    instant.deletedAt = nowIso();
+    await saveInstants();
+    pushToUsers(instant.recipientIds || [], { type: 'instant:deleted', instantId: instant.id });
     return sendJson(res, 200, { ok: true });
   }
 

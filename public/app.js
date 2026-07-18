@@ -158,6 +158,11 @@
     clipViewer: null,
     clipMuted: localStorage.getItem('clipMuted') !== '0',
     notes: [],
+    instants: { piles: [], sent: [] },
+    inboxFeature: null,
+    instantComposer: null,
+    instantViewer: null,
+    mapLocation: null,
     postComposer: null,
     postPublishing: false,
     musicPicker: null,
@@ -183,6 +188,7 @@
     messageFocusNeedsRefresh: false,
     lastMessageTap: null,
     storyPublishing: false,
+    mediaConfig: { giphy: { enabled: false, rating: 'pg' }, music: { provider: 'iTunes' } },
     gifPool: [],
     chatGifResults: [],
     chatGifLoading: false,
@@ -1187,6 +1193,9 @@
         state.chatOpenToken += 1;
         state.chatProfileOpen = false;
         state.chatProfileSocialView = null;
+        state.inboxFeature = null;
+        state.instantComposer = null;
+        state.instantViewer = null;
         renderApp();
       }
       return;
@@ -1300,6 +1309,7 @@
     }
 
     await loadContactsAndChats();
+    await loadMediaConfig();
     await loadSocialSurfaces();
     await loadGifPool();
     if (publicName) {
@@ -1665,6 +1675,7 @@
       <div id="post-composer-slot">${renderPostComposer()}</div>
       <div id="note-composer-slot">${renderNoteComposer()}</div>
       <div id="music-picker-slot">${renderMusicPicker()}</div>
+      <div id="inbox-feature-slot">${renderInboxFeature()}</div>
       <div id="media-viewer-slot">${renderMediaViewer()}</div>
       <div id="chat-customization-slot">${renderChatCustomization()}</div>
       <div id="sticker-creator-slot">${renderStickerCreator()}</div>
@@ -2969,12 +2980,135 @@
                   </article>
                 `).join('') : picker.error ? `<div class="music-results-empty is-error"><p>${esc(picker.error)}</p><button data-action="retry-music-search">Try again</button></div>` : '<div class="music-results-empty">No matching tracks. Try another title, artist, or mood.</div>'}
               </div>
-              <footer class="music-provider-credit"><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Search powered by Openverse</a><span>CC BY, CC0 and public-domain music</span></footer>
+              <footer class="music-provider-credit">
+                ${picker.provider === 'iTunes'
+                  ? '<a href="https://music.apple.com" target="_blank" rel="noopener noreferrer">Search powered by iTunes</a><span>30-second previews provided by Apple</span>'
+                  : '<a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Search powered by Openverse</a><span>CC BY, CC0 and public-domain music</span>'}
+              </footer>
             </div>
           `}
         </section>
       </div>
     `;
+  }
+
+  function inboxMapPosts() {
+    const seen = new Set();
+    return allKnownPosts().filter((post) => {
+      const locationName = String(post?.location || '').trim();
+      if (!post?.id || !locationName || seen.has(post.id)) return false;
+      seen.add(post.id);
+      return true;
+    }).slice(0, 16);
+  }
+
+  function mapPinPosition(post, index) {
+    const seed = Array.from(`${post.id}:${post.location}`).reduce((total, char) => (total * 31 + char.charCodeAt(0)) % 10007, 19);
+    return { x: 10 + ((seed + index * 17) % 78), y: 15 + ((seed * 7 + index * 23) % 62) };
+  }
+
+  function renderInboxConnectionRail() {
+    const piles = state.instants?.piles || [];
+    const mapCount = inboxMapPosts().length;
+    return `
+      <section class="inbox-connection-rail" aria-label="Inbox tools">
+        <button class="inbox-map-card" data-action="open-inbox-map" aria-label="Open Map">
+          <span class="inbox-map-icon">${icon('location')}<i></i></span>
+          <span><strong>Map</strong><small>${mapCount ? `${mapCount} places` : 'Explore places'}</small></span>
+        </button>
+        <button class="instant-camera-card" data-action="open-instant-camera" aria-label="Take an instant">
+          <span>${icon('camera')}</span><span><strong>Instant</strong><small>Share now</small></span>
+        </button>
+        ${piles.map((pile) => {
+          const first = pile.items?.[0];
+          return `<button class="instant-pile-card" data-action="open-instant" data-instant-id="${esc(first?.id || '')}" aria-label="Open ${pile.count} instant${pile.count === 1 ? '' : 's'} from ${esc(pile.sender.displayName)}">
+            <span class="instant-pile-avatar">${avatarHtml(pile.sender)}${pile.count > 1 ? `<i>${pile.count}</i>` : ''}</span>
+            <span><strong>${esc(pile.sender.displayName)}</strong><small>${esc(compactRelativeTime(pile.latestAt))}</small></span>
+          </button>`;
+        }).join('')}
+        <button class="instant-archive-card" data-action="open-instant-archive" aria-label="Open instant archive">${icon('bookmark')}<small>Archive</small></button>
+      </section>
+    `;
+  }
+
+  function renderInboxMap() {
+    const posts = inboxMapPosts();
+    return `
+      <section class="inbox-map-sheet" data-stop-close role="dialog" aria-modal="true" aria-label="Map">
+        <header><button data-action="close-inbox-feature" aria-label="Close Map">${icon('x')}</button><span><strong>Map</strong><small>Location-tagged posts from your network</small></span><button class="map-location-toggle ${state.mapLocation ? 'active' : ''}" data-action="toggle-map-location" aria-label="${state.mapLocation ? 'Stop using current location' : 'Use current location'}">${icon('location')}</button></header>
+        <div class="inbox-map-canvas ${state.mapLocation ? 'sharing' : ''}">
+          <div class="map-road road-a"></div><div class="map-road road-b"></div><div class="map-road road-c"></div>
+          <span class="map-privacy-indicator">${state.mapLocation ? `${icon('location')} Current location is visible only on this device` : `${icon('lock')} Location sharing is off`}</span>
+          ${state.mapLocation ? '<span class="map-current-dot" style="--pin-x:50%;--pin-y:52%"><i></i></span>' : ''}
+          ${posts.map((post, index) => {
+            const point = mapPinPosition(post, index);
+            const author = postAuthor(post);
+            return `<button class="map-content-pin" style="--pin-x:${point.x}%;--pin-y:${point.y}%" data-action="open-map-post" data-post-id="${esc(post.id)}" aria-label="Open post from ${esc(post.location)}">${avatarHtml(author)}<span>${esc(post.location)}</span></button>`;
+          }).join('')}
+          ${posts.length ? '' : '<div class="map-empty">Add a location to a post and it will appear here.</div>'}
+        </div>
+        <div class="map-place-list">
+          ${posts.map((post) => `<button data-action="open-map-post" data-post-id="${esc(post.id)}">${icon('location')}<span><strong>${esc(post.location)}</strong><small>@${esc(postAuthor(post)?.username || 'user')} · ${esc(compactRelativeTime(post.createdAt))}</small></span>${icon('chevron')}</button>`).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderInstantArchive() {
+    const sent = state.instants?.sent || [];
+    return `
+      <section class="instant-archive-sheet" data-stop-close role="dialog" aria-modal="true" aria-label="Instant archive">
+        <header><button data-action="close-inbox-feature" aria-label="Close archive">${icon('back')}</button><span><strong>Instant archive</strong><small>Only you can see this</small></span><button data-action="open-instant-camera" aria-label="Take an instant">${icon('camera')}</button></header>
+        <div class="instant-archive-grid">
+          ${sent.length ? sent.map((instant) => `<article>
+            <button class="instant-archive-photo" data-action="open-instant" data-instant-id="${esc(instant.id)}"><img src="${esc(instant.file?.url || '')}" alt="${esc(instant.caption || 'Archived instant')}" loading="lazy"><span>${instant.openedCount}/${instant.recipientCount} opened</span></button>
+            <button class="instant-archive-delete" data-action="delete-instant" data-instant-id="${esc(instant.id)}" aria-label="Delete instant">${icon('trash')}</button>
+          </article>`).join('') : `<div class="instant-empty">${icon('camera')}<strong>Your shared moments live here</strong><small>Instants are saved privately for up to one year.</small><button class="primary" data-action="open-instant-camera">Take an instant</button></div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderInstantComposer() {
+    const composer = state.instantComposer;
+    if (!composer) return '';
+    return `
+      <section class="instant-composer" data-stop-close role="dialog" aria-modal="true" aria-label="Share instant">
+        <img src="${esc(composer.dataUrl)}" alt="Instant preview">
+        <div class="instant-composer-shade"></div>
+        <header><button data-action="close-inbox-feature" aria-label="Discard instant">${icon('x')}</button><strong>New instant</strong><span></span></header>
+        <footer>
+          <label><input id="instant-caption" maxlength="220" value="${esc(composer.caption || '')}" placeholder="Add a caption…"></label>
+          <div class="instant-audience" role="group" aria-label="Audience">
+            <button class="${composer.audience === 'friends' ? 'active' : ''}" data-action="set-instant-audience" data-audience="friends">Friends</button>
+            <button class="${composer.audience === 'favorites' ? 'active' : ''}" data-action="set-instant-audience" data-audience="favorites">Favorites</button>
+          </div>
+          <button class="instant-send" data-action="publish-instant">Send ${icon('send')}</button>
+        </footer>
+      </section>
+    `;
+  }
+
+  function renderInstantViewer() {
+    const instant = state.instantViewer;
+    if (!instant) return '';
+    return `
+      <section class="instant-viewer" data-stop-close role="dialog" aria-modal="true" aria-label="Instant from ${esc(instant.sender?.displayName || 'friend')}">
+        <img src="${esc(instant.file?.url || '')}" alt="${esc(instant.caption || 'Instant photo')}">
+        <div class="instant-viewer-shade"></div>
+        <header>${avatarHtml(instant.sender)}<span><strong>${esc(instant.sender?.displayName || 'Your instant')}</strong><small>${esc(compactRelativeTime(instant.createdAt))}</small></span><button data-action="close-inbox-feature" aria-label="Close instant">${icon('x')}</button></header>
+        ${instant.caption ? `<p>${esc(instant.caption)}</p>` : ''}
+        ${instant.mine ? '' : `<footer><button data-action="react-instant" data-emoji="❤️">❤️</button><button data-action="react-instant" data-emoji="😂">😂</button><button data-action="react-instant" data-emoji="🔥">🔥</button><button class="instant-send-back" data-action="open-instant-camera">Send one back ${icon('camera')}</button></footer>`}
+      </section>
+    `;
+  }
+
+  function renderInboxFeature() {
+    if (state.instantComposer) return `<div class="inbox-feature-overlay instant-overlay" data-action="close-inbox-feature">${renderInstantComposer()}</div>`;
+    if (state.instantViewer) return `<div class="inbox-feature-overlay instant-overlay" data-action="close-inbox-feature">${renderInstantViewer()}</div>`;
+    if (state.inboxFeature === 'map') return `<div class="inbox-feature-overlay" data-action="close-inbox-feature">${renderInboxMap()}</div>`;
+    if (state.inboxFeature === 'archive') return `<div class="inbox-feature-overlay" data-action="close-inbox-feature">${renderInstantArchive()}</div>`;
+    return '';
   }
 
   function renderChatsPanel() {
@@ -3036,6 +3170,7 @@
       }).join('') : '<div class="empty-state">No conversation references match that search.</div>';
 
     return `
+      ${renderInboxConnectionRail()}
       ${renderNoteRail()}
       <section class="messages-head">
         <div class="messages-search-row">
@@ -6018,7 +6153,11 @@
             ${state.chatGifLoading ? '<div class="chat-gif-loading"><i></i><span>Searching GIFs…</span></div>' : ''}
             ${state.chatGifError ? `<p class="chat-gif-empty is-error">${esc(state.chatGifError)} <button data-action="retry-chat-gif-search">Try again</button></p>` : `<p class="chat-gif-empty" ${gifs.length || state.chatGifLoading ? 'hidden' : ''}>No matching GIFs. Try another word or upload your own.</p>`}
           </div>
-          <footer class="chat-gif-provider"><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Openverse</a><span>Creator and license stay attached when sent</span></footer>
+          <footer class="chat-gif-provider">
+            ${state.chatGifProvider === 'GIPHY'
+              ? '<a href="https://giphy.com" target="_blank" rel="noopener noreferrer">Powered by GIPHY</a><span>GIFs are stored in the chat when sent</span>'
+              : '<a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Openverse</a><span>Creator and license stay attached when sent</span>'}
+          </footer>
         `}
       </section>
     `;
@@ -6577,7 +6716,7 @@
       `--camera-origin-y:${Number(capture.originY || 50).toFixed(2)}%`,
       `--camera-origin-size:${Math.max(16, Number(capture.originSize || 26)).toFixed(0)}px`
     ].join(';');
-    const title = capture.mode === 'story' ? 'Story camera' : 'Camera';
+    const title = capture.mode === 'story' ? 'Story camera' : capture.mode === 'instant' ? 'Instant camera' : 'Camera';
     return `
       <section class="camera-capture-page ${capture.opening ? 'camera-opening' : ''} ${capture.closing ? 'camera-closing' : ''} ${ready ? 'camera-ready' : ''} ${capture.facingMode === 'user' ? 'camera-facing-user' : ''}" style="${esc(style)}" aria-label="${title}" role="dialog" aria-modal="true">
         <div class="camera-capture-surface">
@@ -6586,7 +6725,7 @@
           <div class="camera-scrim camera-scrim-bottom"></div>
           <header class="camera-capture-header">
             <button class="camera-control-button" data-action="close-camera-capture" aria-label="Close camera">${icon('x')}</button>
-            <strong>${capture.mode === 'story' ? 'STORY' : 'CAMERA'}</strong>
+            <strong>${capture.mode === 'story' ? 'STORY' : capture.mode === 'instant' ? 'INSTANT' : 'CAMERA'}</strong>
             <button class="camera-control-button" data-action="camera-flip" aria-label="Switch camera" ${ready ? '' : 'disabled'}>${icon('rotate')}</button>
           </header>
           ${!ready ? `
@@ -6595,7 +6734,7 @@
             </div>
           ` : ''}
           <footer class="camera-capture-controls">
-            <button class="camera-library-button" data-action="open-camera-gallery">Library</button>
+            ${capture.mode === 'instant' ? '<span class="camera-control-spacer" aria-hidden="true"></span>' : '<button class="camera-library-button" data-action="open-camera-gallery">Library</button>'}
             <button class="camera-shutter" data-action="camera-shutter" aria-label="Take photo" ${ready ? '' : 'disabled'}><i></i></button>
             ${capture.mode === 'story'
               ? '<button class="camera-library-button" data-action="camera-use-text">Aa</button>'
@@ -6715,6 +6854,7 @@
   function chooseCameraLibrary() {
     const capture = state.cameraCapture;
     if (!capture) return;
+    if (capture.mode === 'instant') return;
     const input = document.getElementById(capture.mode === 'story' ? 'story-input' : 'file-input');
     if (!input) return;
     input.accept = 'image/*,video/*';
@@ -6745,6 +6885,7 @@
     const publishAsHighlight = capture.publishAsHighlight;
     closeCameraCapture({ immediate: true });
     if (mode === 'story') await beginStoryEditor(file, { publishAsHighlight });
+    else if (mode === 'instant') await beginInstantComposer(file);
     else await sendFile(file, 'image');
   }
 
@@ -8273,13 +8414,14 @@
   }
 
   async function loadContactsAndChats() {
-    const [me, contacts, chats, groups, notifications, recommendations] = await Promise.all([
+    const [me, contacts, chats, groups, notifications, recommendations, instants] = await Promise.all([
       api('/api/me'),
       api('/api/contacts'),
       api('/api/chats'),
       api('/api/groups').catch(() => ({ groups: [] })),
       api('/api/notifications').catch(() => ({ pendingRequestCount: 0, requests: [], notifications: [] })),
-      api('/api/users/recommendations').catch(() => ({ users: [] }))
+      api('/api/users/recommendations').catch(() => ({ users: [] })),
+      api('/api/instants').catch(() => ({ piles: [], sent: [] }))
     ]);
     state.me = me.user;
     state.twoFactorEnabled = me.twoFactorEnabled;
@@ -8291,10 +8433,135 @@
     state.requests = notifications.requests || [];
     state.notifications = notifications.notifications || [];
     state.recommendations = recommendations.users || [];
+    state.instants = { piles: instants.piles || [], sent: instants.sent || [] };
     if (state.activePeer) {
       state.activePeer = userById(state.activePeer.id) || state.activePeer;
     }
     if (state.activeGroup) state.activeGroup = state.groups.find((group) => group.id === state.activeGroup.id) || state.activeGroup;
+  }
+
+  async function loadInstants(options = {}) {
+    const data = await api('/api/instants');
+    state.instants = { piles: data.piles || [], sent: data.sent || [] };
+    if (options.render) {
+      if (state.inboxFeature || state.instantViewer) updateInboxFeatureSlot();
+      if (state.tab === 'chats') updateSidebar();
+    }
+    return state.instants;
+  }
+
+  async function beginInstantComposer(file) {
+    if (!file || !String(file.type || '').startsWith('image/')) throw new Error('Instants use a photo taken in the camera.');
+    state.inboxFeature = null;
+    state.instantViewer = null;
+    state.instantComposer = {
+      dataUrl: await fileToDataUrl(file),
+      name: file.name || `instant-${Date.now()}.jpg`,
+      type: file.type || 'image/jpeg',
+      lastModified: file.lastModified || Date.now(),
+      caption: '',
+      audience: 'friends',
+      publishing: false
+    };
+    updateInboxFeatureSlot();
+  }
+
+  function closeInboxFeature() {
+    state.inboxFeature = null;
+    state.instantComposer = null;
+    state.instantViewer = null;
+    updateInboxFeatureSlot();
+    loadInstants({ render: state.tab === 'chats' }).catch(() => {});
+  }
+
+  function setInstantAudience(audience) {
+    if (!state.instantComposer) return;
+    state.instantComposer.caption = document.getElementById('instant-caption')?.value.slice(0, 220) || '';
+    state.instantComposer.audience = audience === 'favorites' ? 'favorites' : 'friends';
+    updateInboxFeatureSlot();
+  }
+
+  async function publishInstant() {
+    const composer = state.instantComposer;
+    if (!composer || composer.publishing) return;
+    composer.caption = document.getElementById('instant-caption')?.value.slice(0, 220) || '';
+    composer.publishing = true;
+    document.querySelector('.instant-send')?.setAttribute('disabled', '');
+    try {
+      const data = await api('/api/instants', {
+        method: 'POST',
+        body: {
+          caption: composer.caption,
+          audience: composer.audience,
+          source: 'camera',
+          file: { name: composer.name, type: composer.type, dataUrl: composer.dataUrl, lastModified: new Date(composer.lastModified).toISOString() }
+        }
+      });
+      state.instantComposer = null;
+      await loadInstants();
+      updateInboxFeatureSlot();
+      updateSidebar();
+      pushToast({ key: `instant-${data.instant.id}`, kind: 'social', title: 'Instant sent', body: `Shared with ${data.instant.recipientCount} ${data.instant.recipientCount === 1 ? 'friend' : 'friends'}.` });
+    } catch (error) {
+      composer.publishing = false;
+      updateInboxFeatureSlot();
+      throw error;
+    }
+  }
+
+  async function openInstant(instantId) {
+    if (!instantId) return;
+    const data = await api(`/api/instants/${encodeURIComponent(instantId)}`);
+    state.inboxFeature = null;
+    state.instantComposer = null;
+    state.instantViewer = data.instant;
+    updateInboxFeatureSlot();
+  }
+
+  async function deleteInstant(instantId) {
+    if (!instantId || !confirm('Delete this instant and unsend it for anyone who has not opened it?')) return;
+    await api(`/api/instants/${encodeURIComponent(instantId)}`, { method: 'DELETE' });
+    await loadInstants();
+    updateInboxFeatureSlot();
+    updateSidebar();
+  }
+
+  async function reactToInstant(emoji) {
+    const instant = state.instantViewer;
+    if (!instant?.sender?.id || instant.sender.id === state.me?.id) return;
+    await api(`/api/chats/${encodeURIComponent(instant.sender.id)}/messages`, { method: 'POST', body: { kind: 'text', text: `${emoji} reacted to your instant` } });
+    pushToast({ key: `instant-react-${instant.id}`, kind: 'social', title: 'Reaction sent', body: `${emoji} sent to ${instant.sender.displayName}.` });
+    closeInboxFeature();
+    await refreshChatsOnly();
+  }
+
+  async function toggleMapLocation() {
+    if (state.mapLocation) {
+      state.mapLocation = null;
+      updateInboxFeatureSlot();
+      return;
+    }
+    if (!navigator.geolocation) throw new Error('This browser does not provide location access.');
+    const locationResult = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }));
+    state.mapLocation = { latitude: locationResult.coords.latitude, longitude: locationResult.coords.longitude };
+    updateInboxFeatureSlot();
+  }
+
+  function updateInboxFeatureSlot() {
+    return updateSlot('inbox-feature-slot', renderInboxFeature());
+  }
+
+  async function loadMediaConfig() {
+    try {
+      const config = await api('/api/media/config');
+      state.mediaConfig = {
+        giphy: { enabled: false, rating: 'pg', ...(config.giphy || {}) },
+        music: { provider: 'iTunes', ...(config.music || {}) }
+      };
+    } catch {
+      state.mediaConfig = { giphy: { enabled: false, rating: 'pg' }, music: { provider: 'iTunes' } };
+    }
+    return state.mediaConfig;
   }
 
   let musicSearchTimer = null;
@@ -8338,7 +8605,7 @@
       const data = await api(`/api/media/music${picker.query.trim() ? `?q=${encodeURIComponent(picker.query.trim())}` : ''}`);
       if (state.musicPicker !== picker || requestId !== musicSearchRequestId) return;
       picker.tracks = data.tracks || [];
-      picker.provider = data.provider || 'Openverse';
+      picker.provider = data.provider || state.mediaConfig.music?.provider || 'iTunes';
       picker.error = '';
     } catch (error) {
       if (state.musicPicker !== picker || requestId !== musicSearchRequestId) return;
@@ -8361,7 +8628,7 @@
       query: '',
       tracks: [],
       loading: !current,
-      provider: 'Openverse',
+      provider: state.mediaConfig.music?.provider || 'iTunes',
       selected: current ? { ...current } : null,
       start: Number(current?.start || 0),
       clipDuration: Number(current?.clipDuration || 30)
@@ -8531,6 +8798,41 @@
   let chatGifSearchTimer = null;
   let chatGifSearchRequestId = 0;
 
+  function normalizeGiphySearchResult(item) {
+    const id = String(item?.id || '').trim();
+    const image = item?.images?.fixed_width || item?.images?.downsized_medium || item?.images?.original;
+    if (!id || !image?.url) return null;
+    return {
+      id: `giphy:${id}`,
+      catalogId: `giphy:${id}`,
+      provider: 'GIPHY',
+      title: String(item.title || 'Animated GIF').slice(0, 100),
+      creator: String(item.user?.display_name || item.username || 'GIPHY').slice(0, 120),
+      sourceUrl: item.url || 'https://giphy.com',
+      license: 'GIPHY',
+      attribution: 'Powered by GIPHY',
+      file: { url: image.url, mime: 'image/gif', external: true }
+    };
+  }
+
+  async function searchGiphy(query = '') {
+    const config = state.mediaConfig.giphy || {};
+    if (!config.enabled || !config.apiKey) return null;
+    const term = String(query || '').trim().slice(0, 50);
+    const endpoint = term ? 'search' : 'trending';
+    const url = new URL(`https://api.giphy.com/v1/gifs/${endpoint}`);
+    url.searchParams.set('api_key', config.apiKey);
+    if (term) url.searchParams.set('q', term);
+    url.searchParams.set('limit', '18');
+    url.searchParams.set('rating', config.rating || 'pg');
+    url.searchParams.set('bundle', 'messaging_non_clips');
+    url.searchParams.set('remove_low_contrast', 'true');
+    const response = await fetch(url, { credentials: 'omit', referrerPolicy: 'strict-origin-when-cross-origin' });
+    if (!response.ok) throw new Error(response.status === 429 ? 'GIPHY search is busy. Try again shortly.' : 'GIPHY search is temporarily unavailable.');
+    const data = await response.json();
+    return (data.data || []).map(normalizeGiphySearchResult).filter(Boolean);
+  }
+
   async function loadChatGifResults(query = '') {
     const requestId = ++chatGifSearchRequestId;
     const term = String(query || '').trim().slice(0, 80);
@@ -8538,10 +8840,24 @@
     state.chatGifError = '';
     if (state.stickerPanel && state.chatTrayTab === 'gifs') updateChatFooter({ suppressFocus: true });
     try {
-      const data = await api(`/api/media/gifs${term ? `?q=${encodeURIComponent(term)}` : ''}`);
+      let gifs = null;
+      let provider = '';
+      if (state.mediaConfig.giphy?.enabled) {
+        try {
+          gifs = await searchGiphy(term);
+          provider = 'GIPHY';
+        } catch {
+          // Keep GIFs available if a beta key is rate limited or GIPHY is offline.
+        }
+      }
+      if (!gifs) {
+        const data = await api(`/api/media/gifs${term ? `?q=${encodeURIComponent(term)}` : ''}`);
+        gifs = data.gifs || [];
+        provider = data.provider || 'Openverse';
+      }
       if (requestId !== chatGifSearchRequestId || term !== state.chatGifQuery.trim()) return;
-      state.chatGifResults = data.gifs || [];
-      state.chatGifProvider = data.provider || 'Openverse';
+      state.chatGifResults = gifs;
+      state.chatGifProvider = provider;
     } catch (error) {
       if (requestId !== chatGifSearchRequestId) return;
       state.chatGifResults = [];
@@ -8809,11 +9125,12 @@
 
   async function refreshChatsOnly() {
     try {
-      const [chats, groups, notifications, recommendations] = await Promise.all([
+      const [chats, groups, notifications, recommendations, instants] = await Promise.all([
         api('/api/chats'),
         api('/api/groups').catch(() => ({ groups: state.groups })),
         api('/api/notifications').catch(() => ({ pendingRequestCount: state.pendingRequestCount, requests: state.requests, notifications: state.notifications })),
-        api('/api/users/recommendations').catch(() => ({ users: state.recommendations }))
+        api('/api/users/recommendations').catch(() => ({ users: state.recommendations })),
+        api('/api/instants').catch(() => state.instants)
       ]);
       state.chats = chats.chats;
       state.groups = groups.groups || [];
@@ -8822,6 +9139,7 @@
       state.requests = notifications.requests || [];
       state.notifications = notifications.notifications || [];
       state.recommendations = recommendations.users || [];
+      state.instants = { piles: instants.piles || [], sent: instants.sent || [] };
     } catch {
       // Keep the current list visible if a refresh fails.
     }
@@ -10875,6 +11193,18 @@
   }
 
   async function handleSocketEvent(event) {
+    if (event.type === 'instant:new') {
+      await loadInstants();
+      if (state.tab === 'chats') updateSidebar();
+      const actor = event.sender;
+      pushToast({ key: `instant-${event.instant?.id}`, kind: 'social', title: `${actor?.displayName || actor?.username || 'A friend'} sent an instant`, body: 'Open Messages to view it once.' });
+      return;
+    }
+    if (event.type === 'instant:deleted') {
+      if (state.instantViewer?.id === event.instantId) closeInboxFeature();
+      await loadInstants({ render: state.tab === 'chats' });
+      return;
+    }
     if (event.type === 'message:new') {
       const currentChatId = activeChatId();
       const incoming = event.message.senderId !== state.me.id;
@@ -11948,6 +12278,7 @@
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-note-composer' && target.classList.contains('note-composer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-music-picker' && target.classList.contains('music-picker-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-inbox-feature' && target.classList.contains('inbox-feature-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-highlight-composer' && target.classList.contains('highlight-composer-overlay') && event.target.closest('[data-stop-close]')) return;
@@ -12012,6 +12343,36 @@
         state.clipMode = target.dataset.mode === 'friends' ? 'friends' : 'for_you';
         updateSidebar();
         requestAnimationFrame(attachClipPlayback);
+      }
+      if (action === 'open-inbox-map') {
+        state.inboxFeature = 'map';
+        state.instantComposer = null;
+        state.instantViewer = null;
+        updateInboxFeatureSlot();
+      }
+      if (action === 'open-instant-archive') {
+        state.inboxFeature = 'archive';
+        state.instantComposer = null;
+        state.instantViewer = null;
+        updateInboxFeatureSlot();
+      }
+      if (action === 'close-inbox-feature') closeInboxFeature();
+      if (action === 'open-instant-camera') {
+        state.inboxFeature = null;
+        state.instantComposer = null;
+        state.instantViewer = null;
+        updateInboxFeatureSlot();
+        openCameraCapture('instant', {}, target);
+      }
+      if (action === 'set-instant-audience') setInstantAudience(target.dataset.audience);
+      if (action === 'publish-instant') await publishInstant();
+      if (action === 'open-instant') await openInstant(target.dataset.instantId);
+      if (action === 'delete-instant') await deleteInstant(target.dataset.instantId);
+      if (action === 'react-instant') await reactToInstant(target.dataset.emoji || '❤️');
+      if (action === 'toggle-map-location') await toggleMapLocation();
+      if (action === 'open-map-post') {
+        closeInboxFeature();
+        await openSharedPost(target.dataset.postId);
       }
       if (action === 'open-post-create') {
         state.feedMenuOpen = false;
@@ -14095,6 +14456,11 @@
       closeCameraCapture();
       return;
     }
+    if (event.key === 'Escape' && (state.inboxFeature || state.instantComposer || state.instantViewer)) {
+      event.preventDefault();
+      closeInboxFeature();
+      return;
+    }
     if (event.key === 'Escape' && state.messageFocus) {
       event.preventDefault();
       closeMessageFocus();
@@ -14195,6 +14561,7 @@
       return;
     }
     const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture || state.musicPicker ||
+      state.inboxFeature || state.instantComposer || state.instantViewer ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer ||
       state.postComposer || state.noteComposer || state.noteRecording;
     const backEntry = state.navigationStack[state.navigationStack.length - 1];

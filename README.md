@@ -19,10 +19,11 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Profile media tabs for posts, private saves, reposts, and tagged photos/videos.
 - Search Explore grid, account suggestions, favorites, post activity, and block-aware discovery.
 - 24-hour Notes above chats and on your profile, including searchable music, automatic title/artist credit, selectable sections, and original-audio snippets up to 30 seconds.
+- Inbox Map for location-tagged posts with explicit, device-only current-location controls, plus camera-only Instants that disappear from recipients after opening and remain in a private one-year sender archive.
 - Account, privacy, interaction, blocked-user, comment-history, and repost settings.
 - Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, interactive polls/quizzes/sliders, mentions, maps, live weather, audio clips, and downloads.
-- Searchable, credited Openverse GIFs in chat plus a separate shared upload pool with moderator approval; the usernames in `MODERATOR_USERNAMES` can approve submissions.
-- Searchable Openverse/Jamendo music for single-video clips and Notes, with canonical title/artist/license metadata and a 15- or 30-second section picker.
+- Searchable GIPHY GIFs in chat when `GIPHY_API_KEY` is configured, with an automatic credited Openverse fallback and a separate shared upload pool with moderator approval; the usernames in `MODERATOR_USERNAMES` can approve submissions.
+- Searchable iTunes music previews for single-video clips and Notes, with canonical title/artist metadata and a 15- or 30-second section picker; Openverse/Jamendo remains available through `MUSIC_PROVIDER=openverse`.
 - Full-screen story/highlight viewer with progress, navigation, likes, comments, and private-account access control.
 - Phone-first bottom navigation for Home, Search, Create, Clips, and Profile, with Messages in the Home header; desktop uses an expanded navigation rail.
 - Username search, friend requests, and a notification center for accepting or declining requests.
@@ -219,7 +220,7 @@ sudo cp deploy/oracle/chat-app.env.example /etc/chat-app/chat-app.env
 sudo nano /etc/chat-app/chat-app.env
 ```
 
-Set `MODERATOR_USERNAMES` to your website username. Weather uses Open-Meteo automatically; adding a `GOOGLE_WEATHER_API_KEY` makes the server try Google Weather first and fall back when it is unavailable. GIF and music search uses `OPENVERSE_API_BASE`; a production `OPENVERSE_BEARER_TOKEN` raises catalog request limits, while the default still works for local testing. `OPENVERSE_MEDIA_HOSTS` is only for explicitly trusted additional media hosts and should normally stay empty. Set `MAIL_FROM` to your verified sender identity and `SENDMAIL_PATH` to the server's sendmail-compatible binary so verification emails can be delivered. Keep credentials only in this server environment file, never in GitHub.
+Set `MODERATOR_USERNAMES` to your website username. Weather uses Open-Meteo automatically; adding a `GOOGLE_WEATHER_API_KEY` makes the server try Google Weather first and fall back when it is unavailable. Add a GIPHY web API key as `GIPHY_API_KEY` to enable direct GIPHY search; GIPHY requires browser-side search requests, so restrict that key to your production origin in the GIPHY dashboard. Music uses the public iTunes Search API by default and needs no key; set `ITUNES_COUNTRY` for the storefront or `MUSIC_PROVIDER=openverse` to use Openverse/Jamendo instead. A production `OPENVERSE_BEARER_TOKEN` raises fallback catalog limits. `OPENVERSE_MEDIA_HOSTS` is only for explicitly trusted additional media hosts and should normally stay empty. Set `MAIL_FROM` to your verified sender identity and `SENDMAIL_PATH` to the server's sendmail-compatible binary so verification emails can be delivered. Keep secret credentials only in this server environment file, never in GitHub.
 
 Copy the service template:
 
