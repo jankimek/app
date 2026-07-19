@@ -15,6 +15,7 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Responsive Instagram-inspired Home feed with For you, Following, and Favorites views; story rail, desktop suggestions, likes, comments, reposts, sharing, saves, and swipeable media.
 - Three-step photo/video post composer with up to 20 mixed items, ordered thumbnails, add/remove/reorder controls, per-item drag/pinch/wheel crop, shared and mixed aspect modes, filters/adjustments, streamed uploads, captions, hashtags, and positioned person tags.
 - Custom inline video playback with byte-range streaming plus a vertically snapping **Clips** tab for single-video posts.
+- In-place post detail viewing from Explore, profiles, DMs, maps, and account activity, with browser-back and source-page scroll/state preservation.
 - Profile tab with display name, permanent tag username, post/follower/following counts, profile details, 24-hour stories, editable highlights, and profile-link sharing.
 - Profile media tabs for posts, private saves, reposts, and tagged photos/videos.
 - Search Explore grid, account suggestions, favorites, post activity, and block-aware discovery.
@@ -36,11 +37,11 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Only the sender can delete a message.
 - Remove, mute, and block controls from a user's chat profile.
 - Send images, videos, documents, and voice notes.
-- Hold the microphone button to record a voice message.
+- Hold the microphone button to record a voice message, slide left to cancel, or slide up to lock before sending.
 - Create stickers on your device. When another user receives one, they must download it before viewing it.
 - Export a chat as JSON or HTML.
 - Download image/file metadata as JSON before deleting the message.
-- Voice/video call buttons using WebRTC signaling.
+- Full-screen voice/video calls using WebRTC signaling, with minimize, speaker, mute, camera, and camera-flip controls.
 
 ## Project Files
 

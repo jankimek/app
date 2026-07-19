@@ -161,6 +161,7 @@
     clips: [],
     clipMode: 'for_you',
     clipViewer: null,
+    postViewer: null,
     clipMuted: localStorage.getItem('clipMuted') !== '0',
     feedMuted: localStorage.getItem('feedMuted') !== '0',
     notes: [],
@@ -238,6 +239,7 @@
     recorder: null,
     recordStream: null,
     recordChunks: [],
+    voiceRecording: null,
     voiceWaveforms: new Map(),
     voicePlayback: { messageId: null, status: 'paused', currentTime: 0, duration: 0, url: '', pendingSeekRatio: null },
     drag: null,
@@ -287,6 +289,12 @@
   let navigationMaintenanceFrame = 0;
   let navigationMaintenanceIdle = 0;
   let callDurationTimer = null;
+  let postViewerAfterClose = null;
+  let postViewerReturnFocus = null;
+  let voiceRecordTimer = null;
+  let voiceRecordMaxTimer = null;
+  let voiceRecordAnimationFrame = 0;
+  let voiceRecordAudioContext = null;
   const noteAudioPlayer = new Audio();
   noteAudioPlayer.preload = 'metadata';
   let notePlaybackStart = 0;
@@ -312,6 +320,8 @@
       minimized: false,
       muted: false,
       cameraOff: false,
+      speakerOn: true,
+      facingMode: 'user',
       startedAt: null,
       position: null,
       pendingCandidates: []
@@ -436,7 +446,8 @@
       publicProfileUsername: state.publicProfile?.username || null,
       activePeerId: state.activePeer?.id || null,
       activeGroupId: state.activeGroup?.id || null,
-      clipViewer: state.clipViewer ? { ...state.clipViewer } : null
+      clipViewer: state.clipViewer ? { ...state.clipViewer } : null,
+      postViewer: state.postViewer ? { ...state.postViewer } : null
     };
   }
 
@@ -941,6 +952,7 @@
     state.searchProfileOpen = Boolean(view.searchProfileOpen);
     state.searchProfileSocialView = view.searchProfileSocialView || null;
     state.clipViewer = view.clipViewer ? { ...view.clipViewer } : null;
+    state.postViewer = view.postViewer ? { ...view.postViewer } : null;
     state.activePeer = entry.activePeer || null;
     state.activeGroup = entry.activeGroup || null;
     state.publicProfile = entry.publicProfile || null;
@@ -1229,6 +1241,8 @@
 
   function switchMainTab(nextTab, options = {}) {
     if (!['home', 'chats', 'search', 'clips', 'profile'].includes(nextTab)) return;
+    if (state.voiceRecording) finishVoiceRecording(false);
+    if (state.postViewer) closePostViewer({ immediate: true, replaceHistory: true });
     if (nextTab === state.tab) {
       if (state.clipViewer) requestNavigationBack();
       else if (nextTab !== 'chats' && hasActiveConversation()) {
@@ -1730,10 +1744,11 @@
         ${renderChatPane()}
       </div>
       ${state.navigationStack.length ? '<div class="navigation-edge-zone" aria-hidden="true"></div>' : ''}
-      <div id="call-dock-slot">${renderCallDock()}</div>
+      <div id="call-dock-slot">${renderInstagramCall()}</div>
       <div id="upload-dock-slot">${renderUploadDock()}</div>
       <div id="toast-slot">${renderToastStack()}</div>
       <div id="action-sheet-slot">${renderActionSheet()}</div>
+      <div id="post-viewer-slot">${renderPostViewer()}</div>
       <div id="message-focus-slot">${renderMessageFocus()}</div>
       <div id="profile-edit-slot">${renderProfileEditModal()}</div>
       <div id="settings-slot">${renderSettingsModal()}</div>
@@ -1757,6 +1772,7 @@
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
     syncActionSheetAccessibility();
+    syncPostViewerAccessibility();
     syncCurrentNavigationHistory();
     if (forwardEntry && forwardLiveShell) {
       const preview = document.createElement('div');
@@ -1793,6 +1809,7 @@
       attachStoryEditorVideo();
       attachStoryViewerVideo();
       initializePostCarousels();
+      attachPostViewerPlayback();
       attachHomeFeedPlayback();
       attachHomePullRefresh();
       attachClipPlayback();
@@ -1821,13 +1838,17 @@
 
   function updateActionSheetSlot() {
     const updated = updateSlot('action-sheet-slot', renderActionSheet());
-    if (updated) syncActionSheetAccessibility();
+    if (updated) {
+      syncActionSheetAccessibility();
+      syncPostViewerAccessibility();
+    }
     return updated;
   }
 
   function updateMessageFocusSlot() {
     const updated = updateSlot('message-focus-slot', renderMessageFocus());
     syncMessageFocusAccessibility();
+    syncPostViewerAccessibility();
     return updated;
   }
 
@@ -2113,8 +2134,12 @@
       const x = clamp(Number(crop.x ?? crop.offsetX ?? 0), -100, 100);
       const y = clamp(Number(crop.y ?? crop.offsetY ?? 0), -100, 100);
       const aspect = String(crop.aspect || crop.aspectRatio || '');
-      const label = item.altText || `Open video by ${postAuthor(post)?.username || 'user'}`;
-      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="${esc(options.preload || 'metadata')}" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-feed-video data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(label)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="${state.feedMuted ? 'Turn sound on' : 'Mute video'}" aria-pressed="${state.feedMuted ? 'false' : 'true'}">${icon(state.feedMuted ? 'mute' : 'volume')}</button>`}`;
+      const label = item.altText || `Video by ${postAuthor(post)?.username || 'user'}`;
+      if (options.viewer) {
+        const muted = state.postViewer?.muted !== false;
+        return `<video class="post-native-video post-viewer-video" src="${esc(media.url)}" style="object-fit:contain;object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline ${muted ? 'muted' : ''} loop autoplay preload="auto" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" data-post-viewer-video data-action="toggle-post-viewer-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0" aria-label="${esc(`${label}. Tap to pause or play.`)}"></video><span class="post-viewer-play-cue" aria-hidden="true">${icon('play')}</span><button class="post-viewer-sound" data-action="toggle-post-viewer-sound" aria-label="${muted ? 'Turn sound on' : 'Mute video'}" aria-pressed="${muted ? 'false' : 'true'}">${icon(muted ? 'mute' : 'volume')}</button>`;
+      }
+      return `<video class="post-native-video ${options.grid ? '' : 'post-video-preview'}" src="${esc(media.url)}" style="object-fit:${aspect.startsWith('mixed') ? 'contain' : 'cover'};object-position:${50 + x / 2}% ${50 + y / 2}%;filter:${esc(postFilterStyle(visual))}" playsinline webkit-playsinline muted loop preload="${esc(options.preload || 'metadata')}" disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback" ${options.grid ? '' : `data-feed-video data-action="open-home-video" data-post-id="${esc(post.id)}" data-media-index="${Number(options.mediaIndex || 0)}" role="button" tabindex="0"`} aria-label="${esc(`Open ${label.toLowerCase()}`)}"></video>${options.grid ? '' : `<span class="post-video-open-cue" aria-hidden="true">${icon('play')}</span><button class="post-video-sound" data-action="toggle-home-video-sound" aria-label="${state.feedMuted ? 'Turn sound on' : 'Mute video'}" aria-pressed="${state.feedMuted ? 'false' : 'true'}">${icon(state.feedMuted ? 'mute' : 'volume')}</button>`}`;
     }
     return `<img src="${esc(media.url)}" style="${esc(postCropStyle(visual))}" alt="${esc(item.altText || post.title || `Post by ${postAuthor(post)?.username || 'user'}`)}" loading="lazy">`;
   }
@@ -2145,7 +2170,7 @@
     return `
       <div class="post-media-frame aspect-${esc(aspect.name)} ${items.length > 1 ? 'has-carousel' : ''}" style="--post-aspect:${aspect.ratio}" data-post-carousel="${esc(post.id)}">
         <div class="post-carousel-track" data-post-id="${esc(post.id)}">
-          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post, { mediaIndex: index, preload: options.preload })}${renderPostPersonTags(post, index)}</div>`).join('')}
+          ${items.map((item, index) => `<div class="post-carousel-slide" data-carousel-index="${index}">${renderPostVisual(item, post, { mediaIndex: index, preload: options.preload, viewer: options.viewer })}${renderPostPersonTags(post, index)}</div>`).join('')}
         </div>
         ${items.length > 1 ? `
           <span class="post-carousel-count" aria-live="polite"><b>1</b>/${items.length}</span>
@@ -2183,6 +2208,7 @@
         }
       });
     });
+    if (track.closest('.post-viewer-overlay')) requestAnimationFrame(attachPostViewerPlayback);
     if (state.tab === 'home') requestAnimationFrame(playMostVisibleHomeVideo);
   }
 
@@ -2609,6 +2635,187 @@
     });
     const cue = video.parentElement?.querySelector('.post-video-open-cue');
     if (!video.muted) video.play().then(() => { if (cue) cue.hidden = true; }).catch(() => {});
+  }
+
+  function renderPostViewerComment(comment) {
+    const user = comment?.user;
+    const text = String(comment?.text || '').trim();
+    if (!user || !text) return '';
+    return `
+      <article class="post-viewer-comment">
+        <button data-action="view-user-profile" data-username="${esc(user.username)}" aria-label="View ${esc(user.username)}">${avatarHtml(user)}</button>
+        <div><p><button data-action="view-user-profile" data-username="${esc(user.username)}">${esc(user.username)}</button> ${renderMentionText(text)}</p><small>${esc(compactRelativeTime(comment.createdAt))}</small></div>
+      </article>
+    `;
+  }
+
+  function renderPostViewer() {
+    const viewer = state.postViewer;
+    if (!viewer) return '';
+    const post = postById(viewer.postId);
+    const author = postAuthor(post);
+    if (!post || !author) return '';
+    const description = String(post.description || post.caption || '');
+    const comments = (post.comments || []).filter((comment) => comment?.user && String(comment.text || '').trim());
+    const liked = Boolean(post.likedByMe);
+    const saved = Boolean(post.savedByMe);
+    const reposted = Boolean(post.repostedByMe);
+    const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
+    return `
+      <div class="post-viewer-overlay" data-action="close-post-viewer" role="dialog" aria-modal="true" aria-label="Post by ${esc(author.username)}">
+        <button class="post-viewer-close" data-action="close-post-viewer" aria-label="Close post">${icon('x')}</button>
+        <article class="post-viewer-modal" data-stop-close data-post-id="${esc(post.id)}">
+          <section class="post-viewer-stage" aria-label="Post media">
+            ${renderPostMedia(post, { viewer: true, preload: 'auto' })}
+          </section>
+          <aside class="post-viewer-details">
+            <header class="post-viewer-author">
+              <button data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<span><strong>${esc(author.username)}</strong>${post.location ? `<small>${esc(post.location)}</small>` : ''}</span></button>
+              <button data-action="${author.id === state.me?.id ? 'post-owner-menu' : 'post-options'}" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>
+            </header>
+            <div class="post-viewer-thread">
+              ${description ? `<article class="post-viewer-comment post-viewer-caption"><button data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}</button><div><p><button data-action="view-user-profile" data-username="${esc(author.username)}">${esc(author.username)}</button> ${renderMentionText(description)}</p>${(post.hashtags || post.tags || []).length ? `<p class="post-hashtags">${(post.hashtags || post.tags || []).map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}<small>${esc(compactRelativeTime(post.createdAt))}</small></div></article>` : ''}
+              ${comments.length ? comments.map(renderPostViewerComment).join('') : `<div class="post-viewer-empty-comments">${icon('comment')}<strong>No comments yet.</strong><small>Start the conversation.</small></div>`}
+            </div>
+            <footer class="post-viewer-footer">
+              <div class="post-viewer-actions">
+                <button class="${liked ? 'active' : ''}" data-action="toggle-post-like" data-post-id="${esc(post.id)}" aria-label="${liked ? 'Unlike' : 'Like'}" aria-pressed="${liked}">${icon('heart')}</button>
+                <button data-action="open-post-comments" data-post-id="${esc(post.id)}" aria-label="Comment">${icon('comment')}</button>
+                ${post.allowReposts === false ? '' : `<button class="${reposted ? 'active' : ''}" data-action="toggle-post-repost" data-post-id="${esc(post.id)}" aria-label="${reposted ? 'Undo repost' : 'Repost'}" aria-pressed="${reposted}">${icon('repost')}</button>`}
+                <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
+                <button class="post-viewer-save ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
+              </div>
+              <strong data-post-like-count>${showLikeCount ? `${Number(post.likeCount || 0).toLocaleString()} likes` : 'Like count hidden'}</strong>
+              <small>${esc(shortTime(post.createdAt))}</small>
+              ${post.allowComments === false ? '<span class="post-viewer-comments-off">Comments are turned off.</span>' : `<button class="post-viewer-add-comment" data-action="open-post-comments" data-post-id="${esc(post.id)}">Add a comment… <b>Post</b></button>`}
+            </footer>
+          </aside>
+        </article>
+      </div>
+    `;
+  }
+
+  function syncPostViewerAccessibility() {
+    const open = Boolean(state.postViewer && document.querySelector('#post-viewer-slot .post-viewer-overlay'));
+    const blockingCall = Boolean(state.call.incoming || (state.call.active && !state.call.minimized));
+    const shell = currentAppShell();
+    if (shell) shell.inert = open || blockingCall;
+  }
+
+  function updatePostViewerSlot() {
+    const updated = updateSlot('post-viewer-slot', renderPostViewer());
+    syncPostViewerAccessibility();
+    if (updated && state.postViewer) {
+      initializePostCarousels(document.getElementById('post-viewer-slot'));
+      attachPostViewerPlayback();
+    }
+    return updated;
+  }
+
+  function openPostViewer(postId, trigger = null) {
+    const post = postById(postId);
+    if (!post) return false;
+    if (state.postViewer?.postId === post.id) return true;
+    capturePersistentScroll();
+    postViewerReturnFocus = trigger || document.activeElement;
+    postViewerAfterClose = null;
+    const returnUrl = location.href;
+    history.replaceState({
+      ...(history.state || {}),
+      appManaged: true,
+      navDepth: state.navigationStack.length,
+      navGeneration: state.navigationGeneration,
+      view: captureNavigationView()
+    }, '', returnUrl);
+    state.postViewer = { postId: post.id, muted: true, returnUrl };
+    const url = new URL(returnUrl);
+    url.searchParams.set('post', post.id);
+    url.searchParams.delete('clip');
+    history.pushState({
+      ...(history.state || {}),
+      appManaged: true,
+      overlay: 'post-viewer',
+      navDepth: state.navigationStack.length,
+      navGeneration: state.navigationGeneration,
+      view: captureNavigationView()
+    }, '', url.toString());
+    updatePostViewerSlot();
+    requestAnimationFrame(() => document.querySelector('.post-viewer-close')?.focus({ preventScroll: true }));
+    return true;
+  }
+
+  function finishPostViewerClose() {
+    document.querySelectorAll('.post-viewer-video').forEach((video) => video.pause());
+    state.postViewer = null;
+    updatePostViewerSlot();
+    const returnFocus = postViewerReturnFocus;
+    postViewerReturnFocus = null;
+    const afterClose = postViewerAfterClose;
+    postViewerAfterClose = null;
+    if (afterClose) setTimeout(() => afterClose(), 0);
+    else if (returnFocus?.isConnected) requestAnimationFrame(() => returnFocus.focus?.({ preventScroll: true }));
+  }
+
+  function closePostViewer(options = {}) {
+    if (!state.postViewer) return;
+    if (typeof options.afterClose === 'function') postViewerAfterClose = options.afterClose;
+    const viewer = state.postViewer;
+    if (!options.immediate && history.state?.overlay === 'post-viewer') {
+      history.back();
+      return;
+    }
+    finishPostViewerClose();
+    if (options.replaceHistory) {
+      history.replaceState({
+        ...(history.state || {}),
+        overlay: null,
+        view: captureNavigationView()
+      }, '', viewer.returnUrl || location.pathname);
+    }
+  }
+
+  function syncPostViewerVideoUi(video) {
+    const slide = video?.closest('.post-carousel-slide');
+    const cue = slide?.querySelector('.post-viewer-play-cue');
+    if (cue) cue.classList.toggle('visible', video.paused);
+  }
+
+  function attachPostViewerPlayback() {
+    const root = document.getElementById('post-viewer-slot');
+    const videos = Array.from(root?.querySelectorAll('.post-viewer-video') || []);
+    if (!videos.length) return;
+    videos.forEach((video) => {
+      video.muted = state.postViewer?.muted !== false;
+      if (!video._postViewerBound) {
+        video._postViewerBound = true;
+        video.addEventListener('play', () => syncPostViewerVideoUi(video));
+        video.addEventListener('pause', () => syncPostViewerVideoUi(video));
+      }
+      syncPostViewerVideoUi(video);
+    });
+    const active = root.querySelector('.post-carousel-slide:not([aria-hidden="true"]) .post-viewer-video') || videos[0];
+    videos.filter((video) => video !== active).forEach((video) => video.pause());
+    active.play().catch(() => syncPostViewerVideoUi(active));
+  }
+
+  function togglePostViewerVideo(video) {
+    if (!video) return;
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+    syncPostViewerVideoUi(video);
+  }
+
+  function togglePostViewerSound() {
+    if (!state.postViewer) return;
+    state.postViewer.muted = !state.postViewer.muted;
+    document.querySelectorAll('.post-viewer-video').forEach((video) => { video.muted = state.postViewer.muted; });
+    document.querySelectorAll('.post-viewer-sound').forEach((button) => {
+      button.innerHTML = icon(state.postViewer.muted ? 'mute' : 'volume');
+      button.setAttribute('aria-label', state.postViewer.muted ? 'Turn sound on' : 'Mute video');
+      button.setAttribute('aria-pressed', state.postViewer.muted ? 'false' : 'true');
+    });
+    document.querySelector('.post-viewer-video')?.play?.().catch(() => {});
+    if (history.state?.overlay === 'post-viewer') history.replaceState({ ...history.state, view: captureNavigationView() }, '', location.href);
   }
 
   function openPostClip(postId, mediaIndex = 0, sourceVideo = null) {
@@ -5779,6 +5986,20 @@
     pane.setAttribute('style', chatAppearanceStyle());
   }
 
+  function renderVoiceRecordingPanel() {
+    return `
+      <div class="voice-recording-panel" aria-hidden="${state.voiceRecording ? 'false' : 'true'}" aria-live="polite">
+        <button class="voice-record-cancel" data-action="cancel-voice-recording" aria-label="Cancel voice message">${icon('trash')}</button>
+        <span class="voice-record-dot" aria-hidden="true"></span>
+        <strong data-voice-record-time>${state.voiceRecording?.startedAt ? esc(formatVoiceRecordTime(state.voiceRecording.startedAt)) : '00:00'}</strong>
+        <span class="voice-recording-wave" aria-hidden="true">${Array.from({ length: 24 }, (_, index) => `<i style="--voice-bar:${index}"></i>`).join('')}</span>
+        <span class="voice-record-hint" data-voice-record-hint>Slide left to cancel</span>
+        <span class="voice-record-lock" aria-hidden="true">${icon('lock')}<small>Slide up to lock</small></span>
+        <button class="voice-record-send" data-action="send-voice-recording" aria-label="Send voice message">${icon('send')}</button>
+      </div>
+    `;
+  }
+
   function renderChatPane() {
     if (state.searchProfileOpen && state.publicProfile) {
       return `
@@ -5836,7 +6057,8 @@
                 <button class="icon-btn" title="Cancel reply" aria-label="Cancel reply" data-action="clear-reply">${icon('x')}</button>
               </div>
             ` : ''}
-            <div class="composer-row instagram-composer">
+            <div class="composer-row instagram-composer ${state.voiceRecording ? 'voice-recording-active' : ''} ${state.voiceRecording?.locked ? 'voice-recording-locked' : ''}">
+              ${renderVoiceRecordingPanel()}
               <button class="composer-camera" title="Open camera" aria-label="Open camera" data-action="attach-open">${icon('camera')}</button>
               <textarea id="composer-text" class="composer-input" rows="1" maxlength="8000" placeholder="Message ${esc(activeConversationTitle())}">${esc(state.composerDrafts[key] || '')}</textarea>
               <button class="composer-tool" title="Hold to record voice" aria-label="Hold to record voice" data-action="record-voice">${icon('mic')}</button>
@@ -7922,6 +8144,68 @@
     `;
   }
 
+  function renderInstagramCall() {
+    const call = state.call;
+    if (!call.active && !call.incoming) return '';
+    const peer = userById(call.peerId || call.incoming?.from);
+    const peerName = peer?.displayName || peer?.username || 'Someone';
+    const dockStyle = call.minimized && call.position
+      ? `left:${Math.round(call.position.x)}px;top:${Math.round(call.position.y)}px;right:auto;bottom:auto;`
+      : '';
+    const peerAvatar = peer?.avatar?.url
+      ? `<img src="${esc(peer.avatar.url)}" alt="">`
+      : `<span>${esc(initials(peer || { username: peerName }))}</span>`;
+    const ambient = peer?.avatar?.url ? `style="background-image:url('${esc(peer.avatar.url)}')"` : '';
+    if (call.incoming) {
+      return `
+        <section class="call-screen incoming-call" data-call-dock aria-label="Incoming call from ${esc(peerName)}">
+          <div class="call-ambient" ${ambient}></div>
+          <header class="call-screen-head"><span><small>New Around</small><strong>${call.incoming.video ? 'Video chat' : 'Audio call'}</strong></span><button data-action="reject-call" aria-label="Close incoming call">${icon('x')}</button></header>
+          <main class="incoming-call-copy">
+            <span class="call-peer-avatar hero">${peerAvatar}</span>
+            <h1>${esc(peerName)}</h1>
+            <p>Incoming ${call.incoming.video ? 'video chat' : 'audio call'}…</p>
+          </main>
+          <footer class="call-incoming-actions">
+            <button class="call-control reject" data-action="reject-call" aria-label="Decline call">${icon('phone')}<small>Decline</small></button>
+            <button class="call-control accept" data-action="accept-call" aria-label="Accept call">${icon(call.incoming.video ? 'video' : 'phone')}<small>Accept</small></button>
+          </footer>
+        </section>
+      `;
+    }
+    return `
+      <section class="call-screen active-call ${call.video ? 'video-call' : 'voice-call'} ${call.minimized ? 'minimized' : ''}" data-call-dock style="${esc(dockStyle)}" aria-label="Call with ${esc(peerName)}">
+        ${call.minimized ? `
+          <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
+          <div class="call-mini-drag" data-call-drag-handle>
+            <button class="call-mini-main" data-action="toggle-call-minimized" aria-label="Expand call with ${esc(peerName)}">
+              <span class="call-peer-avatar">${peerAvatar}</span>
+              <span><strong>${esc(peerName)}</strong><small>${esc(call.status || 'Connected')} · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span>
+            </button>
+            <button class="call-mini-hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}</button>
+          </div>
+        ` : `
+          <div class="call-stage">
+            <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
+            <div class="call-ambient" ${ambient}></div>
+            <div class="call-voice-backdrop"><span class="call-peer-avatar hero">${peerAvatar}</span><i></i><i></i></div>
+            <div class="call-stage-shade"></div>
+            <header class="call-screen-head"><button class="call-minimize" data-action="toggle-call-minimized" aria-label="Minimize call">${icon('chevron')}</button><span><strong>${esc(peerName)}</strong><small>${esc(call.status || 'Call')} · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span><i></i></header>
+            <div class="active-call-copy"><h1>${esc(peerName)}</h1><p>${esc(call.status || 'Calling…')}</p></div>
+            ${call.video ? `<video id="local-video" class="call-local-media ${call.cameraOff ? 'camera-off' : ''}" autoplay muted playsinline></video>` : ''}
+          </div>
+          <div class="call-controls">
+            <button class="call-control ${call.speakerOn ? '' : 'off'}" data-action="toggle-call-speaker" aria-label="${call.speakerOn ? 'Turn speaker off' : 'Turn speaker on'}" aria-pressed="${call.speakerOn}">${icon(call.speakerOn ? 'volume' : 'mute')}<small>Speaker</small></button>
+            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'mute' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
+            ${call.video ? `<button class="call-control ${call.cameraOff ? 'off' : ''}" data-action="toggle-call-camera" aria-label="${call.cameraOff ? 'Turn camera on' : 'Turn camera off'}" aria-pressed="${call.cameraOff}">${icon('video')}<small>Camera</small></button>` : ''}
+            ${call.video ? `<button class="call-control" data-action="flip-call-camera" aria-label="Switch camera">${icon('refresh')}<small>Flip</small></button>` : ''}
+            <button class="call-control hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}<small>End</small></button>
+          </div>
+        `}
+      </section>
+    `;
+  }
+
   async function loadFeed(mode = state.feedMode, options = {}) {
     state.feedMode = ['for_you', 'following', 'favorites'].includes(mode) ? mode : 'for_you';
     localStorage.setItem('feedMode', state.feedMode);
@@ -8019,7 +8303,7 @@
   function syncPostEngagement(post, changedAction = '') {
     if (!post?.id) return false;
     const escapedId = window.CSS?.escape ? CSS.escape(String(post.id)) : String(post.id).replace(/"/g, '\\"');
-    const cards = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"], .clip-card[data-post-id="${escapedId}"]`));
+    const cards = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"], .clip-card[data-post-id="${escapedId}"], .post-viewer-modal[data-post-id="${escapedId}"]`));
     if (!cards.length) return false;
     const states = {
       like: { active: Boolean(post.likedByMe), activeLabel: 'Unlike', idleLabel: 'Like' },
@@ -8476,7 +8760,7 @@
 
   async function togglePostAction(postId, action) {
     const escapedId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
-    const buttons = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"], .clip-card[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"]`));
+    const buttons = Array.from(document.querySelectorAll(`.feed-post[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"], .clip-card[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"], .post-viewer-modal[data-post-id="${escapedId}"] [data-action="toggle-post-${action}"]`));
     if (buttons.some((button) => button.classList.contains('is-pending'))) return;
     buttons.forEach((button) => button.classList.add('is-pending'));
     let data;
@@ -8669,14 +8953,10 @@
     const post = data.post;
     if (!post) throw new Error('This post is no longer available.');
     state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
-    const first = postMediaItems(post)[0];
-    if (first?.mediaType === 'video') {
-      if (postMediaItems(post).length === 1) state.clips = [post, ...state.clips.filter((item) => item.id !== post.id)];
-      openPostClip(post.id, 0);
-      return;
+    if (postMediaItems(post).length === 1 && postMediaItems(post)[0]?.mediaType === 'video') {
+      state.clips = [post, ...state.clips.filter((item) => item.id !== post.id)];
     }
-    switchMainTab('home', { animate: false });
-    setTimeout(() => document.querySelector(`.feed-post[data-post-id="${window.CSS?.escape ? CSS.escape(post.id) : post.id}"]`)?.scrollIntoView({ block: 'start' }), 0);
+    openPostViewer(post.id, document.querySelector(`[data-action="open-shared-post"][data-post-id="${window.CSS?.escape ? CSS.escape(post.id) : post.id}"]`));
   }
 
   async function commentOnPost(postId, text) {
@@ -8874,6 +9154,7 @@
   async function deletePost(postId) {
     await api(`/api/posts/${encodeURIComponent(postId)}`, { method: 'DELETE' });
     const wasViewing = state.clipViewer?.postId === postId;
+    const wasViewingPost = state.postViewer?.postId === postId;
     state.actionSheet = null;
     state.homeFeed = state.homeFeed.filter((post) => post.id !== postId);
     state.explorePosts = state.explorePosts.filter((post) => post.id !== postId);
@@ -8886,7 +9167,10 @@
     await loadContactsAndChats();
     updateActionSheetSlot();
     if (wasViewing) closeClipViewer();
-    else updateSidebar();
+    else if (wasViewingPost) {
+      updateSidebar();
+      closePostViewer();
+    } else updateSidebar();
   }
 
   async function toggleFavoriteUser(userId) {
@@ -12117,6 +12401,7 @@
     state.searchProfileOpen = Boolean(view?.searchProfileOpen && profileUsername);
     state.searchProfileSocialView = view?.searchProfileSocialView || null;
     state.clipViewer = view?.clipViewer ? { ...view.clipViewer } : null;
+    state.postViewer = view?.postViewer ? { ...view.postViewer } : null;
     state.publicProfile = state.searchProfileOpen ? await fetchPublicProfile(profileUsername) : null;
     state.tabTransition = false;
     renderApp({ scrollSnapshot: state.searchProfileOpen ? null : returnScroll });
@@ -12527,42 +12812,155 @@
       : { type: 'typing', to: state.activePeer.id, isTyping }));
   }
 
-  async function startRecording(button) {
-    if (state.recorder) return;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      alert('Voice recording needs a modern browser and HTTPS outside localhost.');
+  function formatVoiceRecordTime(startedAt) {
+    const seconds = Math.max(0, Math.floor((Date.now() - Number(startedAt || Date.now())) / 1000));
+    return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  }
+
+  function updateVoiceRecordingUi() {
+    const recording = state.voiceRecording;
+    const composer = document.querySelector('.instagram-composer');
+    const panel = composer?.querySelector('.voice-recording-panel');
+    if (!composer || !panel) return;
+    composer.classList.toggle('voice-recording-active', Boolean(recording));
+    composer.classList.toggle('voice-recording-locked', Boolean(recording?.locked));
+    composer.classList.toggle('voice-recording-cancel-ready', Boolean(recording?.cancelReady));
+    composer.classList.toggle('voice-recording-requesting', recording?.status === 'requesting');
+    panel.setAttribute('aria-hidden', recording ? 'false' : 'true');
+    panel.style.setProperty('--voice-record-drag', `${Math.min(0, Number(recording?.dragX || 0))}px`);
+    const time = panel.querySelector('[data-voice-record-time]');
+    if (time) time.textContent = recording?.startedAt ? formatVoiceRecordTime(recording.startedAt) : '00:00';
+    const hint = panel.querySelector('[data-voice-record-hint]');
+    if (hint) hint.textContent = recording?.cancelReady
+      ? 'Release to cancel'
+      : recording?.locked
+        ? 'Recording locked'
+        : recording?.status === 'requesting'
+          ? 'Allow microphone access…'
+          : 'Slide left to cancel';
+    composer.querySelector('[data-action="record-voice"]')?.classList.toggle('recording', Boolean(recording));
+  }
+
+  function stopVoiceRecordingMeter() {
+    if (voiceRecordAnimationFrame) cancelAnimationFrame(voiceRecordAnimationFrame);
+    voiceRecordAnimationFrame = 0;
+    if (voiceRecordAudioContext) voiceRecordAudioContext.close?.().catch?.(() => {});
+    voiceRecordAudioContext = null;
+  }
+
+  function startVoiceRecordingMeter(stream, recording) {
+    stopVoiceRecordingMeter();
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = new AudioContextClass();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 64;
+      context.createMediaStreamSource(stream).connect(analyser);
+      const levels = new Uint8Array(analyser.frequencyBinCount);
+      voiceRecordAudioContext = context;
+      const draw = () => {
+        if (state.voiceRecording !== recording || recording.status !== 'recording') return;
+        analyser.getByteFrequencyData(levels);
+        const bars = document.querySelectorAll('.voice-recording-wave i');
+        bars.forEach((bar, index) => {
+          const level = levels[index % levels.length] / 255;
+          bar.style.transform = `scaleY(${Math.max(.18, Math.min(1, level * 1.7))})`;
+        });
+        voiceRecordAnimationFrame = requestAnimationFrame(draw);
+      };
+      draw();
+    } catch {
+      voiceRecordAudioContext = null;
+    }
+  }
+
+  function clearVoiceRecordingTimers() {
+    clearInterval(voiceRecordTimer);
+    clearTimeout(voiceRecordMaxTimer);
+    voiceRecordTimer = null;
+    voiceRecordMaxTimer = null;
+  }
+
+  function finishVoiceRecording(send = true) {
+    const recording = state.voiceRecording;
+    if (!recording) return;
+    recording.intent = send ? 'send' : 'cancel';
+    clearVoiceRecordingTimers();
+    if (!state.recorder || recording.status === 'requesting') {
+      recording.cancelled = true;
+      state.voiceRecording = null;
+      updateVoiceRecordingUi();
       return;
     }
-    state.recordStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recording.status = send ? 'sending' : 'cancelling';
+    updateVoiceRecordingUi();
+    if (state.recorder.state !== 'inactive') state.recorder.stop();
+  }
+
+  async function startRecording(button, recording = state.voiceRecording) {
+    if (state.recorder || !recording) return;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      alert('Voice recording needs a modern browser and HTTPS outside localhost.');
+      if (state.voiceRecording === recording) state.voiceRecording = null;
+      updateVoiceRecordingUi();
+      return;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (recording.cancelled || state.voiceRecording !== recording) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    state.recordStream = stream;
     state.recordChunks = [];
-    state.recorder = new MediaRecorder(state.recordStream);
+    const preferredType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((type) => MediaRecorder.isTypeSupported?.(type));
+    state.recorder = preferredType ? new MediaRecorder(stream, { mimeType: preferredType }) : new MediaRecorder(stream);
+    const recorder = state.recorder;
+    recording.status = 'recording';
+    recording.startedAt = Date.now();
     state.recorder.ondataavailable = (event) => {
       if (event.data.size) state.recordChunks.push(event.data);
     };
     state.recorder.onstop = async () => {
-      const blob = new Blob(state.recordChunks, { type: state.recorder.mimeType || 'audio/webm' });
+      const blob = new Blob(state.recordChunks, { type: recorder.mimeType || 'audio/webm' });
+      const shouldSend = recording.intent === 'send' && Date.now() - Number(recording.startedAt || Date.now()) >= 250;
+      clearVoiceRecordingTimers();
+      stopVoiceRecordingMeter();
       stopRecordStream();
       state.recorder = null;
-      if (blob.size) {
-        const waveformPromise = blob.arrayBuffer().then((buffer) => decodeVoiceWaveform(buffer)).catch(() => null);
-        const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type });
-        const message = await sendFile(file, 'voice');
-        const waveform = await waveformPromise;
-        const key = message?.attachment?.id || message?.attachment?.url;
-        if (key && waveform) {
-          state.voiceWaveforms.set(String(key), waveform);
-          applyVoiceWaveform(String(key), waveform);
-          syncVoicePlayerUi();
+      if (state.voiceRecording === recording) state.voiceRecording = null;
+      updateVoiceRecordingUi();
+      if (shouldSend && blob.size) {
+        try {
+          const waveformPromise = blob.arrayBuffer().then((buffer) => decodeVoiceWaveform(buffer)).catch(() => null);
+          const extension = blob.type.includes('mp4') ? 'm4a' : 'webm';
+          const file = new File([blob], `voice-${Date.now()}.${extension}`, { type: blob.type });
+          const message = await sendFile(file, 'voice');
+          const waveform = await waveformPromise;
+          const key = message?.attachment?.id || message?.attachment?.url;
+          if (key && waveform) {
+            state.voiceWaveforms.set(String(key), waveform);
+            applyVoiceWaveform(String(key), waveform);
+            syncVoicePlayerUi();
+          }
+        } catch (error) {
+          pushToast({ key: `voice-send-${Date.now()}`, kind: 'social', title: 'Voice message not sent', body: error.message || 'Please try again.' });
         }
       }
     };
     button?.classList.add('recording');
-    state.recorder.start();
+    recorder.start(150);
+    startVoiceRecordingMeter(stream, recording);
+    clearVoiceRecordingTimers();
+    voiceRecordTimer = setInterval(updateVoiceRecordingUi, 250);
+    voiceRecordMaxTimer = setTimeout(() => finishVoiceRecording(true), 60000);
+    updateVoiceRecordingUi();
+    if (recording.released && !recording.locked) finishVoiceRecording(!recording.cancelReady);
   }
 
   function stopRecording(button) {
     button?.classList.remove('recording');
-    if (state.recorder && state.recorder.state !== 'inactive') state.recorder.stop();
+    finishVoiceRecording(true);
   }
 
   function stopRecordStream() {
@@ -12852,7 +13250,7 @@
     }
     await endCall(false);
     const peerId = state.activePeer.id;
-    const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
+    const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { facingMode: 'user' } : false });
     const pc = createPeerConnection(peerId);
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
     state.call = { ...freshCallState(), peerId, pc, localStream, active: true, video, status: 'Calling...' };
@@ -12906,7 +13304,7 @@
     if (!incoming) return;
     const pendingCandidates = [...state.call.pendingCandidates];
     const position = state.call.position;
-    const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.video });
+    const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.video ? { facingMode: 'user' } : false });
     const pc = createPeerConnection(incoming.from);
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
     state.call = {
@@ -12960,6 +13358,39 @@
     updateCallDock();
   }
 
+  function toggleCallSpeaker() {
+    if (!state.call.active) return;
+    state.call.speakerOn = !state.call.speakerOn;
+    const remote = document.getElementById('remote-video');
+    if (remote) remote.muted = !state.call.speakerOn;
+    updateCallDock();
+  }
+
+  async function flipCallCamera() {
+    if (!state.call.active || !state.call.video) return;
+    const nextFacingMode = state.call.facingMode === 'environment' ? 'user' : 'environment';
+    const replacement = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: nextFacingMode } }
+    });
+    const nextTrack = replacement.getVideoTracks()[0];
+    const previousTrack = state.call.localStream?.getVideoTracks?.()[0];
+    const sender = state.call.pc?.getSenders?.().find((item) => item.track?.kind === 'video');
+    if (!nextTrack || !sender) {
+      replacement.getTracks().forEach((track) => track.stop());
+      throw new Error('The camera could not be switched.');
+    }
+    await sender.replaceTrack(nextTrack);
+    if (previousTrack) {
+      state.call.localStream.removeTrack(previousTrack);
+      previousTrack.stop();
+    }
+    state.call.localStream.addTrack(nextTrack);
+    state.call.facingMode = nextFacingMode;
+    state.call.cameraOff = false;
+    updateCallDock();
+  }
+
   function toggleCallMinimized() {
     if (!state.call.active) return;
     state.call.minimized = !state.call.minimized;
@@ -12969,7 +13400,7 @@
 
   function clampCallDockToViewport() {
     const dock = document.querySelector('[data-call-dock]');
-    if (!dock || !state.call.position) return;
+    if (!dock || !state.call.minimized || !state.call.position) return;
     const bottomClearance = isMobileLayout() ? 62 + Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom') || 0) : 12;
     const maxX = Math.max(8, window.innerWidth - dock.offsetWidth - 8);
     const maxY = Math.max(8, window.innerHeight - dock.offsetHeight - bottomClearance);
@@ -12986,7 +13417,7 @@
     if (!upload) return;
     ['top', 'right', 'bottom', 'left', 'width', 'transform'].forEach((property) => upload.style.removeProperty(property));
     const call = document.querySelector('[data-call-dock]');
-    if (!call || !isMobileLayout()) return;
+    if (!call?.classList.contains('minimized') || !isMobileLayout()) return;
     const callRect = call.getBoundingClientRect();
     const toastRect = document.querySelector('.toast-stack')?.getBoundingClientRect();
     const safeTop = Math.max(10, (toastRect?.bottom || 4) + 8);
@@ -13012,8 +13443,9 @@
   function updateCallDock() {
     const slot = document.getElementById('call-dock-slot');
     if (slot) {
-      slot.innerHTML = renderCallDock();
+      slot.innerHTML = renderInstagramCall();
       attachCallStreams();
+      syncPostViewerAccessibility();
       syncCallDurationTimer();
       requestAnimationFrame(() => { clampCallDockToViewport(); positionUploadDock(); });
     }
@@ -13028,6 +13460,7 @@
     }
     if (remote && state.call.remoteStream && remote.srcObject !== state.call.remoteStream) {
       remote.srcObject = state.call.remoteStream;
+      remote.muted = !state.call.speakerOn;
       remote.play?.().catch(() => {});
     }
   }
@@ -13282,6 +13715,7 @@
       state.actionSheet = null;
       state.overlayClosing = false;
       updateActionSheetSlot();
+      if (state.postViewer) updatePostViewerSlot();
       if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
       if (state.clipViewer || state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
     }, 190);
@@ -13612,6 +14046,7 @@
     if (action === 'close-modal' && target.classList.contains('center-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-note-composer' && target.classList.contains('note-composer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-music-picker' && target.classList.contains('music-picker-overlay') && event.target.closest('[data-stop-close]')) return;
+    if (action === 'close-post-viewer' && target.classList.contains('post-viewer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-inbox-feature' && target.classList.contains('inbox-feature-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-settings' && target.classList.contains('settings-drawer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'close-story-editor' && (target.classList.contains('story-editor-overlay') || target.classList.contains('story-editor-page')) && event.target.closest('[data-stop-close]')) return;
@@ -13624,6 +14059,12 @@
     if (action === 'close-group-composer' && target.classList.contains('group-composer-overlay') && event.target.closest('[data-stop-close]')) return;
     if (action === 'record-voice') return;
     try {
+      if (action === 'cancel-voice-recording') {
+        finishVoiceRecording(false);
+      }
+      if (action === 'send-voice-recording') {
+        finishVoiceRecording(true);
+      }
       if (action === 'auth-mode') {
         state.authMode = target.dataset.mode;
         state.needsTwoFactor = false;
@@ -13878,6 +14319,9 @@
         updatePostComposerSlot();
       }
       if (action === 'open-home-video') openPostClip(target.dataset.postId, Number(target.dataset.mediaIndex || 0), target);
+      if (action === 'close-post-viewer') closePostViewer();
+      if (action === 'toggle-post-viewer-video') togglePostViewerVideo(target);
+      if (action === 'toggle-post-viewer-sound') togglePostViewerSound();
       if (action === 'toggle-home-video-sound') toggleHomeVideoSound(target);
       if (action === 'close-clip-viewer') closeClipViewer();
       if (action === 'toggle-clip-sound') toggleClipSound();
@@ -13905,6 +14349,7 @@
         updateSidebar();
       }
       if (action === 'open-post-comments') {
+        document.querySelector('.post-viewer-video')?.pause?.();
         openActionSheet({
           type: 'post-comments',
           postId: target.dataset.postId,
@@ -13939,12 +14384,7 @@
         if (action === 'open-explore-post' && state.tab === 'search' && state.userQuery.trim()) {
           saveSearchHistory(state.userQuery, state.searchCategory, target.dataset.postId).catch(() => {});
         }
-        const post = postById(target.dataset.postId);
-        if (post) {
-          state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
-          switchMainTab('home');
-          setTimeout(() => document.querySelector(`.feed-post[data-post-id="${window.CSS?.escape ? CSS.escape(post.id) : post.id}"]`)?.scrollIntoView({ block: 'start' }), 0);
-        }
+        openPostViewer(target.dataset.postId, target);
       }
       if (action === 'post-owner-menu') openActionSheet({ type: 'post-owner', postId: target.dataset.postId });
       if (action === 'post-options') openActionSheet({ type: 'post-options', postId: target.dataset.postId });
@@ -14857,6 +15297,11 @@
           state.overlayClosing = false;
           updateActionSheetSlot();
         }
+        if (state.postViewer) {
+          const username = target.dataset.username;
+          closePostViewer({ afterClose: () => openSearchProfile(username).catch((error) => alert(error.message)) });
+          return;
+        }
         await openSearchProfile(target.dataset.username);
       }
       if (action === 'close-search-profile') {
@@ -14974,7 +15419,7 @@
         if (post) {
           closeSettingsDrawer();
           state.homeFeed = [post, ...state.homeFeed.filter((item) => item.id !== post.id)];
-          switchMainTab('home');
+          setTimeout(() => openPostViewer(post.id), 210);
         }
       }
       if (action === 'close-modal') {
@@ -15210,6 +15655,12 @@
       }
       if (action === 'toggle-call-camera') {
         toggleCallCamera();
+      }
+      if (action === 'toggle-call-speaker') {
+        toggleCallSpeaker();
+      }
+      if (action === 'flip-call-camera') {
+        await flipCallCamera();
       }
       if (action === 'toggle-call-minimized') {
         toggleCallMinimized();
@@ -15753,6 +16204,20 @@
   }, true);
 
   document.addEventListener('dblclick', (event) => {
+    const viewerMedia = event.target.closest('.post-viewer-stage img, .post-viewer-stage video');
+    const viewerCard = viewerMedia?.closest('.post-viewer-modal');
+    if (viewerMedia && viewerCard) {
+      event.preventDefault();
+      const frame = viewerMedia.closest('.post-media-frame');
+      const burst = document.createElement('span');
+      burst.className = 'post-like-burst';
+      burst.innerHTML = icon('heart');
+      frame?.append(burst);
+      setTimeout(() => burst.remove(), 760);
+      const post = postById(viewerCard.dataset.postId);
+      if (post && !post.likedByMe) togglePostAction(post.id, 'like').catch((error) => alert(error.message));
+      return;
+    }
     const clipViewport = event.target.closest('.clip-viewport');
     const clipCard = clipViewport?.closest('.clip-card');
     if (clipViewport && clipCard && !event.target.closest('button,a,[data-action]')) {
@@ -15894,6 +16359,16 @@
     if (event.key === 'Escape' && state.cameraCapture) {
       event.preventDefault();
       closeCameraCapture();
+      return;
+    }
+    if (event.target.matches('.post-viewer-video') && ['Enter', ' '].includes(event.key)) {
+      event.preventDefault();
+      togglePostViewerVideo(event.target);
+      return;
+    }
+    if (event.key === 'Escape' && state.postViewer) {
+      event.preventDefault();
+      closePostViewer();
       return;
     }
     if (event.key === 'Escape' && (state.inboxFeature || state.instantComposer || state.instantViewer)) {
@@ -16038,7 +16513,7 @@
       state.edgeSwipe = null;
       return;
     }
-    const gestureBlocked = state.storyEditor || state.storyViewer || state.messageFocus || state.actionSheet || state.cameraCapture || state.musicPicker ||
+    const gestureBlocked = state.storyEditor || state.storyViewer || state.postViewer || state.messageFocus || state.actionSheet || state.cameraCapture || state.musicPicker ||
       state.inboxFeature || state.instantComposer || state.instantViewer ||
       state.settingsOpen || state.profileEditOpen || state.avatarCrop || state.chatCustomizationOpen || state.stickerCreator || state.groupComposer ||
       state.postComposer || state.noteComposer || state.noteRecording;
@@ -16318,10 +16793,30 @@
     const recordButton = event.target.closest('[data-action="record-voice"]');
     if (recordButton) {
       event.preventDefault();
+      if (state.voiceRecording) return;
       recordButton.setPointerCapture?.(event.pointerId);
+      const recording = {
+        pointerId: event.pointerId,
+        button: recordButton,
+        startX: event.clientX,
+        startY: event.clientY,
+        dragX: 0,
+        dragY: 0,
+        cancelReady: false,
+        locked: false,
+        released: false,
+        cancelled: false,
+        status: 'requesting',
+        startedAt: null,
+        intent: null
+      };
+      state.voiceRecording = recording;
+      updateVoiceRecordingUi();
       try {
-        await startRecording(recordButton);
+        await startRecording(recordButton, recording);
       } catch (error) {
+        if (state.voiceRecording === recording) state.voiceRecording = null;
+        updateVoiceRecordingUi();
         alert(error.message);
       }
       return;
@@ -16371,6 +16866,26 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    const voiceRecording = state.voiceRecording;
+    if (voiceRecording?.pointerId === event.pointerId && !voiceRecording.locked) {
+      const dx = event.clientX - voiceRecording.startX;
+      const dy = event.clientY - voiceRecording.startY;
+      voiceRecording.dragX = Math.min(0, dx);
+      voiceRecording.dragY = Math.min(0, dy);
+      const wasCancelReady = voiceRecording.cancelReady;
+      voiceRecording.cancelReady = dx <= -82 && Math.abs(dx) > Math.abs(dy) * .7;
+      if (dy <= -72 && Math.abs(dy) > Math.abs(dx) * .7) {
+        voiceRecording.locked = true;
+        voiceRecording.cancelReady = false;
+        voiceRecording.dragX = 0;
+        navigator.vibrate?.(12);
+      } else if (voiceRecording.cancelReady && !wasCancelReady) {
+        navigator.vibrate?.(8);
+      }
+      updateVoiceRecordingUi();
+      event.preventDefault();
+      return;
+    }
     if (state.callDockDrag?.pointerId === event.pointerId) {
       event.preventDefault();
       const drag = state.callDockDrag;
@@ -16663,6 +17178,19 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.voiceRecording?.pointerId === event.pointerId) {
+      const recording = state.voiceRecording;
+      recording.released = true;
+      recording.button?.releasePointerCapture?.(event.pointerId);
+      if (recording.locked) {
+        recording.pointerId = null;
+        updateVoiceRecordingUi();
+      } else {
+        finishVoiceRecording(!recording.cancelReady);
+      }
+      event.preventDefault();
+      return;
+    }
     if (state.callDockDrag?.pointerId === event.pointerId) {
       const drag = state.callDockDrag;
       drag.dock.classList.remove('is-dragging');
@@ -16820,8 +17348,6 @@
       return;
     }
     finishMessagePress(event.pointerId);
-    const recordButton = event.target.closest('[data-action="record-voice"]') || document.querySelector('.recording');
-    if (recordButton) stopRecording(recordButton);
     if (state.edgeSwipe) {
       const swipe = state.edgeSwipe;
       // A tap in the gesture rail must not leave a zero-distance transform
@@ -16941,6 +17467,15 @@
   });
 
   document.addEventListener('pointercancel', (event) => {
+    if (state.voiceRecording?.pointerId === event.pointerId) {
+      if (state.voiceRecording.locked) {
+        state.voiceRecording.pointerId = null;
+        updateVoiceRecordingUi();
+      } else {
+        finishVoiceRecording(false);
+      }
+      return;
+    }
     if (state.callDockDrag?.pointerId === event.pointerId) {
       state.callDockDrag.dock?.classList.remove('is-dragging');
       state.callDockDrag = null;
@@ -16965,8 +17500,6 @@
       overlay.style.background = 'rgba(0, 0, 0, .52)';
       state.commentSheetDrag = null;
     }
-    const recordButton = document.querySelector('.recording');
-    if (recordButton) stopRecording(recordButton);
     if (state.drag) {
       state.drag.el.style.transform = '';
       state.drag.el.classList.remove('reveal-time');
@@ -17061,6 +17594,17 @@
           view: captureNavigationView()
         }, '', location.href);
         refreshNavigationEdgeZone();
+        return;
+      }
+      const targetPostViewer = event.state?.view?.postViewer || null;
+      if (state.postViewer && !targetPostViewer) {
+        finishPostViewerClose();
+        return;
+      }
+      if (!state.postViewer && targetPostViewer) {
+        state.postViewer = { ...targetPostViewer };
+        updatePostViewerSlot();
+        requestAnimationFrame(() => document.querySelector('.post-viewer-close')?.focus({ preventScroll: true }));
         return;
       }
       const currentDepth = state.navigationStack.length;

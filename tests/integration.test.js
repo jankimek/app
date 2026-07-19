@@ -190,6 +190,24 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /state\.chatRowSwipe = \{/);
   assert.match(clientSource, /type: 'message-schedule'/);
   assert.match(clientSource, /function openMessageSchedule/);
+  const mediaGridHandler = sourceSection(
+    clientSource,
+    "if (action === 'open-explore-post' || action === 'open-profile-post')",
+    "if (action === 'post-owner-menu')"
+  );
+  assert.match(mediaGridHandler, /openPostViewer\(target\.dataset\.postId, target\)/);
+  assert.doesNotMatch(mediaGridHandler, /switchMainTab\('home'/);
+  assert.match(clientSource, /function renderPostViewer\(\)/);
+  assert.match(clientSource, /overlay: 'post-viewer'/);
+  assert.match(clientSource, /if \(state\.postViewer && !targetPostViewer\) \{[\s\S]*?finishPostViewerClose\(\)/);
+  assert.match(styleSource, /\.post-viewer-modal \{[\s\S]*?grid-template-columns:/);
+  assert.match(clientSource, /voiceRecording\.cancelReady = dx <= -82/);
+  assert.match(clientSource, /voiceRecording\.locked = true/);
+  assert.match(clientSource, /data-action="cancel-voice-recording"/);
+  assert.match(clientSource, /data-action="send-voice-recording"/);
+  assert.match(clientSource, /data-action="toggle-call-speaker"/);
+  assert.match(clientSource, /data-action="flip-call-camera"/);
+  assert.match(styleSource, /\.call-screen:not\(\.minimized\) \{[\s\S]*?height: var\(--visual-height/);
   assert.match(clientSource, /function openRepostThought/);
   assert.match(clientSource, /data-action="toggle-chat-read-receipts"/);
   assert.match(clientSource, /event\.type === 'message:read'/);
