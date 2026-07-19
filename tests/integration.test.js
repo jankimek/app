@@ -265,10 +265,14 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(chatGifPanelSource, /localGifs|Openverse|<small>\$\{state\.sendingGifId/);
   assert.doesNotMatch(chatGifPanelSource, /data-action="chat-gif-upload"/);
   assert.match(chatGifPanelSource, /placeholder="Search GIPHY"/);
+  assert.match(chatGifPanelSource, /data-form="chat-gif-search"/);
   const chatGifLoaderSource = sourceSection(clientSource, 'async function loadChatGifResults', 'async function submitGif');
   assert.doesNotMatch(chatGifLoaderSource, /\/api\/media\/gifs/);
   assert.match(chatGifLoaderSource, /GIPHY is not configured on this server/);
   assert.match(clientSource, /Search powered by iTunes/);
+  assert.match(clientSource, /data-form="music-search"/);
+  assert.match(clientSource, /Type a song title or artist, then tap Search/);
+  assert.match(serverSource, /\['g', 'pg', 'pg-13', 'r'\]/);
   assert.match(clientSource, /function musicPlayableDuration/);
   assert.match(clientSource, /data-preview-duration/);
   assert.match(serverSource, /previewDuration: Math\.min\(30, trackDuration\)/);
@@ -298,7 +302,7 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /const letterbox = aspect\.name === 'mixed' \|\| aspect\.ratio > 1\.15/);
   assert.match(clientSource, /role="dialog" aria-modal="true"/);
   assert.match(clientSource, /function sharedPostIdFromLocation/);
-  assert.match(styleSource, /Current mobile navigation[\s\S]*?grid-template-columns: repeat\(5, minmax\(0, 1fr\)\)/);
+  assert.match(styleSource, /Mobile navigation keeps Create visible[\s\S]*?grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
   const navSidebarSource = sourceSection(clientSource, 'function renderSidebar()', 'function renderTabContent');
   const mobileNavOrder = ["navButton('home'", "navButton('clips'", "navButton('chats'", "navButton('search'", 'bottom-tab-create', "navButton('profile'"];
   mobileNavOrder.reduce((previousIndex, marker) => {
@@ -452,12 +456,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(sidebarSource, /navButton\('create'/);
   assert.match(styleSource, /\.bottom-tab-create \{[\s\S]*?order: 0;[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/);
   assert.doesNotMatch(styleSource, /\.bottom-tab-create \{[^}]*linear-gradient/);
-  assert.match(styleSource, /Current mobile navigation[\s\S]*?\.bottom-tabs \.bottom-tab-create \{[\s\S]*?display: none;/);
+  assert.match(styleSource, /Mobile navigation keeps Create visible[\s\S]*?\.bottom-tabs \.bottom-tab-create \{ order: 3; display: flex; \}/);
   assert.match(styleSource, /@media \(min-width: 861px\) \{[\s\S]*?\.app-shell\.home-root \{[\s\S]*?grid-template-columns: 360px minmax\(0, 1fr\);[\s\S]*?\.app-shell\.home-root > \.sidebar > \.bottom-tabs \{[\s\S]*?width: 360px;/);
   const swipeTabSource = sourceSection(clientSource, 'function tabSwipeTarget', 'function ensureTabSwipePreview');
   for (const tab of ['home', 'search', 'clips', 'chats', 'profile']) assert.match(swipeTabSource, new RegExp(`['"]${tab}['"]`));
   assert.match(swipeTabSource, /\['home', 'clips', 'chats', 'search', 'profile'\]/);
   assert.match(swipeTabSource, /state\.tab === 'home' && dx < 0[^\n]*return 'create'/);
+  assert.match(swipeTabSource, /state\.tab === 'home' && dx > 0[^\n]*return 'story-create'/);
   assert.doesNotMatch(swipeTabSource, /notifications/);
 
   const homeStorySource = sourceSection(clientSource, 'function homeStoryUsers', 'function postAuthor');
@@ -479,7 +484,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(clipCardSource, /\scontrols(?:\s|>)/);
   assert.match(clipCardSource, /playsinline webkit-playsinline/);
   assert.match(clipCardSource, /disablepictureinpicture disableremoteplayback/);
-  assert.match(clipCardSource, /<p class="one-line"/);
+  assert.match(clipCardSource, /class="clip-caption-preview" data-action="open-clip-caption"/);
+  assert.match(clipCardSource, /class="clip-caption-panel"/);
   assert.match(clipCardSource, /data-action="open-clip-audio"/);
   assert.match(clientSource, /function renderClipAudioPage/);
   assert.match(clientSource, /data-action="remix-clip"/);
@@ -503,6 +509,9 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="clear-post-comment-reply"/);
   assert.match(clientSource, /data-action="set-comment-sort" data-sort="for_you"/);
   assert.match(clientSource, /data-action="set-comment-sort" data-sort="newest"/);
+  assert.match(clientSource, /data-action="toggle-comment-sort-menu"/);
+  assert.match(styleSource, /\.post-comment-sort-menu \{/);
+  assert.doesNotMatch(styleSource, /\.post-comment-sort \{ display: grid; grid-template-columns: 1fr 1fr;/);
   assert.match(clientSource, /Liked by creator/);
   assert.match(clientSource, /data-action="follow-user"[^>]*>Follow<\/button>/);
   assert.doesNotMatch(clientSource, /class="clip-follow" data-action="send-request"/);
@@ -512,8 +521,11 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(postActionSource, /updateSidebar\(\)/);
   assert.match(clientSource, /async function setPostInterest/);
   assert.match(clientSource, /data-action="set-post-interest" data-preference="not_interested"/);
+  assert.doesNotMatch(postCardSource, /post-interest-controls/);
   assert.match(clientSource, /function renderRequestedChats/);
   assert.match(clientSource, /function renderSuggestedChats/);
+  const chatsPanelSource = sourceSection(clientSource, 'function renderChatsPanel', 'function renderSearchPanel');
+  assert.doesNotMatch(chatsPanelSource, /renderInboxConnectionRail\(\)/);
   assert.match(clientSource, /function renderProfileStarterSteps/);
   assert.match(clientSource, /function startGroupCall/);
   assert.match(clientSource, /function inviteCallParticipant/);
@@ -522,10 +534,13 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /renderMentionText\(comment\.text \|\| ''\)/);
   assert.match(clientSource, /renderMentionText\(description\)/);
   assert.doesNotMatch(clientSource, /renderMentions\(/);
+  assert.match(clientSource, /form\.dataset\.form === 'music-search'/);
+  assert.match(clientSource, /form\.dataset\.form === 'chat-gif-search'/);
 
   const profilePanelSource = sourceSection(clientSource, 'function renderProfilePanel', 'function profilePostKey');
   assert.ok(profilePanelSource.indexOf('renderHighlights(state.me, true)') < profilePanelSource.indexOf('renderRecommendations()'));
   assert.ok(profilePanelSource.indexOf('renderRecommendations()') < profilePanelSource.indexOf('renderProfileMedia(state.me, true)'));
+  assert.ok(profilePanelSource.indexOf('renderProfileMedia(state.me, true)') < profilePanelSource.indexOf('renderProfileStarterSteps()'));
   const searchProfileSource = sourceSection(clientSource, 'function renderSearchProfilePage', 'function renderSearchProfileSocialPage');
   assert.ok(searchProfileSource.indexOf('renderHighlights(user, false)') < searchProfileSource.indexOf('renderProfileSuggestions(user)'));
   assert.ok(searchProfileSource.indexOf('renderProfileSuggestions(user)') < searchProfileSource.indexOf('renderProfileMedia(user, false)'));

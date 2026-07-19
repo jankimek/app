@@ -200,9 +200,10 @@
     messageFocusNeedsRefresh: false,
     lastMessageTap: null,
     storyPublishing: false,
-    mediaConfig: { giphy: { enabled: false, rating: 'pg' }, music: { provider: 'iTunes' } },
+    mediaConfig: { giphy: { enabled: false, rating: 'r' }, music: { provider: 'iTunes' } },
     gifPool: [],
     chatGifResults: [],
+    chatGifSearched: false,
     chatGifLoading: false,
     chatGifProvider: 'GIPHY',
     chatGifError: '',
@@ -1327,6 +1328,7 @@
   }
 
   function tabSwipeTarget(dx) {
+    if (state.tab === 'home' && dx > 0) return 'story-create';
     if (state.tab === 'home' && dx < 0) return 'create';
     const tabs = ['home', 'clips', 'chats', 'search', 'profile'];
     const index = tabIndex(state.tab);
@@ -1344,7 +1346,9 @@
     preview.dataset.tab = targetTab;
     preview.innerHTML = targetTab === 'create'
       ? `<section class="create-swipe-preview">${icon('plus')}<strong>Create new post</strong><small>Release to choose photos or videos</small></section>`
-      : renderTabContent(targetTab);
+      : targetTab === 'story-create'
+        ? `<section class="create-swipe-preview story-create-swipe-preview">${icon('camera')}<strong>Create a story</strong><small>Release to open the camera</small></section>`
+        : renderTabContent(targetTab);
     const sidebar = swipe.surface.closest('.sidebar');
     sidebar?.insertBefore(preview, sidebar.querySelector('.bottom-tabs'));
     swipe.preview = preview;
@@ -2038,8 +2042,8 @@
     const storyIds = new Set(users.map((user) => user.id));
     const suggested = visibleRecommendations().filter((user) => !storyIds.has(user.id)).slice(0, 8);
     return `
+      <div class="home-story-rail-shell">
       <section class="home-story-rail" aria-label="Stories" data-scroll-memory="home-stories">
-        <output class="story-scroll-hint" aria-live="polite"></output>
         ${users.map((user) => {
           const story = activeProfileStory(user);
           const mine = user.id === state.me?.id;
@@ -2060,6 +2064,8 @@
           </button>
         `).join('')}
       </section>
+      <output class="story-scroll-hint" aria-live="polite"></output>
+      </div>
     `;
   }
 
@@ -2240,7 +2246,7 @@
     if (!rail || rail.dataset.hintReady === 'true') return;
     rail.dataset.hintReady = 'true';
     rail.addEventListener('scroll', () => {
-      const hint = rail.querySelector('.story-scroll-hint');
+      const hint = rail.closest('.home-story-rail-shell')?.querySelector('.story-scroll-hint');
       const stories = [...rail.querySelectorAll('.home-story')];
       if (!hint || !stories.length) return;
       const center = rail.getBoundingClientRect().left + rail.clientWidth / 2;
@@ -2486,7 +2492,7 @@
             ${avatarHtml(author)}
             <span><strong>${esc(author.username)}</strong><small class="post-meta-cycle ${metaItems.length > 1 ? `is-cycling meta-${metaItems.length}` : ''}">${metaItems.map((label) => `<span>${label === audioLabel ? icon('music') : ''}${esc(label)}</span>`).join('')}</small></span>
           </a>
-          ${author.id === state.me?.id ? `<button data-action="post-owner-menu" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>` : ''}
+          <button data-action="${author.id === state.me?.id ? 'post-owner-menu' : 'post-options'}" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>
         </header>
         ${renderPostMedia(post, { preload: feedIndex < 2 ? 'auto' : 'metadata' })}
         <div class="post-action-row">
@@ -2502,7 +2508,6 @@
           ${description ? `<p>${expanded ? renderMentionText(description) : renderMentionText(`${description.slice(0, 135).trim()}…`)} ${expanded ? '' : `<button data-action="expand-post" data-post-id="${esc(post.id)}">read more</button>`}</p>` : ''}
           ${hashtags.length ? `<p class="post-hashtags">${hashtags.map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}
           <small class="post-counts"><button data-action="open-post-comments" data-post-id="${esc(post.id)}" data-post-comment-count>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments</button><span>·</span><span data-post-repost-count>${Number(post.repostCount || 0)} reposts</span></small>
-          ${suggestedLabel ? `<div class="post-interest-controls"><button class="${post.interest === 'interested' ? 'active' : ''}" data-action="set-post-interest" data-preference="interested" data-post-id="${esc(post.id)}">${icon('heart')} Interested</button><button data-action="set-post-interest" data-preference="not_interested" data-post-id="${esc(post.id)}">${icon('x')} Not interested</button></div>` : ''}
           ${post.repostNote ? `<div class="repost-thought-inline">${avatarHtml(state.me)}<span><small>Your repost thought</small><strong>${esc(post.repostNote)}</strong></span></div>` : ''}
           ${renderPostComments(post)}
           ${post.allowComments === false ? '<small class="post-comments-off">Comments are turned off.</small>' : ''}
@@ -2632,10 +2637,14 @@
                 <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
                 ${followControl}
               </div>
-              ${caption ? `<p class="one-line" title="${esc(caption)}">${renderMentionText(caption)}</p>` : ''}
+              ${caption ? `<button class="clip-caption-preview" data-action="open-clip-caption" aria-expanded="false"><span>${renderMentionText(caption)}</span>${caption.length > 52 ? '<b>more</b>' : ''}</button>` : ''}
               ${post.remixOf ? `<button class="clip-remix-attribution" data-action="open-audio-clip" data-post-id="${esc(post.remixOf.id)}">${icon('repost')} Remix with @${esc(post.remixOf.author?.username || 'creator')}</button>` : ''}
               <button class="clip-audio-line" data-action="open-clip-audio" data-post-id="${esc(post.id)}">${icon('music')} ${music ? `${esc(music.title)} · ${esc(music.artist)}` : `Original audio · ${esc(author.username)}`}</button>
             </div>
+            ${caption ? `<section class="clip-caption-panel" aria-hidden="true" aria-label="Full clip description">
+              <header>${avatarHtml(author)}<span><strong>${esc(author.username)}</strong><small>${esc(compactRelativeTime(post.createdAt))}</small></span><button data-action="close-clip-caption" aria-label="Close description">${icon('x')}</button></header>
+              <div class="clip-caption-full">${renderMentionText(caption)}</div>
+            </section>` : ''}
             <span class="clip-progress" aria-hidden="true"><i></i></span>
           </div>
           <aside class="clip-actions" aria-label="Clip actions">
@@ -3555,10 +3564,7 @@
             </div>
           ` : `
             <div class="music-search-view">
-              <label class="music-search-field">${icon('search')}<input id="music-search" value="${esc(picker.query || '')}" placeholder="Search music" autocomplete="off" enterkeyhint="search"><button data-action="clear-music-search" aria-label="Clear search" ${picker.query ? '' : 'hidden'}>${icon('x')}</button></label>
-              <div class="music-category-rail">
-                ${['For you', 'Pop', 'Electronic', 'Hip hop', 'Acoustic', 'Cinematic'].map((label) => `<button data-action="music-category" data-query="${esc(label === 'For you' ? 'instrumental' : label)}">${esc(label)}</button>`).join('')}
-              </div>
+              <form class="music-search-field" data-form="music-search">${icon('search')}<input id="music-search" name="query" value="${esc(picker.query || '')}" placeholder="Search music" autocomplete="off" enterkeyhint="search"><button type="button" data-action="clear-music-search" aria-label="Clear search" ${picker.query ? '' : 'hidden'}>${icon('x')}</button><button class="music-search-submit" type="submit">Search</button></form>
               <div class="music-results" aria-live="polite">
                 ${picker.loading ? `<div class="music-results-loading"><i></i><span>Finding tracks…</span></div>` : picker.tracks?.length ? picker.tracks.map((item) => `
                   <article class="music-result-row">
@@ -3568,7 +3574,7 @@
                     </button>
                     <button class="music-result-play" data-action="preview-music-track" data-track-id="${esc(item.catalogId)}" aria-label="Preview ${esc(item.title)}">${icon('play')}</button>
                   </article>
-                `).join('') : picker.error ? `<div class="music-results-empty is-error"><p>${esc(picker.error)}</p><button data-action="retry-music-search">Try again</button></div>` : '<div class="music-results-empty">No matching tracks. Try another title, artist, or mood.</div>'}
+                `).join('') : picker.error ? `<div class="music-results-empty is-error"><p>${esc(picker.error)}</p><button data-action="retry-music-search">Try again</button></div>` : picker.hasSearched ? '<div class="music-results-empty">No matching tracks. Try another title or artist.</div>' : '<div class="music-results-empty">Type a song title or artist, then tap Search.</div>'}
               </div>
               <footer class="music-provider-credit">
                 ${picker.provider === 'iTunes'
@@ -3802,7 +3808,6 @@
       }).join('') : '<div class="empty-state">No conversation references match that search.</div>';
 
     return `
-      ${renderInboxConnectionRail()}
       ${renderNoteRail()}
       ${renderSuggestedChats(true)}
       <section class="messages-head">
@@ -4042,10 +4047,10 @@
           <button data-action="open-highlight-archive">${icon('archive')} Archive</button>
         </div>
       </section>
-      ${renderProfileStarterSteps()}
       ${renderHighlights(state.me, true)}
       ${renderRecommendations()}
       ${renderProfileMedia(state.me, true)}
+      ${renderProfileStarterSteps()}
     `;
   }
 
@@ -6892,13 +6897,13 @@
             `).join('') : '<p class="sticker-set-empty">This set is empty.</p>'}
           </div>
         ` : tab === 'gifs' ? `
-          <div class="chat-gif-search">
-            ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIPHY" aria-label="Search GIPHY" autocomplete="off">
-          </div>
+          <form class="chat-gif-search" data-form="chat-gif-search">
+            ${icon('search')}<input id="chat-gif-search" name="query" value="${esc(state.chatGifQuery)}" placeholder="Search GIPHY" aria-label="Search GIPHY" autocomplete="off" enterkeyhint="search"><button type="submit">Search</button>
+          </form>
           <div class="chat-gif-grid">
             ${catalogGifs.map((gif) => `<button class="catalog-gif ${state.sendingGifId === gif.id ? 'sending' : ''}" data-action="send-gif" data-gif-id="${esc(gif.id)}" data-search="${esc(`${gif.title} ${gif.creator || ''}`.toLowerCase())}" aria-label="Send ${esc(gif.title)}${gif.creator ? ` by ${esc(gif.creator)}` : ''}" ${state.sendingGifId ? 'disabled' : ''}><img src="${esc(gif.file?.url || '')}" alt="${esc(gif.title)}" loading="lazy"></button>`).join('')}
             ${state.chatGifLoading ? '<div class="chat-gif-loading"><i></i><span>Searching GIFs…</span></div>' : ''}
-            ${state.chatGifError ? `<p class="chat-gif-empty is-error">${esc(state.chatGifError)} <button data-action="retry-chat-gif-search">Try again</button></p>` : `<p class="chat-gif-empty" ${gifs.length || state.chatGifLoading ? 'hidden' : ''}>No matching GIFs. Try another search.</p>`}
+            ${state.chatGifError ? `<p class="chat-gif-empty is-error">${esc(state.chatGifError)} <button data-action="retry-chat-gif-search">Try again</button></p>` : `<p class="chat-gif-empty" ${gifs.length || state.chatGifLoading ? 'hidden' : ''}>${state.chatGifSearched ? 'No matching GIFs. Try another search.' : 'Type what you want, then tap Search.'}</p>`}
           </div>
           <footer class="chat-gif-provider">
             <a href="https://giphy.com" target="_blank" rel="noopener noreferrer">Powered by GIPHY</a><span>Tap a GIF to send</span>
@@ -7111,7 +7116,13 @@
         <strong>Comments</strong>
         <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close comments">${icon('x')}</button>
       </header>
-      <div class="post-comment-sort" role="tablist" aria-label="Sort comments"><button class="${commentSort === 'for_you' ? 'active' : ''}" data-action="set-comment-sort" data-sort="for_you" role="tab" aria-selected="${commentSort === 'for_you'}">For you</button><button class="${commentSort === 'newest' ? 'active' : ''}" data-action="set-comment-sort" data-sort="newest" role="tab" aria-selected="${commentSort === 'newest'}">Newest</button></div>
+      <div class="post-comment-sort-wrap">
+        <button class="post-comment-sort-trigger" data-action="toggle-comment-sort-menu" aria-haspopup="menu" aria-expanded="${Boolean(sheet.commentSortMenuOpen)}">${commentSort === 'newest' ? 'Newest' : 'For you'} ${icon('chevron')}</button>
+        ${sheet.commentSortMenuOpen ? `<div class="post-comment-sort-menu" role="menu" aria-label="Sort comments">
+          <button class="${commentSort === 'for_you' ? 'active' : ''}" data-action="set-comment-sort" data-sort="for_you" role="menuitemradio" aria-checked="${commentSort === 'for_you'}"><span><strong>For you</strong><small>Comments selected for you</small></span>${commentSort === 'for_you' ? icon('check') : ''}</button>
+          <button class="${commentSort === 'newest' ? 'active' : ''}" data-action="set-comment-sort" data-sort="newest" role="menuitemradio" aria-checked="${commentSort === 'newest'}"><span><strong>Newest</strong><small>Most recent comments first</small></span>${commentSort === 'newest' ? icon('check') : ''}</button>
+        </div>` : ''}
+      </div>
       <div class="story-comment-list post-comment-list" role="feed" aria-label="Post comments">
         ${commentThreads || `
           <div class="story-comments-empty">
@@ -10062,16 +10073,15 @@
     try {
       const config = await api('/api/media/config');
       state.mediaConfig = {
-        giphy: { enabled: false, rating: 'pg', ...(config.giphy || {}) },
+        giphy: { enabled: false, rating: 'r', ...(config.giphy || {}) },
         music: { provider: 'iTunes', ...(config.music || {}) }
       };
     } catch {
-      state.mediaConfig = { giphy: { enabled: false, rating: 'pg' }, music: { provider: 'iTunes' } };
+      state.mediaConfig = { giphy: { enabled: false, rating: 'r' }, music: { provider: 'iTunes' } };
     }
     return state.mediaConfig;
   }
 
-  let musicSearchTimer = null;
   let musicSearchRequestId = 0;
   let musicCatalogPreviewAudio = null;
   let musicPickerReturnFocus = null;
@@ -10105,6 +10115,7 @@
     if (!picker) return;
     const requestId = ++musicSearchRequestId;
     picker.query = String(query || '').slice(0, 80);
+    picker.hasSearched = true;
     picker.loading = true;
     picker.error = '';
     updateMusicPickerSlot();
@@ -10134,7 +10145,8 @@
       context: ['post', 'note', 'chat'].includes(context) ? context : 'note',
       query: '',
       tracks: [],
-      loading: !current,
+      loading: false,
+      hasSearched: Boolean(current),
       provider: state.mediaConfig.music?.provider || 'iTunes',
       selected: current ? { ...current } : null,
       start: Number(current?.start || 0),
@@ -10146,11 +10158,9 @@
       const focusTarget = dialog?.querySelector(current ? 'button:not([disabled])' : '#music-search') || dialog;
       focusTarget?.focus?.({ preventScroll: true });
     });
-    if (!current) searchMusicCatalog().catch((error) => alert(error.message));
   }
 
   function closeMusicPicker() {
-    clearTimeout(musicSearchTimer);
     musicSearchRequestId += 1;
     stopMusicCatalogPreview();
     document.getElementById('music-picker-audio')?.pause?.();
@@ -10326,7 +10336,6 @@
     }
   }
 
-  let chatGifSearchTimer = null;
   let chatGifSearchRequestId = 0;
 
   function normalizeGiphySearchResult(item) {
@@ -10355,7 +10364,7 @@
     url.searchParams.set('api_key', config.apiKey);
     if (term) url.searchParams.set('q', term);
     url.searchParams.set('limit', '18');
-    url.searchParams.set('rating', config.rating || 'pg');
+    url.searchParams.set('rating', config.rating || 'r');
     url.searchParams.set('bundle', 'messaging_non_clips');
     url.searchParams.set('remove_low_contrast', 'true');
     const response = await fetch(url, { credentials: 'omit', referrerPolicy: 'strict-origin-when-cross-origin' });
@@ -10367,6 +10376,7 @@
   async function loadChatGifResults(query = '') {
     const requestId = ++chatGifSearchRequestId;
     const term = String(query || '').trim().slice(0, 80);
+    state.chatGifSearched = true;
     state.chatGifLoading = true;
     state.chatGifError = '';
     if (state.stickerPanel && state.chatTrayTab === 'gifs') updateChatFooter({ suppressFocus: true });
@@ -14452,6 +14462,18 @@
     if (!form) return;
     event.preventDefault();
     try {
+      if (form.dataset.form === 'music-search' && state.musicPicker) {
+        const query = formValue(form, 'query').trim();
+        state.musicPicker.query = query;
+        if (query) await searchMusicCatalog(query);
+        return;
+      }
+      if (form.dataset.form === 'chat-gif-search') {
+        const query = formValue(form, 'query').trim();
+        state.chatGifQuery = query;
+        if (query) await loadChatGifResults(query);
+        return;
+      }
       if (form.dataset.form === 'auth') {
         const body = state.authMode === 'login'
           ? {
@@ -14911,7 +14933,26 @@
       }
       if (action === 'set-comment-sort' && state.actionSheet?.type === 'post-comments') {
         state.actionSheet.commentSort = target.dataset.sort === 'newest' ? 'newest' : 'for_you';
+        state.actionSheet.commentSortMenuOpen = false;
         updateActionSheetSlot();
+      }
+      if (action === 'toggle-comment-sort-menu' && state.actionSheet?.type === 'post-comments') {
+        state.actionSheet.commentSortMenuOpen = !state.actionSheet.commentSortMenuOpen;
+        updateActionSheetSlot();
+      }
+      if (action === 'open-clip-caption') {
+        const card = target.closest('.clip-card');
+        card?.classList.add('caption-expanded');
+        target.setAttribute('aria-expanded', 'true');
+        const panel = card?.querySelector('.clip-caption-panel');
+        panel?.setAttribute('aria-hidden', 'false');
+        requestAnimationFrame(() => panel?.querySelector('[data-action="close-clip-caption"]')?.focus({ preventScroll: true }));
+      }
+      if (action === 'close-clip-caption') {
+        const card = target.closest('.clip-card');
+        card?.classList.remove('caption-expanded');
+        card?.querySelector('.clip-caption-preview')?.setAttribute('aria-expanded', 'false');
+        target.closest('.clip-caption-panel')?.setAttribute('aria-hidden', 'true');
       }
       if (action === 'add-post-comment-emoji') {
         addPostCommentEmoji(target.dataset.emoji || '', target);
@@ -15024,7 +15065,6 @@
         document.getElementById('music-picker-audio')?.pause?.();
         state.musicPicker.selected = null;
         updateMusicPickerSlot();
-        if (!state.musicPicker.tracks?.length) await searchMusicCatalog(state.musicPicker.query);
       }
       if (action === 'select-music-track') selectMusicTrack(target.dataset.trackId);
       if (action === 'preview-music-track') previewMusicTrack(target.dataset.trackId, target);
@@ -15036,14 +15076,13 @@
         updateMusicPickerSlot();
       }
       if (action === 'apply-music-selection') await applyMusicSelection();
-      if (action === 'music-category' && state.musicPicker) {
-        state.musicPicker.query = target.dataset.query || '';
-        await searchMusicCatalog(state.musicPicker.query);
-      }
       if (action === 'retry-music-search' && state.musicPicker) await searchMusicCatalog(state.musicPicker.query);
       if (action === 'clear-music-search' && state.musicPicker) {
         state.musicPicker.query = '';
-        await searchMusicCatalog('');
+        state.musicPicker.tracks = [];
+        state.musicPicker.error = '';
+        state.musicPicker.hasSearched = false;
+        updateMusicPickerSlot();
       }
       if (action === 'retry-chat-gif-search') await loadChatGifResults(state.chatGifQuery);
       if (action === 'open-chat') {
@@ -15194,7 +15233,6 @@
       }
       if (action === 'set-chat-tray') {
         state.chatTrayTab = ['gifs', 'music'].includes(target.dataset.tray) ? target.dataset.tray : 'stickers';
-        if (state.chatTrayTab === 'gifs') await loadChatGifResults(state.chatGifQuery);
         document.activeElement?.blur?.();
         updateChatFooter({ suppressFocus: true });
       }
@@ -16376,10 +16414,6 @@
       state.musicPicker.query = event.target.value.slice(0, 80);
       const clear = event.target.closest('.music-search-field')?.querySelector('[data-action="clear-music-search"]');
       if (clear) clear.hidden = !state.musicPicker.query;
-      clearTimeout(musicSearchTimer);
-      musicSearchTimer = setTimeout(() => {
-        searchMusicCatalog(state.musicPicker?.query || '').catch(() => {});
-      }, 300);
       return;
     }
     if (event.target.matches('[data-music-segment-start]') && state.musicPicker?.selected) {
@@ -16524,18 +16558,6 @@
     }
     if (event.target.id === 'chat-gif-search') {
       state.chatGifQuery = event.target.value.slice(0, 80);
-      const term = state.chatGifQuery.trim().toLowerCase();
-      let visible = 0;
-      document.querySelectorAll('.chat-gif-grid [data-search]').forEach((button) => {
-        button.hidden = Boolean(term && !String(button.dataset.search || '').includes(term));
-        if (!button.hidden) visible += 1;
-      });
-      const empty = document.querySelector('.chat-gif-empty');
-      if (empty) empty.hidden = visible > 0;
-      clearTimeout(chatGifSearchTimer);
-      chatGifSearchTimer = setTimeout(() => {
-        loadChatGifResults(state.chatGifQuery).catch(() => {});
-      }, 280);
       return;
     }
     if (event.target.dataset.storyAdjust && state.storyEditor) {
@@ -17995,6 +18017,7 @@
         setTimeout(() => {
           clearTabSwipePreview(swipe);
           if (swipe.targetTab === 'create') openPostMediaPicker();
+          else if (swipe.targetTab === 'story-create') openCameraCapture('story', {}, surface);
           else switchMainTab(swipe.targetTab, { animate: false });
         }, 220);
       } else {

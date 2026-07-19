@@ -46,9 +46,9 @@ const EMAIL_VERIFICATION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const GOOGLE_WEATHER_API_KEY = String(process.env.GOOGLE_WEATHER_API_KEY || '').trim();
 const GIPHY_API_KEY = String(process.env.GIPHY_API_KEY || '').trim();
 const GIPHY_API_BASE = String(process.env.GIPHY_API_BASE || 'https://api.giphy.com').trim().replace(/\/+$/, '');
-const GIPHY_RATING = ['g', 'pg', 'pg-13'].includes(String(process.env.GIPHY_RATING || '').toLowerCase())
+const GIPHY_RATING = ['g', 'pg', 'pg-13', 'r'].includes(String(process.env.GIPHY_RATING || '').toLowerCase())
   ? String(process.env.GIPHY_RATING).toLowerCase()
-  : 'pg';
+  : 'r';
 const ITUNES_API_BASE = String(process.env.ITUNES_API_BASE || 'https://itunes.apple.com').trim().replace(/\/+$/, '');
 const ITUNES_COUNTRY = /^[a-z]{2}$/i.test(String(process.env.ITUNES_COUNTRY || 'DE'))
   ? String(process.env.ITUNES_COUNTRY || 'DE').toUpperCase()
