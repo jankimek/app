@@ -950,6 +950,39 @@ function publicPost(post, viewerId = null) {
   });
   const firstMedia = mediaItems[0] || null;
   const firstEdits = firstMedia?.edits || post.edits || {};
+  const friendActivity = [];
+  if (viewerId && db.users[viewerId]) {
+    const following = new Set(db.follows[viewerId] || []);
+    const friendIds = new Set([
+      ...(db.contacts[viewerId] || []),
+      ...Array.from(following).filter((userId) => isFollowing(userId, viewerId))
+    ]);
+    friendIds.delete(viewerId);
+    if (friendIds.has(post.ownerId)) {
+      friendActivity.push({ userId: post.ownerId, action: 'created', createdAt: post.createdAt });
+    }
+    for (const userId of likes) {
+      if (friendIds.has(userId)) friendActivity.push({ userId, action: 'liked', createdAt: post.updatedAt || post.createdAt });
+    }
+    for (const userId of reposts) {
+      if (friendIds.has(userId)) friendActivity.push({ userId, action: 'reposted', createdAt: post.repostDates?.[userId] || post.updatedAt || post.createdAt });
+    }
+    const latestCommentByFriend = new Map();
+    for (const comment of comments) {
+      if (!friendIds.has(comment.userId)) continue;
+      const existing = latestCommentByFriend.get(comment.userId);
+      if (!existing || String(comment.createdAt).localeCompare(String(existing.createdAt)) > 0) latestCommentByFriend.set(comment.userId, comment);
+    }
+    for (const comment of latestCommentByFriend.values()) {
+      friendActivity.push({ userId: comment.userId, action: 'commented', createdAt: comment.createdAt });
+    }
+  }
+  const publicFriendActivity = friendActivity
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .filter((item, index, list) => list.findIndex((other) => other.userId === item.userId) === index)
+    .slice(0, 3)
+    .map((item) => ({ ...item, user: postActor(db.users[item.userId], viewerId) }))
+    .filter((item) => item.user);
   return {
     id: post.id,
     ownerId: post.ownerId,
@@ -986,6 +1019,7 @@ function publicPost(post, viewerId = null) {
     savedByMe: Boolean(viewerId && saves.includes(viewerId)),
     repostCount: reposts.length,
     repostedByMe: Boolean(viewerId && reposts.includes(viewerId)),
+    friendActivity: publicFriendActivity,
     commentCount: comments.length,
     comments: comments.slice(-100).sort((a, b) => {
       if (Boolean(a.pinnedAt) !== Boolean(b.pinnedAt)) return a.pinnedAt ? -1 : 1;
@@ -1184,6 +1218,11 @@ function publicNote(note, viewerId) {
     audioStart: note.audioStart || 0,
     createdAt: note.createdAt,
     expiresAt: note.expiresAt,
+    likeCount: (note.likes || []).filter((userId) => db.users[userId]).length,
+    likedByMe: Boolean(viewerId && (note.likes || []).includes(viewerId)),
+    likers: note.ownerId === viewerId
+      ? (note.likes || []).map((userId) => postActor(db.users[userId], viewerId)).filter(Boolean)
+      : undefined,
     isMine: note.ownerId === viewerId
   };
 }
@@ -1697,6 +1736,10 @@ function messagePreview(message, viewerId = null) {
     text: message.text || '',
     senderId: message.senderId,
     createdAt: message.createdAt,
+    editedAt: message.editedAt || null,
+    music: message.kind === 'music'
+      ? publicMusicSelection(message.music, message.music ? `/api/messages/${message.id}/music` : '')
+      : null,
     sharedPostId: sharedPost?.id || null,
     sharedPost,
     attachment
@@ -1713,6 +1756,8 @@ function messageSearchText(message, viewerId = null) {
     message.kind || '',
     message.attachment?.name || '',
     message.attachment?.mime || '',
+    message.music?.title || '',
+    message.music?.artist || '',
     sharedPost ? (sharedPost.isClip ? 'shared clip' : 'shared post') : '',
     sharedPost?.title || '',
     sharedPost?.description || '',
@@ -1734,6 +1779,7 @@ function messageSnippet(message) {
     const caption = message.text || sharedPost.title || sharedPost.description || '';
     return caption ? `Shared a ${label}: ${caption}` : `Shared a ${label}`;
   }
+  if (message.kind === 'music') return message.music?.title ? `Shared ${message.music.title}` : 'Shared music';
   if (message.text) return message.text;
   if (message.attachment?.name) return `${message.kind}: ${message.attachment.name}`;
   return message.kind || 'message';
@@ -1759,6 +1805,9 @@ function decorateMessage(message, viewerId = null) {
     replyTo: message.replyTo || null,
     replyPreview: messagePreview(reply, viewerId),
     attachment: message.deletedAt ? null : attachment,
+    music: message.deletedAt || message.kind !== 'music'
+      ? null
+      : publicMusicSelection(message.music, message.music ? `/api/messages/${message.id}/music` : ''),
     mediaCredit: message.deletedAt || !gif ? null : {
       provider: gif.provider || 'local',
       creator: gif.creator || '',
@@ -1786,6 +1835,7 @@ function decorateMessage(message, viewerId = null) {
     pinnedBy: message.pinnedBy || null,
     forwardedFrom: message.forwardedFrom || null,
     createdAt: message.createdAt,
+    editedAt: message.editedAt || null,
     deletedAt: message.deletedAt || null,
     deletedBy: message.deletedBy || null
   };
@@ -2873,6 +2923,18 @@ async function handleApi(req, res, pathname, query) {
     return streamCatalogAudio(req, res, track.url);
   }
 
+  const messageMusicMatch = /^\/api\/messages\/([^/]+)\/music$/.exec(pathname);
+  if (req.method === 'GET' && messageMusicMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const found = findMessage(decodeURIComponent(messageMusicMatch[1]));
+    if (!found || !canViewMessage(user.id, found.message) || found.message.deletedAt || !found.message.music) {
+      return sendError(res, 404, 'Track not found.');
+    }
+    const track = await resolveCatalogMusic(found.message.music.catalogId);
+    return streamCatalogAudio(req, res, track.url);
+  }
+
   if (req.method === 'POST' && pathname === '/api/auth/register') {
     const body = await readJsonBody(req);
     const username = String(body.username || '').trim();
@@ -3655,6 +3717,7 @@ async function handleApi(req, res, pathname, query) {
       audioStart,
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + NOTE_LIFETIME_MS).toISOString(),
+      likes: [],
       deletedAt: null
     };
     const previousNote = db.notes[user.id] || null;
@@ -3671,6 +3734,25 @@ async function handleApi(req, res, pathname, query) {
       await deleteStoredFile(previousNote.audioFileId, 'note-audio').catch(() => {});
     }
     return sendJson(res, 201, { note: publicNote(note, user.id) });
+  }
+
+  const noteLikeMatch = /^\/api\/notes\/([^/]+)\/like$/.exec(pathname);
+  if (req.method === 'POST' && noteLikeMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const note = Object.values(db.notes).find((item) => item.id === decodeURIComponent(noteLikeMatch[1]));
+    if (!note || !canViewNote(note, user.id)) return sendError(res, 404, 'Note not found.');
+    if (!Array.isArray(note.likes)) note.likes = [];
+    const wasLiked = note.likes.includes(user.id);
+    note.likes = wasLiked ? note.likes.filter((userId) => userId !== user.id) : [...note.likes, user.id];
+    let notification = null;
+    if (!wasLiked && note.ownerId !== user.id) {
+      notification = addNotification(note.ownerId, 'note_like', user.id, null, `${user.username} liked your note.`);
+    }
+    await Promise.all([saveNotes(), notification ? saveNotifications() : Promise.resolve()]);
+    pushToUsers([note.ownerId, user.id], { type: 'note:updated', noteId: note.id });
+    if (notification) pushToUser(note.ownerId, { type: 'notification:new', notification: publicNotification(notification, note.ownerId) });
+    return sendJson(res, 200, { note: publicNote(note, user.id) });
   }
 
   if (req.method === 'DELETE' && pathname === '/api/me/note') {
@@ -4903,7 +4985,7 @@ async function handleApi(req, res, pathname, query) {
       });
     }
     const body = await readJsonBody(req);
-    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post'].includes(body.kind) ? body.kind : 'text';
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post', 'music'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
     let sharedPost = null;
@@ -4915,6 +4997,12 @@ async function handleApi(req, res, pathname, query) {
       );
       if (!validation.post) return sendError(res, validation.status, validation.error);
       sharedPost = validation.post;
+    }
+    let music = null;
+    if (kind === 'music') {
+      const catalogId = cleanText(body.music?.catalogId || body.musicCatalogId || '', 180);
+      if (!catalogId) return sendError(res, 400, 'Choose a song before sending it.');
+      music = cleanMusicSelection(await resolveCatalogMusic(catalogId), body.music || body);
     }
     let file = null;
     if (kind === 'gif' && (body.gifCatalogId || body.gifId)) {
@@ -4942,6 +5030,7 @@ async function handleApi(req, res, pathname, query) {
       text,
       replyTo: body.replyTo && list.some((item) => item.id === body.replyTo) ? body.replyTo : null,
       attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      music,
       sharedPostId: sharedPost?.id || null,
       stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
       hiddenFor: [],
@@ -4951,6 +5040,7 @@ async function handleApi(req, res, pathname, query) {
       pinnedBy: null,
       forwardedFrom: null,
       createdAt: nowIso(),
+      editedAt: null,
       deletedAt: null,
       deletedBy: null
     };
@@ -5149,7 +5239,7 @@ async function handleApi(req, res, pathname, query) {
     const body = await readJsonBody(req);
     const chatId = chatIdFor(user.id, peer.id);
     const list = ensureChatMessages(chatId);
-    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post'].includes(body.kind) ? body.kind : 'text';
+    const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post', 'music'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
 
@@ -5162,6 +5252,13 @@ async function handleApi(req, res, pathname, query) {
       );
       if (!validation.post) return sendError(res, validation.status, validation.error);
       sharedPost = validation.post;
+    }
+
+    let music = null;
+    if (kind === 'music') {
+      const catalogId = cleanText(body.music?.catalogId || body.musicCatalogId || '', 180);
+      if (!catalogId) return sendError(res, 400, 'Choose a song before sending it.');
+      music = cleanMusicSelection(await resolveCatalogMusic(catalogId), body.music || body);
     }
 
     let file = null;
@@ -5198,6 +5295,7 @@ async function handleApi(req, res, pathname, query) {
         mime: file.mime,
         size: file.size
       } : null,
+      music,
       sharedPostId: sharedPost?.id || null,
       stickerId: kind === 'sticker' ? cleanText(body.stickerId || file?.id || '', 120) : null,
       hiddenFor: [],
@@ -5207,6 +5305,7 @@ async function handleApi(req, res, pathname, query) {
       pinnedBy: null,
       forwardedFrom: null,
       createdAt: nowIso(),
+      editedAt: null,
       deletedAt: null,
       deletedBy: null
     };
@@ -5400,6 +5499,7 @@ async function handleApi(req, res, pathname, query) {
       text: source.text || '',
       replyTo: null,
       attachment: file ? { id: file.id, name: file.originalName, mime: file.mime, size: file.size } : null,
+      music: source.kind === 'music' && source.music ? { ...source.music } : null,
       sharedPostId: sharedPost?.id || null,
       stickerId: source.stickerId || null,
       hiddenFor: [],
@@ -5409,6 +5509,7 @@ async function handleApi(req, res, pathname, query) {
       pinnedBy: null,
       forwardedFrom: source.id,
       createdAt: nowIso(),
+      editedAt: null,
       deletedAt: null,
       deletedBy: null
     };
@@ -5449,6 +5550,27 @@ async function handleApi(req, res, pathname, query) {
   }
 
   const deleteMessageMatch = /^\/api\/messages\/([^/]+)$/.exec(pathname);
+  if (req.method === 'PATCH' && deleteMessageMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const found = findMessage(decodeURIComponent(deleteMessageMatch[1]));
+    if (!found) return sendError(res, 404, 'Message not found.');
+    const { chatId, message } = found;
+    if (message.senderId !== user.id) return sendError(res, 403, 'Only the sender can edit this message.');
+    if (message.deletedAt || message.kind !== 'text') return sendError(res, 400, 'Only active text messages can be edited.');
+    if (Date.now() - new Date(message.createdAt).getTime() > 15 * 60 * 1000) {
+      return sendError(res, 400, 'Messages can only be edited for 15 minutes after sending.');
+    }
+    const body = await readJsonBody(req);
+    const text = cleanText(body.text || '', 8000);
+    if (!text) return sendError(res, 400, 'Message cannot be empty.');
+    message.text = text;
+    message.editedAt = nowIso();
+    await saveMessages();
+    const decorated = decorateMessage(message);
+    pushToUsers(participantsForChatId(chatId), { type: 'message:updated', chatId, message: decorated });
+    return sendJson(res, 200, { message: decorated });
+  }
   if (req.method === 'DELETE' && deleteMessageMatch) {
     const user = await requireAuth(req, res);
     if (!user) return;

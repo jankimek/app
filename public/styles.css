@@ -15278,6 +15278,18 @@ button.note-item,
   }
 }
 
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
 /* Inbox Map + camera-only Instants */
 .inbox-connection-rail {
   display: flex;
@@ -16151,6 +16163,262 @@ button.note-item,
     transition-duration: .01ms !important;
   }
 }
+
+/* Notes keep reply/like behavior separate from audio playback. */
+.note-audio-toggle {
+  position: absolute;
+  z-index: 7;
+  top: 5px;
+  right: -1px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0,0,0,.66);
+  box-shadow: 0 3px 12px rgba(0,0,0,.32);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+.note-audio-toggle:active { transform: scale(.88); }
+.note-audio-toggle .note-play-state { position: static; width: 100%; height: 100%; background: transparent; }
+.note-like-badge {
+  position: absolute;
+  z-index: 6;
+  right: 2px;
+  bottom: 21px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 5px;
+  border-radius: 99px;
+  color: #fff;
+  background: rgba(0,0,0,.66);
+  font-size: 8px;
+  pointer-events: none;
+}
+.note-like-badge .ui-icon { width: 9px; height: 9px; fill: currentColor; }
+
+.action-sheet.compact-sheet.note-reply-sheet {
+  width: min(520px, 100%);
+  max-height: calc(var(--visual-height) - 8px);
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 18px 18px 0 0;
+  background: #111;
+}
+.note-reply-sheet-shell { display: grid; }
+.note-reply-sheet-shell > header {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  align-items: center;
+  padding: 0 8px;
+  border-bottom: 1px solid #262626;
+}
+.note-reply-sheet-shell > header .story-sheet-grabber { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); }
+.note-reply-sheet-shell > header strong { grid-column: 2; text-align: center; font-size: 14px; }
+.note-reply-sheet-shell > header button { grid-column: 3; width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 50%; background: transparent; }
+.note-reply-preview {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  padding: 14px 16px 10px;
+}
+.note-reply-preview .avatar { width: 46px; height: 46px; }
+.note-reply-preview > span { min-width: 0; }
+.note-reply-preview strong,
+.note-reply-preview p,
+.note-reply-preview small { display: block; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-reply-preview strong { font-size: 13px; }
+.note-reply-preview p { margin-top: 3px; font-size: 14px; }
+.note-reply-preview small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.note-reply-preview small .ui-icon { width: 11px; height: 11px; vertical-align: -2px; }
+.note-reply-actions { display: flex; gap: 8px; padding: 0 16px 12px; }
+.note-reply-actions button {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: #fff;
+  background: #262626;
+  font-size: 11px;
+}
+.note-reply-actions button.active { color: #ff3040; }
+.note-reply-actions button.active .ui-icon { fill: currentColor; }
+.note-reply-actions .ui-icon { width: 16px; height: 16px; }
+.note-reply-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid #262626;
+}
+.note-reply-composer input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid #363636;
+  border-radius: 999px;
+  color: #fff;
+  background: #1c1c1e;
+  font-size: 16px;
+  outline: none;
+}
+.note-reply-composer button { min-height: 42px; padding: 0 10px; color: #3ba3ff; background: transparent; font-weight: 750; }
+.note-reply-composer button:disabled { opacity: .35; }
+
+/* Current DM music shares use a compact playable Apple-preview card. */
+.message-music-player {
+  --music-progress: 0;
+  width: min(292px, calc(100vw - 86px));
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 1px;
+}
+
+.message-music-art,
+.reply-preview-art {
+  width: 48px;
+  height: 48px;
+  display: grid !important;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  color: #fff;
+  background: linear-gradient(145deg, #fe2c55, #8a3ffc 62%, #2457e6);
+}
+
+.message-music-art img,
+.reply-preview-art img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.message-music-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.message-music-copy strong,
+.message-music-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-music-copy strong { font-size: 13px; }
+.message-music-copy small { color: rgba(255, 255, 255, .68); font-size: 11px; }
+.message-music-copy i { height: 2px; margin-top: 6px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.2); }
+.message-music-copy i b { display: block; width: calc(var(--music-progress) * 100%); height: 100%; background: #fff; }
+
+.message-music-player > button {
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(255,255,255,.12);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.message-music-player > button:active { transform: scale(.88); }
+.message-music-player.playing > button { background: rgba(255,255,255,.22); }
+.message-music-player > button .ui-icon { width: 17px; height: 17px; }
+
+.message-context-label.edited { margin-top: -1px; }
+
+.message-edit-picker {
+  grid-template-rows: auto auto auto auto;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.message-edit-picker > label,
+.message-edit-picker > small,
+.message-edit-picker > .primary { margin: 0 12px; }
+.message-edit-picker textarea {
+  width: 100%;
+  min-height: 104px;
+  resize: none;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 12px;
+  padding: 11px 12px;
+  color: #fff;
+  background: #1c1c1e;
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+.message-edit-picker textarea:focus { border-color: #4096ff; }
+.message-edit-picker > small { color: var(--muted); font-size: 11px; }
+
+.chat-tray-tabs { grid-template-columns: repeat(3, 52px); }
+.music-tray.chat-media-tray { grid-template-rows: auto minmax(0, 1fr); }
+.chat-music-entry {
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 18px;
+  text-align: center;
+}
+.chat-music-entry > span {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(145deg, #fe2c55, #8a3ffc 62%, #2457e6);
+}
+.chat-music-entry > span .ui-icon { width: 25px; height: 25px; }
+.chat-music-entry strong { font-size: 16px; }
+.chat-music-entry small { max-width: 280px; color: var(--muted); line-height: 1.35; }
+.chat-music-entry .primary { min-width: 150px; margin-top: 3px; }
+
+.reply-preview-media.music .reply-preview-art { width: 54px; height: 54px; }
+.reply-preview-media.music.compact .reply-preview-art { width: 38px; height: 38px; }
+
+/* The Friends Reels surface explains why each clip is present. */
+.clip-friend-activity {
+  position: absolute;
+  z-index: 6;
+  top: max(62px, calc(env(safe-area-inset-top) + 54px));
+  left: 13px;
+  max-width: calc(100% - 84px);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px 5px 5px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(0,0,0,.48);
+  box-shadow: 0 5px 18px rgba(0,0,0,.22);
+  font-size: 11px;
+  text-decoration: none;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: clipFriendActivityIn 240ms cubic-bezier(.2,.82,.2,1) both;
+}
+.clip-friend-activity .avatar { width: 26px; height: 26px; }
+.clip-friend-activity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes clipFriendActivityIn { from { opacity: 0; transform: translateY(-5px) scale(.97); } }
 
 @media (max-width: 370px) {
   .inbox-connection-rail { padding-right: 10px; padding-left: 10px; }

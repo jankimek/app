@@ -1290,6 +1290,7 @@
     if (!message) return '';
     if (message.deletedAt) return 'Deleted message';
     if (message.kind === 'post') return message.sharedPost?.isClip ? 'Shared a clip' : 'Shared a post';
+    if (message.kind === 'music') return message.music?.title ? `Shared ${message.music.title}` : 'Shared music';
     if (message.text) return message.text;
     if (message.attachment?.name) return `${message.kind}: ${message.attachment.name}`;
     return message.kind || 'message';
@@ -1298,6 +1299,9 @@
   function renderReplyPreviewContent(message, compact = false) {
     if (!message) return '';
     const attachment = message.attachment;
+    if (message.kind === 'music' && message.music) {
+      return `<span class="reply-preview-media music ${compact ? 'compact' : ''}"><span class="reply-preview-art">${message.music.artworkUrl ? `<img src="${esc(message.music.artworkUrl)}" alt="">` : icon('music')}</span><span><strong>${esc(message.music.title || 'Music')}</strong><small>${esc(message.music.artist || '')}</small></span></span>`;
+    }
     if (message.kind === 'gif' && attachment?.url) {
       return `<span class="reply-preview-media ${compact ? 'compact' : ''}"><img src="${esc(attachment.url)}" alt="${esc(attachment.name || 'GIF')}" loading="eager"><span><strong>GIF</strong>${message.text ? `<small>${esc(message.text).slice(0, 80)}</small>` : ''}</span></span>`;
     }
@@ -2443,12 +2447,11 @@
 
   function clipPosts() {
     const seen = new Set();
-    const friends = new Set([state.me?.id, ...(state.me?.following || []).map((user) => user.id)].filter(Boolean));
     return [...(state.clips || []), ...(state.explorePosts || []), ...(state.homeFeed || [])].filter((post) => {
       if (!post?.id || seen.has(post.id)) return false;
       seen.add(post.id);
       const items = postMediaItems(post);
-      return items.length === 1 && items[0].mediaType === 'video' && (state.clipMode !== 'friends' || friends.has(post.ownerId || postAuthor(post)?.id));
+      return items.length === 1 && items[0].mediaType === 'video' && (state.clipMode !== 'friends' || (post.friendActivity || []).length > 0);
     });
   }
 
@@ -2499,6 +2502,7 @@
           : `<button class="clip-follow" data-action="follow-user" data-user-id="${esc(author.id)}" aria-label="Follow ${esc(author.username)}">Follow</button>`;
     const caption = String(post.description || post.caption || '');
     const music = post.music || null;
+    const friendActivity = state.clipMode === 'friends' ? (post.friendActivity || [])[0] : null;
     return `
       <article class="clip-card" data-post-id="${esc(post.id)}" data-media-index="${mediaIndex}">
         <div class="clip-stage">
@@ -2508,6 +2512,7 @@
             <div class="clip-shade" aria-hidden="true"></div>
             <span class="clip-play-indicator" aria-hidden="true">${icon('play')}</span>
             <span class="clip-like-burst" aria-hidden="true">${icon('heart')}</span>
+            ${friendActivity?.user ? `<a class="clip-friend-activity" href="${esc(accountProfileHref(friendActivity.user))}" data-action="view-user-profile" data-username="${esc(friendActivity.user.username)}">${avatarHtml(friendActivity.user)}<span><strong>${esc(friendActivity.user.username)}</strong> ${esc(friendActivity.action)} this</span></a>` : ''}
             <div class="clip-copy">
               <div class="clip-author-row">
                 <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
@@ -3084,21 +3089,23 @@
   function renderNoteRailItem(note, own = false) {
     const owner = note.owner || note.user || state.me;
     const hasAudio = Boolean(note.audio?.url);
-    const action = hasAudio ? 'play-note' : own ? 'open-note-composer' : 'open-chat';
-    const targetData = action === 'play-note' ? `data-note-id="${esc(note.id)}"` : action === 'open-chat' ? `data-user-id="${esc(owner.id)}"` : '';
+    const action = own ? 'open-note-composer' : 'open-note-reply';
+    const targetData = own ? '' : `data-note-id="${esc(note.id)}"`;
     const title = note.audioTitle || note.music?.title || 'Music';
     const artist = note.audioArtist || note.music?.artist || owner.displayName || owner.username;
     return `
       <article class="note-item ${own ? 'own-note' : ''}" data-note-card="${esc(note.id)}">
-        <button class="note-main" data-action="${action}" ${targetData} aria-label="${hasAudio ? `Play ${esc(title)}` : own ? 'Edit your note' : `Message ${esc(owner.username)}`}" aria-pressed="false">
+        <button class="note-main" data-action="${action}" ${targetData} aria-label="${own ? 'Edit your note' : `Reply to ${esc(owner.username)}'s note`}">
           <span class="note-bubble">
-            ${hasAudio ? `<b>${esc(title)}</b><em>${esc(artist)}</em><span class="note-play-state">${icon('play')}</span>` : ''}
+            ${hasAudio ? `<b>${esc(title)}</b><em>${esc(artist)}</em>` : ''}
             ${esc(note.text || '')}
           </span>
           <span class="note-avatar">${owner.avatar?.url ? `<img src="${esc(owner.avatar.url)}" alt="">` : esc(initials(owner))}</span>
           <small>${own ? 'You' : esc(owner.username)}</small>
         </button>
         ${own ? `<button class="note-edit" data-action="open-note-composer" aria-label="Edit your note">${icon('plus')}</button>` : ''}
+        ${hasAudio ? `<button class="note-audio-toggle" data-action="play-note" data-note-id="${esc(note.id)}" aria-label="Play ${esc(title)}" aria-pressed="false"><span class="note-play-state">${icon('play')}</span></button>` : ''}
+        ${note.likeCount ? `<span class="note-like-badge">${icon('heart')} ${Number(note.likeCount)}</span>` : ''}
         ${hasAudio ? `<audio id="note-audio-${esc(note.id)}" src="${esc(note.audio.url)}" preload="metadata" data-note-audio data-start="${Number(note.audioStart || note.music?.start || 0)}" data-duration="${Number(note.audioDuration || note.music?.clipDuration || 0)}"></audio>` : ''}
       </article>
     `;
@@ -6121,6 +6128,7 @@
     return `
       <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''} ${sharedPostMessage ? 'shared-post-message' : ''}" data-message-id="${esc(message.id)}">
         ${message.pinnedAt ? `<span class="message-context-label">${icon('pin')} Pinned</span>` : ''}
+        ${message.editedAt && !message.deletedAt ? '<span class="message-context-label edited">Edited</span>' : ''}
         ${state.activeGroup && sender ? `<span class="group-message-sender" title="${esc(sender.displayName || sender.username)}">${avatarHtml(sender)}</span>` : ''}
         <div class="bubble">
           ${message.forwardedFrom ? '<span class="forwarded-label">Forwarded</span>' : ''}
@@ -6162,6 +6170,7 @@
     const message = state.messages.find((item) => item.id === focus.messageId);
     if (!message) return '';
     const mine = message.senderId === state.me.id;
+    const editable = mine && message.kind === 'text' && !message.deletedAt && Date.now() - new Date(message.createdAt).getTime() <= 15 * 60 * 1000;
     return `
       <div class="message-focus-overlay ${state.messageFocusClosing ? 'closing' : ''}" style="${esc(chatAppearanceStyle())}" data-action="close-message-focus" role="dialog" aria-modal="true" aria-label="Message actions" tabindex="-1">
         <section class="message-focus-stage ${mine ? 'mine' : 'theirs'}">
@@ -6173,6 +6182,7 @@
         <div class="message-focus-host"></div>
         <div class="message-action-menu" data-stop-close>
           <button data-action="focus-reply" data-message-id="${esc(message.id)}">${icon('back')}<span>Reply</span></button>
+          ${editable ? `<button data-action="message-focus-mode" data-mode="edit">${icon('edit')}<span>Edit</span></button>` : ''}
           <button data-action="message-focus-mode" data-mode="sticker">${icon('sticker')}<span>Sticker</span></button>
           <button data-action="message-focus-mode" data-mode="forward">${icon('forward')}<span>Forward</span></button>
           <button data-action="toggle-message-pin" data-message-id="${esc(message.id)}">${icon('pin')}<span>${message.pinnedAt ? 'Unpin' : 'Pin'}</span></button>
@@ -6186,6 +6196,14 @@
   }
 
   function renderMessageFocusPicker(mode, message) {
+    if (mode === 'edit') return `
+      <section class="message-focus-picker message-edit-picker" data-stop-close>
+        <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Edit message</strong></header>
+        <label><span class="sr-only">Message text</span><textarea id="message-edit-input" maxlength="8000" rows="4">${esc(message.text || '')}</textarea></label>
+        <small>You can edit a message for 15 minutes after sending it.</small>
+        <button class="primary" data-action="save-message-edit" data-message-id="${esc(message.id)}">Done</button>
+      </section>
+    `;
     if (mode === 'forward') return `
       <section class="message-focus-picker" data-stop-close>
         <header><button data-action="message-focus-mode" data-mode="actions" aria-label="Back">${icon('back')}</button><strong>Forward to</strong></header>
@@ -6283,6 +6301,20 @@
   function renderMessageBody(message) {
     if (message.deletedAt) return '<div class="message-text">Message deleted</div>';
     if (message.kind === 'post') return renderSharedPostMessage(message);
+    if (message.kind === 'music' && message.music) {
+      const music = message.music;
+      const start = Number(music.start || 0);
+      const end = start + Number(music.clipDuration || 30);
+      return `
+        <div class="message-music-player" data-message-music="${esc(message.id)}">
+          <span class="message-music-art">${music.artworkUrl ? `<img src="${esc(music.artworkUrl)}" alt="">` : icon('music')}</span>
+          <span class="message-music-copy"><strong>${esc(music.title || 'Music')}</strong><small>${esc(music.artist || '')}</small><i><b></b></i></span>
+          <button data-action="toggle-message-music" aria-label="Play ${esc(music.title || 'music')}" aria-pressed="false">${icon('play')}</button>
+          <audio src="${esc(music.audioUrl || '')}" preload="metadata" data-start="${start}" data-end="${end}"></audio>
+        </div>
+        ${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}
+      `;
+    }
     const attachment = message.attachment;
     if (message.kind === 'gif' && attachment) {
       const credit = message.mediaCredit;
@@ -6426,15 +6458,16 @@
   }
 
   function renderStickerPanel() {
-    const tab = state.chatTrayTab === 'gifs' ? 'gifs' : 'stickers';
+    const tab = ['gifs', 'music'].includes(state.chatTrayTab) ? state.chatTrayTab : 'stickers';
     const catalogGifs = state.chatGifResults || [];
     const gifs = catalogGifs;
     return `
-      <section class="sticker-panel chat-media-tray ${tab === 'stickers' ? 'stickers-tray' : 'gifs-tray'}">
+      <section class="sticker-panel chat-media-tray ${tab}-tray">
         <header class="chat-tray-head">
           <div class="chat-tray-tabs" role="tablist">
             <button class="${tab === 'stickers' ? 'active' : ''}" data-action="set-chat-tray" data-tray="stickers" role="tab" aria-selected="${tab === 'stickers'}" aria-label="Stickers">${icon('sticker')}</button>
             <button class="${tab === 'gifs' ? 'active' : ''}" data-action="set-chat-tray" data-tray="gifs" role="tab" aria-selected="${tab === 'gifs'}" aria-label="GIFs">${icon('gif')}</button>
+            <button class="${tab === 'music' ? 'active' : ''}" data-action="set-chat-tray" data-tray="music" role="tab" aria-selected="${tab === 'music'}" aria-label="Music">${icon('music')}</button>
           </div>
           <button class="icon-btn chat-tray-close" data-action="sticker-toggle" aria-label="Close">${icon('x')}</button>
         </header>
@@ -6457,7 +6490,7 @@
               </button>
             `).join('') : '<p class="sticker-set-empty">This set is empty.</p>'}
           </div>
-        ` : `
+        ` : tab === 'gifs' ? `
           <div class="chat-gif-search">
             ${icon('search')}<input id="chat-gif-search" value="${esc(state.chatGifQuery)}" placeholder="Search GIPHY" aria-label="Search GIPHY" autocomplete="off">
           </div>
@@ -6469,6 +6502,13 @@
           <footer class="chat-gif-provider">
             <a href="https://giphy.com" target="_blank" rel="noopener noreferrer">Powered by GIPHY</a><span>Tap a GIF to send</span>
           </footer>
+        ` : `
+          <div class="chat-music-entry">
+            <span>${icon('music')}</span>
+            <strong>Share a song</strong>
+            <small>Search Apple’s catalog and send a playable 30-second preview.</small>
+            <button class="primary" data-action="open-chat-music">Search music</button>
+          </div>
         `}
       </section>
     `;
@@ -6490,7 +6530,7 @@
         </span>
       </article>
     `).join('') : '<p class="hint">No unanswered requests.</p>';
-    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention', 'comment_reply', 'comment_like', 'group_added', 'post_tag', 'post_like', 'post_repost', 'post_comment'].includes(note.type));
+    const visibleNotes = state.notifications.filter((note) => ['request_accepted', 'new_follower', 'mention', 'comment_reply', 'comment_like', 'group_added', 'post_tag', 'post_like', 'post_repost', 'post_comment', 'note_like'].includes(note.type));
     const recent = visibleNotes.length ? visibleNotes.map((note) => `
       <article class="notification-row">
         ${note.group ? `
@@ -6981,13 +7021,29 @@
         <button class="story-owner-action danger-text" data-action="delete-story" data-story-id="${esc(story.id)}">${icon('trash')}<span>Delete story</span></button>
       ` : '';
     }
-    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner'].includes(sheet.type);
+    if (sheet.type === 'note-reply') {
+      const note = state.notes.find((item) => item.id === sheet.noteId);
+      const owner = note?.owner || note?.user;
+      body = note && owner ? `
+        <section class="note-reply-sheet-shell">
+          <header><span class="story-sheet-grabber" aria-hidden="true"></span><strong>Reply to note</strong><button data-action="close-overlays" aria-label="Close">${icon('x')}</button></header>
+          <div class="note-reply-preview">${avatarHtml(owner)}<span><strong>${esc(owner.username)}</strong><p>${esc(note.text || note.audioTitle || 'Shared a note')}</p>${note.audioTitle ? `<small>${icon('music')} ${esc(note.audioTitle)}${note.audioArtist ? ` · ${esc(note.audioArtist)}` : ''}</small>` : ''}</span></div>
+          <div class="note-reply-actions">
+            <button class="${note.likedByMe ? 'active' : ''}" data-action="toggle-note-like" data-note-id="${esc(note.id)}" aria-label="${note.likedByMe ? 'Unlike' : 'Like'} note" aria-pressed="${note.likedByMe ? 'true' : 'false'}">${icon('heart')}<span>${note.likeCount ? Number(note.likeCount) : ''}</span></button>
+            ${note.audio?.url ? `<button data-action="play-note" data-note-id="${esc(note.id)}">${icon('play')}<span>Play music</span></button>` : ''}
+          </div>
+          <div class="note-reply-composer"><input id="note-reply-input" maxlength="1000" value="${esc(sheet.replyDraft || '')}" placeholder="Send a message…" autocomplete="off" enterkeyhint="send"><button data-action="send-note-reply" data-note-id="${esc(note.id)}" ${String(sheet.replyDraft || '').trim() ? '' : 'disabled'}>Send</button></div>
+        </section>
+      ` : '<p class="hint">This note is no longer available.</p>';
+    }
+    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner', 'note-reply'].includes(sheet.type);
     const compactClass = sheet.type === 'post-comments' ? 'story-comments-sheet post-comments-sheet' : `${sheet.type}-sheet`;
     const dialogLabel = ({
       'post-share': 'Share post',
       'post-comments': 'Post comments',
       'story-comments': 'Story comments',
       'story-owner': 'Story options',
+      'note-reply': 'Reply to note',
       'post-options': 'Clip options',
       'post-owner': 'Post options',
       message: 'Message options',
@@ -8697,9 +8753,34 @@
     await loadNotes({ render: true });
   }
 
+  async function toggleNoteLike(noteId) {
+    const data = await api(`/api/notes/${encodeURIComponent(noteId)}/like`, { method: 'POST' });
+    const index = state.notes.findIndex((note) => note.id === noteId);
+    if (index >= 0) state.notes[index] = data.note;
+    if (state.actionSheet?.type === 'note-reply' && state.actionSheet.noteId === noteId) updateActionSheetSlot();
+    else if (state.tab === 'chats') updateSidebar();
+  }
+
+  async function sendNoteReply(noteId, value) {
+    const note = state.notes.find((item) => item.id === noteId);
+    const owner = note?.owner || note?.user;
+    const reply = String(value || '').trim().slice(0, 1000);
+    if (!note || !owner || !reply) return;
+    const quoted = String(note.text || note.audioTitle || 'note').replace(/\s+/g, ' ').slice(0, 80);
+    await api(`/api/chats/${encodeURIComponent(owner.id)}/messages`, {
+      method: 'POST',
+      body: { kind: 'text', text: `Replied to your note “${quoted}”\n${reply}` }
+    });
+    state.actionSheet = null;
+    updateActionSheetSlot();
+    await refreshChatsOnly();
+    updateSidebar();
+    pushToast({ key: `note-reply-${noteId}-${Date.now()}`, kind: 'social', title: 'Reply sent', body: `Your reply was sent privately to @${owner.username}.` });
+  }
+
   function syncNotePlayerUi(audio, status = audio?.paused ? 'paused' : 'playing') {
     const card = audio?.closest('[data-note-card]');
-    const button = card?.querySelector('.note-main');
+    const button = card?.querySelector('.note-audio-toggle');
     const marker = card?.querySelector('.note-play-state');
     card?.classList.toggle('is-loading', status === 'loading');
     card?.classList.toggle('is-playing', status === 'playing');
@@ -8992,10 +9073,10 @@
   }
 
   function openMusicPicker(context) {
-    const current = context === 'post' ? state.postComposer?.music : state.noteComposer?.music;
+    const current = context === 'post' ? state.postComposer?.music : context === 'note' ? state.noteComposer?.music : null;
     musicPickerReturnFocus = document.activeElement;
     state.musicPicker = {
-      context: context === 'post' ? 'post' : 'note',
+      context: ['post', 'note', 'chat'].includes(context) ? context : 'note',
       query: '',
       tracks: [],
       loading: !current,
@@ -9149,7 +9230,7 @@
     }
   }
 
-  function applyMusicSelection() {
+  async function applyMusicSelection() {
     const picker = state.musicPicker;
     const track = picker?.selected;
     if (!picker || !track) return;
@@ -9168,7 +9249,12 @@
     const context = picker.context;
     closeMusicPicker();
     if (context === 'post') updatePostComposerSlot();
-    else updateNoteComposerSlot();
+    else if (context === 'note') updateNoteComposerSlot();
+    else if (context === 'chat') {
+      await sendMessage({ kind: 'music', text: '', music: selection });
+      state.stickerPanel = false;
+      updateChatFooter({ focus: true });
+    }
   }
 
   async function loadGifPool(query = '') {
@@ -11056,7 +11142,12 @@
       file: payload.file || null,
       stickerId: payload.stickerId || null,
       gifId: payload.gifId || null,
-      gifCatalogId: payload.gifCatalogId || null
+      gifCatalogId: payload.gifCatalogId || null,
+      music: payload.music ? {
+        catalogId: payload.music.catalogId,
+        start: Number(payload.music.start || 0),
+        clipDuration: Number(payload.music.clipDuration || 30)
+      } : null
     };
     state.replyTo = null;
     const data = await api(activeMessagesUrl(), {
@@ -11248,6 +11339,66 @@
     const data = await api('/api/me/search-history');
     state.searchHistory = data.searches || [];
     return state.searchHistory;
+  }
+
+  async function editMessage(messageId, text) {
+    const data = await api(`/api/messages/${encodeURIComponent(messageId)}`, {
+      method: 'PATCH',
+      body: { text: String(text || '').trim() }
+    });
+    upsertMessage(data.message);
+    closeMessageFocus({ immediate: true });
+    updateMessagesList({ scroll: 'preserve' });
+    await refreshChatsOnly();
+    updateSidebar();
+  }
+
+  function toggleMessageMusic(button) {
+    const player = button?.closest('.message-music-player');
+    const audio = player?.querySelector('audio');
+    if (!audio?.src) return;
+    const setPlaying = (playing) => {
+      player.classList.toggle('playing', playing);
+      button.innerHTML = icon(playing ? 'pause' : 'play');
+      button.setAttribute('aria-pressed', playing ? 'true' : 'false');
+    };
+    if (!audio.paused) {
+      audio.pause();
+      setPlaying(false);
+      return;
+    }
+    document.querySelectorAll('.message-music-player audio').forEach((other) => {
+      if (other === audio) return;
+      other.pause();
+      const otherPlayer = other.closest('.message-music-player');
+      otherPlayer?.classList.remove('playing');
+      const otherButton = otherPlayer?.querySelector('[data-action="toggle-message-music"]');
+      if (otherButton) {
+        otherButton.innerHTML = icon('play');
+        otherButton.setAttribute('aria-pressed', 'false');
+      }
+    });
+    const start = Number(audio.dataset.start || 0);
+    const end = Number(audio.dataset.end || start + 30);
+    const begin = () => {
+      if (!Number.isFinite(audio.currentTime) || audio.currentTime < start || audio.currentTime >= end) audio.currentTime = start;
+      audio.ontimeupdate = () => {
+        const duration = Math.max(0.1, end - start);
+        const progress = Math.max(0, Math.min(1, (audio.currentTime - start) / duration));
+        player.style.setProperty('--music-progress', String(progress));
+        if (audio.currentTime >= end) {
+          audio.pause();
+          audio.currentTime = start;
+          player.style.setProperty('--music-progress', '0');
+          setPlaying(false);
+        }
+      };
+      audio.onended = () => setPlaying(false);
+      audio.onerror = () => setPlaying(false);
+      audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+    };
+    if (audio.readyState >= 1) begin();
+    else audio.addEventListener('loadedmetadata', begin, { once: true });
   }
 
   async function saveSearchHistory(query = state.userQuery, category = state.searchCategory, itemId = '') {
@@ -11661,6 +11812,11 @@
     if (event.type === 'instant:deleted') {
       if (state.instantViewer?.id === event.instantId) closeInboxFeature();
       await loadInstants({ render: state.tab === 'chats' });
+      return;
+    }
+    if (event.type === 'note:updated') {
+      await loadNotes({ render: state.tab === 'chats' });
+      if (state.actionSheet?.type === 'note-reply') updateActionSheetSlot();
       return;
     }
     if (event.type === 'message:new') {
@@ -12372,7 +12528,7 @@
 
   function setMessageFocusMode(mode) {
     if (!state.messageFocus) return;
-    const nextMode = ['forward', 'sticker'].includes(mode) ? mode : 'actions';
+    const nextMode = ['forward', 'sticker', 'edit'].includes(mode) ? mode : 'actions';
     state.messageFocus.mode = nextMode;
     const message = state.messages.find((item) => item.id === state.messageFocus.messageId);
     const stage = document.querySelector('.message-focus-stage');
@@ -12381,6 +12537,11 @@
     stage?.classList.toggle('picker-open', nextMode !== 'actions');
     actions?.classList.toggle('hidden', nextMode !== 'actions');
     if (slot) slot.innerHTML = message ? renderMessageFocusPicker(nextMode, message) : '';
+    if (nextMode === 'edit') requestAnimationFrame(() => {
+      const input = document.getElementById('message-edit-input');
+      input?.focus?.({ preventScroll: true });
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    });
   }
 
   function syncFocusedMessageUi(message) {
@@ -13099,6 +13260,10 @@
       if (action === 'open-profile-menu') openActionSheet({ type: 'profile-user', userId: target.dataset.userId });
       if (action === 'toggle-favorite-user') await toggleFavoriteUser(target.dataset.userId);
       if (action === 'open-note-composer') openNoteComposer();
+      if (action === 'open-note-reply') {
+        openActionSheet({ type: 'note-reply', noteId: target.dataset.noteId, replyDraft: '' });
+        requestAnimationFrame(() => document.getElementById('note-reply-input')?.focus({ preventScroll: true }));
+      }
       if (action === 'close-note-composer') {
         if (state.noteRecording) stopNoteRecording();
         state.noteComposer = null;
@@ -13136,6 +13301,8 @@
       if (action === 'share-note') await shareNote();
       if (action === 'delete-note') await deleteNote();
       if (action === 'play-note') playNote(target.dataset.noteId);
+      if (action === 'toggle-note-like') await toggleNoteLike(target.dataset.noteId);
+      if (action === 'send-note-reply') await sendNoteReply(target.dataset.noteId, document.getElementById('note-reply-input')?.value || '');
       if (action === 'close-music-picker') closeMusicPicker();
       if (action === 'music-picker-back' && state.musicPicker) {
         document.getElementById('music-picker-audio')?.pause?.();
@@ -13152,7 +13319,7 @@
         state.musicPicker.start = Math.min(Number(state.musicPicker.start || 0), Math.max(0, playableDuration - state.musicPicker.clipDuration));
         updateMusicPickerSlot();
       }
-      if (action === 'apply-music-selection') applyMusicSelection();
+      if (action === 'apply-music-selection') await applyMusicSelection();
       if (action === 'music-category' && state.musicPicker) {
         state.musicPicker.query = target.dataset.query || '';
         await searchMusicCatalog(state.musicPicker.query);
@@ -13296,11 +13463,12 @@
         updateChatFooter({ suppressFocus: opening });
       }
       if (action === 'set-chat-tray') {
-        state.chatTrayTab = target.dataset.tray === 'gifs' ? 'gifs' : 'stickers';
+        state.chatTrayTab = ['gifs', 'music'].includes(target.dataset.tray) ? target.dataset.tray : 'stickers';
         if (state.chatTrayTab === 'gifs') await loadChatGifResults(state.chatGifQuery);
         document.activeElement?.blur?.();
         updateChatFooter({ suppressFocus: true });
       }
+      if (action === 'open-chat-music') openMusicPicker('chat');
       if (action === 'sticker-file-open') {
         document.getElementById('sticker-file-input')?.click();
       }
@@ -13869,6 +14037,11 @@
       if (action === 'message-focus-mode' && state.messageFocus) {
         setMessageFocusMode(target.dataset.mode);
       }
+      if (action === 'save-message-edit') {
+        const input = document.getElementById('message-edit-input');
+        if (input?.value.trim()) await editMessage(target.dataset.messageId, input.value);
+      }
+      if (action === 'toggle-message-music') toggleMessageMusic(target);
       if (action === 'react-message') {
         await reactToMessage(target.dataset.messageId, target.dataset.emoji || '\u2764\ufe0f');
       }
@@ -14405,6 +14578,12 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.id === 'note-reply-input' && state.actionSheet?.type === 'note-reply') {
+      state.actionSheet.replyDraft = event.target.value.slice(0, 1000);
+      const send = document.querySelector('[data-action="send-note-reply"]');
+      if (send) send.disabled = !state.actionSheet.replyDraft.trim();
+      return;
+    }
     if (event.target.matches('[data-post-preview-progress]')) {
       const video = event.target.closest('.post-composer-media')?.querySelector('video');
       if (video && Number.isFinite(video.duration) && video.duration > 0) {
@@ -14852,6 +15031,12 @@
   });
 
   document.addEventListener('keydown', async (event) => {
+    if (event.target.id === 'note-reply-input' && event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      const send = document.querySelector('[data-action="send-note-reply"]');
+      if (send && !send.disabled) send.click();
+      return;
+    }
     if (event.target.id === 'user-search' && event.key === 'Enter') {
       event.preventDefault();
       const query = state.userQuery.trim();

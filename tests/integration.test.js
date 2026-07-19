@@ -576,8 +576,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(serverSource, /DISPLAY_NAME_COOLDOWN_MS[\s\S]{0,500}?once every 14 days/);
 
   const noteUiSource = sourceSection(clientSource, 'function renderNoteRailItem', 'function renderChatsPanel');
-  assert.match(noteUiSource, /const action = hasAudio \? 'play-note'/);
+  assert.match(noteUiSource, /const action = own \? 'open-note-composer' : 'open-note-reply'/);
   assert.match(noteUiSource, /data-action="\$\{action\}"/);
+  assert.match(noteUiSource, /class="note-audio-toggle" data-action="play-note"/);
+  assert.match(clientSource, /data-action="toggle-note-like"/);
   assert.match(noteUiSource, /<audio[^>]*preload="metadata"/);
   assert.doesNotMatch(noteUiSource, /autoplay/);
   assert.match(noteUiSource, /id="note-text" maxlength="60"/);
@@ -1072,6 +1074,15 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   const followedNotes = await bob.request('/api/notes');
   assert.ok(followedNotes.data.notes.some((note) => note.id === firstNote.data.note.id));
   assert.equal((await bob.request(firstNote.data.note.audio.url)).status, 200);
+  const likedNote = await bob.request(`/api/notes/${firstNote.data.note.id}/like`, { method: 'POST' });
+  assert.equal(likedNote.status, 200);
+  assert.equal(likedNote.data.note.likedByMe, true);
+  assert.equal(likedNote.data.note.likeCount, 1);
+  const ownerNotesAfterLike = await alice.request('/api/notes');
+  const ownerLikedNote = ownerNotesAfterLike.data.notes.find((note) => note.id === firstNote.data.note.id);
+  assert.equal(ownerLikedNote.likeCount, 1);
+  assert.equal(ownerLikedNote.likers[0].id, bobUser.id);
+  assert.equal((await bob.request(`/api/notes/${firstNote.data.note.id}/like`, { method: 'POST' })).data.note.likeCount, 0);
 
   const replacementNote = await alice.request('/api/me/note', {
     method: 'POST',
@@ -1408,6 +1419,19 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(textMessage.status, 201);
   assert.equal(textMessage.data.message.kind, 'text');
   assert.ok(!Number.isNaN(Date.parse(textMessage.data.message.createdAt)));
+  const editedMessage = await alice.request(`/api/messages/${textMessage.data.message.id}`, {
+    method: 'PATCH',
+    body: { text: 'Unique phrase edited for search' }
+  });
+  assert.equal(editedMessage.status, 200);
+  assert.equal(editedMessage.data.message.text, 'Unique phrase edited for search');
+  assert.ok(!Number.isNaN(Date.parse(editedMessage.data.message.editedAt)));
+  assert.equal((await bob.request(`/api/messages/${textMessage.data.message.id}`, {
+    method: 'PATCH',
+    body: { text: 'Recipient edit should fail' }
+  })).status, 403);
+  const editedRecipientHistory = await bob.request(`/api/chats/${aliceUser.id}/messages?limit=20`);
+  assert.equal(editedRecipientHistory.data.messages.find((message) => message.id === textMessage.data.message.id).text, 'Unique phrase edited for search');
 
   const longMessage = await sendMessage(alice, bobUser.id, { kind: 'text', text: 'x'.repeat(8000) });
   assert.equal(longMessage.status, 201);
@@ -2357,6 +2381,21 @@ test('open media search imports GIFs and applies canonical music sections safely
   assert.equal(gifReply.status, 201);
   assert.equal(gifReply.data.message.replyPreview.kind, 'gif');
   assert.match(gifReply.data.message.replyPreview.attachment.url, /^\/api\/files\//);
+
+  const musicMessage = await sendMessage(alice, bobUser.id, {
+    kind: 'music',
+    music: { catalogId: musicCatalogId, title: 'Spoofed message title', artist: 'Spoofed artist', start: 8, clipDuration: 15 }
+  });
+  assert.equal(musicMessage.status, 201);
+  assert.equal(musicMessage.data.message.kind, 'music');
+  assert.equal(musicMessage.data.message.music.title, 'Canonical Night Drive');
+  assert.equal(musicMessage.data.message.music.artist, 'Catalog Artist');
+  assert.equal(musicMessage.data.message.music.start, 8);
+  assert.equal(musicMessage.data.message.music.clipDuration, 15);
+  const messageAudio = await bob.request(`/api/messages/${musicMessage.data.message.id}/music`, { headers: { Range: 'bytes=1-5' } });
+  assert.equal(messageAudio.status, 206);
+  assert.deepEqual(messageAudio.data, audioBytes.subarray(1, 6));
+  assert.equal((await charlie.request(`/api/messages/${musicMessage.data.message.id}/music`)).status, 404);
 
   const savedSearch = await alice.request('/api/me/search-history', { method: 'POST', body: { query: 'catalog bob', category: 'accounts', itemId: bobUser.id } });
   assert.equal(savedSearch.status, 200);
