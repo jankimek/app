@@ -254,6 +254,8 @@
     scrollMemory: {},
     longPressTimer: null,
     longPressTriggered: false,
+    chatRowSwipe: null,
+    sendPress: null,
     call: freshCallState()
   };
 
@@ -354,6 +356,13 @@
       hour: '2-digit',
       minute: '2-digit'
     }).format(new Date(iso));
+  }
+
+  function localDateTimeInputValue(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (!Number.isFinite(date.getTime())) return '';
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
   }
 
   function compactRelativeTime(iso) {
@@ -1069,6 +1078,7 @@
       check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>',
       forward: '<svg viewBox="0 0 24 24"><path d="m14 5 7 7-7 7v-4c-5 0-8.5 1.5-11 4 1-6 4.5-10 11-10V5Z"/></svg>',
       pin: '<svg viewBox="0 0 24 24"><path d="m8 3 8 8M14 3l7 7-4 1-5 5-1 5-7-7 5-1 5-5V3Z"/><path d="m9 15-6 6"/></svg>',
+      clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
       camera: '<svg viewBox="0 0 24 24"><path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/></svg>',
       grid: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
       bookmark: '<svg viewBox="0 0 24 24"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/></svg>',
@@ -2390,6 +2400,7 @@
           ${description ? `<p>${expanded ? renderMentionText(description) : renderMentionText(`${description.slice(0, 135).trim()}…`)} ${expanded ? '' : `<button data-action="expand-post" data-post-id="${esc(post.id)}">read more</button>`}</p>` : ''}
           ${hashtags.length ? `<p class="post-hashtags">${hashtags.map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}
           <small class="post-counts"><button data-action="open-post-comments" data-post-id="${esc(post.id)}" data-post-comment-count>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments</button><span>·</span><span data-post-repost-count>${Number(post.repostCount || 0)} reposts</span></small>
+          ${post.repostNote ? `<div class="repost-thought-inline">${avatarHtml(state.me)}<span><small>Your repost thought</small><strong>${esc(post.repostNote)}</strong></span></div>` : ''}
           ${renderPostComments(post)}
           ${post.allowComments === false ? '<small class="post-comments-off">Comments are turned off.</small>' : ''}
         </div>
@@ -2512,7 +2523,7 @@
             <div class="clip-shade" aria-hidden="true"></div>
             <span class="clip-play-indicator" aria-hidden="true">${icon('play')}</span>
             <span class="clip-like-burst" aria-hidden="true">${icon('heart')}</span>
-            ${friendActivity?.user ? `<a class="clip-friend-activity" href="${esc(accountProfileHref(friendActivity.user))}" data-action="view-user-profile" data-username="${esc(friendActivity.user.username)}">${avatarHtml(friendActivity.user)}<span><strong>${esc(friendActivity.user.username)}</strong> ${esc(friendActivity.action)} this</span></a>` : ''}
+            ${friendActivity?.user ? `<a class="clip-friend-activity ${friendActivity.note ? 'has-thought' : ''}" href="${esc(accountProfileHref(friendActivity.user))}" data-action="view-user-profile" data-username="${esc(friendActivity.user.username)}">${avatarHtml(friendActivity.user)}<span><strong>${esc(friendActivity.user.username)}</strong> ${esc(friendActivity.action)} this${friendActivity.note ? `<em>${esc(friendActivity.note)}</em>` : ''}</span></a>` : ''}
             <div class="clip-copy">
               <div class="clip-author-row">
                 <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
@@ -3381,9 +3392,9 @@
   function renderChatsPanel() {
     const query = state.conversationQuery.trim();
     const conversations = [
-      ...state.chats.map((chat) => ({ type: 'direct', id: chat.peer.id, latest: chat.latest, chat })),
-      ...state.groups.map((group) => ({ type: 'group', id: group.id, latest: group.latest, group }))
-    ].sort((a, b) => String(b.latest?.createdAt || '').localeCompare(String(a.latest?.createdAt || '')));
+      ...state.chats.map((chat) => ({ type: 'direct', id: chat.peer.id, conversationId: chat.id, latest: chat.latest, pinned: Boolean(chat.pinned), pinOrder: chat.pinOrder, chat })),
+      ...state.groups.map((group) => ({ type: 'group', id: group.id, conversationId: group.id, latest: group.latest, pinned: Boolean(group.pinned), pinOrder: group.pinOrder, group }))
+    ].sort((a, b) => Number(b.pinned) - Number(a.pinned) || (a.pinned ? Number(a.pinOrder || 0) - Number(b.pinOrder || 0) : String(b.latest?.createdAt || '').localeCompare(String(a.latest?.createdAt || ''))));
     const chatRows = conversations.length ? conversations.map((conversation) => {
       const unread = state.unreadByPeer[conversation.id] || 0;
       if (conversation.type === 'group') {
@@ -3391,25 +3402,32 @@
         const sender = group.latest?.sender;
         const preview = group.latest ? `${sender?.id === state.me.id ? 'You' : (sender?.displayName || 'Member')}: ${describeMessage(group.latest)}` : `${group.memberCount} members`;
         return `
-          <button class="chat-item group-chat-item ${state.activeGroup?.id === group.id ? 'active' : ''} ${unread ? 'unread' : ''}" data-action="open-group" data-group-id="${esc(group.id)}">
-            ${groupAvatarHtml(group)}
-            <span class="person"><strong>${esc(group.name)}</strong><small>${esc(preview)}</small></span>
-            <span class="chat-meta"><small>${group.latest ? esc(shortTime(group.latest.createdAt)) : ''}</small></span>
-          </button>
+          <div class="chat-swipe-row ${group.pinned ? 'pinned' : ''}" data-conversation-id="${esc(group.id)}" data-conversation-type="group" data-group-id="${esc(group.id)}">
+            <div class="chat-swipe-actions" aria-hidden="true"><button data-action="toggle-chat-pin" data-conversation-id="${esc(group.id)}" data-pinned="${group.pinned ? 'true' : 'false'}" tabindex="-1">${icon('pin')}<span>${group.pinned ? 'Unpin' : 'Pin'}</span></button></div>
+            <button class="chat-item group-chat-item ${state.activeGroup?.id === group.id ? 'active' : ''} ${unread ? 'unread' : ''}" data-action="open-group" data-group-id="${esc(group.id)}">
+              ${groupAvatarHtml(group)}
+              <span class="person"><strong>${esc(group.name)}</strong><small>${esc(preview)}</small></span>
+              <span class="chat-meta"><small>${group.latest ? esc(shortTime(group.latest.createdAt)) : ''}</small>${group.pinned ? `<i class="chat-pin-indicator" aria-label="Pinned">${icon('pin')}</i>` : ''}</span>
+            </button>
+          </div>
         `;
       }
       const chat = conversation.chat;
       return `
-        <button class="chat-item ${state.activePeer?.id === chat.peer.id ? 'active' : ''} ${unread ? 'unread' : ''}" data-action="open-chat" data-user-id="${esc(chat.peer.id)}" data-peer-id="${esc(chat.peer.id)}">
-          ${avatarHtml(chat.peer)}
-          <span class="person">
-            <strong>${esc(chat.peer.displayName)}</strong>
-            <small>${chat.peer.hasBlocked ? 'Blocked' : chat.peer.muteUntil !== undefined && chat.peer.muteUntil !== null ? 'Muted - ' : ''}${esc(chat.latest ? describeMessage(chat.latest) : 'No messages yet')}</small>
-          </span>
-          <span class="chat-meta">
-            <small>${chat.latest ? esc(shortTime(chat.latest.createdAt)) : ''}</small>
-          </span>
-        </button>
+        <div class="chat-swipe-row ${chat.pinned ? 'pinned' : ''}" data-conversation-id="${esc(chat.id)}" data-conversation-type="direct" data-peer-id="${esc(chat.peer.id)}">
+          <div class="chat-swipe-actions" aria-hidden="true"><button data-action="toggle-chat-pin" data-conversation-id="${esc(chat.id)}" data-pinned="${chat.pinned ? 'true' : 'false'}" tabindex="-1">${icon('pin')}<span>${chat.pinned ? 'Unpin' : 'Pin'}</span></button></div>
+          <button class="chat-item ${state.activePeer?.id === chat.peer.id ? 'active' : ''} ${unread ? 'unread' : ''}" data-action="open-chat" data-user-id="${esc(chat.peer.id)}" data-peer-id="${esc(chat.peer.id)}">
+            ${avatarHtml(chat.peer)}
+            <span class="person">
+              <strong>${esc(chat.peer.displayName)}</strong>
+              <small>${chat.peer.hasBlocked ? 'Blocked' : chat.peer.muteUntil !== undefined && chat.peer.muteUntil !== null ? 'Muted - ' : ''}${esc(chat.latest ? describeMessage(chat.latest) : 'No messages yet')}</small>
+            </span>
+            <span class="chat-meta">
+              <small>${chat.latest ? esc(shortTime(chat.latest.createdAt)) : ''}</small>
+              ${chat.pinned ? `<i class="chat-pin-indicator" aria-label="Pinned">${icon('pin')}</i>` : ''}
+            </span>
+          </button>
+        </div>
       `;
     }).join('') : '<div class="empty-state">Search for a username and add someone to start chatting.</div>';
     const searchRows = state.conversationSearching
@@ -5624,7 +5642,8 @@
       background: 'midnight',
       backgroundColor: '#070a12',
       mineColor: '#55339a',
-      theirsColor: '#182131'
+      theirsColor: '#182131',
+      readReceipts: true
     };
   }
 
@@ -5708,6 +5727,12 @@
             <h3>Message gradient</h3>
             <label class="chat-color-row"><span class="chat-color-preview mine" style="--preview-color:${esc(settings.mineColor)}">Aa</span><span><strong>Top color</strong><small>At the top of the screen</small></span><input id="chat-mine-color" type="color" value="${esc(settings.mineColor)}"></label>
             <label class="chat-color-row"><span class="chat-color-preview theirs" style="--preview-color:${esc(settings.theirsColor)}">Aa</span><span><strong>Bottom color</strong><small>At the bottom of the screen</small></span><input id="chat-theirs-color" type="color" value="${esc(settings.theirsColor)}"></label>
+          </section>
+          <section class="chat-appearance-section chat-privacy-section">
+            <h3>Privacy</h3>
+            <button class="chat-read-receipt-toggle" data-action="toggle-chat-read-receipts" aria-pressed="${settings.readReceipts !== false ? 'true' : 'false'}">
+              <span>${icon('check')}</span><span><strong>Read receipts</strong><small>Let people know when you've read messages in this chat.</small></span><i class="settings-switch ${settings.readReceipts !== false ? 'on' : ''}" aria-hidden="true"></i>
+            </button>
           </section>
         </section>
       </div>
@@ -6125,8 +6150,11 @@
     const mediaMessage = ['image', 'video', 'gif'].includes(message.kind) && message.attachment && !message.deletedAt;
     const sharedPostMessage = message.kind === 'post' && !message.deletedAt;
     const sender = message.sender || userById(message.senderId);
+    const latestSeenMine = [...state.messages].reverse().find((item) => item.senderId === state.me.id && !item.deletedAt && !item.scheduledPending && (item.seenBy || []).length);
+    const showSeen = !state.activeGroup && latestSeenMine?.id === message.id;
     return `
-      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''} ${sharedPostMessage ? 'shared-post-message' : ''}" data-message-id="${esc(message.id)}">
+      <article class="message ${mine ? 'mine' : 'theirs'} ${message.deletedAt ? 'deleted' : ''} ${message.scheduledPending ? 'scheduled-message' : ''} ${highlighted ? 'highlighted' : ''} ${stickerMessage ? 'sticker-message' : ''} ${mediaMessage ? 'media-message' : ''} ${sharedPostMessage ? 'shared-post-message' : ''}" data-message-id="${esc(message.id)}">
+        ${message.scheduledPending ? `<span class="message-context-label scheduled">${icon('clock')} Scheduled for ${esc(shortTime(message.scheduledFor))}</span>` : ''}
         ${message.pinnedAt ? `<span class="message-context-label">${icon('pin')} Pinned</span>` : ''}
         ${message.editedAt && !message.deletedAt ? '<span class="message-context-label edited">Edited</span>' : ''}
         ${state.activeGroup && sender ? `<span class="group-message-sender" title="${esc(sender.displayName || sender.username)}">${avatarHtml(sender)}</span>` : ''}
@@ -6138,6 +6166,7 @@
           <div class="swipe-time">${esc(formatTime(message.createdAt))}</div>
         </div>
         ${renderMessageReactions(message)}
+        ${showSeen ? '<span class="message-seen">Seen</span>' : ''}
       </article>
     `;
   }
@@ -6790,7 +6819,23 @@
     const profileUser = sheet.userId ? userById(sheet.userId) : null;
     const message = sheet.messageId ? state.messages.find((item) => item.id === sheet.messageId) : null;
     const sheetPost = sheet.postId ? postById(sheet.postId) : null;
+    const sheetGroup = sheet.groupId ? state.groups.find((group) => group.id === sheet.groupId) : null;
     let body = '';
+    if (sheet.type === 'chat-thread') {
+      const thread = sheetGroup || (peer ? state.chats.find((chat) => chat.peer.id === peer.id) : null);
+      const pinned = Boolean(thread?.pinned);
+      const conversationId = sheetGroup?.id || thread?.id || '';
+      body = `
+        <div class="sheet-note"><strong>${esc(sheetGroup?.name || peer?.displayName || 'Conversation')}</strong><small>${pinned ? 'Pinned near the top of your inbox' : 'Conversation options'}</small></div>
+        <button data-action="toggle-chat-pin" data-conversation-id="${esc(conversationId)}" data-pinned="${pinned ? 'true' : 'false'}">${icon('pin')} ${pinned ? 'Unpin' : 'Pin'}</button>
+        ${peer ? `<button data-action="mute-menu" data-user-id="${esc(peer.id)}">${icon('mute')} Mute</button>
+        <button class="danger-text" data-action="remove-friend" data-user-id="${esc(peer.id)}">${icon('trash')} Remove friend</button>
+        <button data-action="open-report" data-report-type="user" data-user-id="${esc(peer.id)}">Report user</button>
+        ${peer.hasBlocked
+          ? `<button data-action="unblock-user" data-user-id="${esc(peer.id)}">Unblock</button>`
+          : `<button class="danger-text" data-action="block-user" data-user-id="${esc(peer.id)}">${icon('block')} Block</button>`}` : ''}
+      `;
+    }
     if (sheet.type === 'chat-user' && peer) {
       body = `
         <button data-action="mute-menu" data-user-id="${esc(peer.id)}">${icon('mute')} Mute</button>
@@ -7036,7 +7081,46 @@
         </section>
       ` : '<p class="hint">This note is no longer available.</p>';
     }
-    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner', 'note-reply'].includes(sheet.type);
+    if (sheet.type === 'message-schedule') {
+      const now = new Date();
+      const later = new Date(now.getTime() + 60 * 60 * 1000);
+      const tomorrow = new Date(now);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(9, 0, 0, 0);
+      const weekend = new Date(now);
+      weekend.setDate(weekend.getDate() + ((6 - weekend.getDay() + 7) % 7 || 7));
+      weekend.setHours(10, 0, 0, 0);
+      body = `
+        <section class="message-schedule-sheet-shell">
+          <header><span class="story-sheet-grabber" aria-hidden="true"></span><strong>Schedule message</strong><button data-action="close-overlays" aria-label="Close">${icon('x')}</button></header>
+          <p class="scheduled-draft-preview">${esc(sheet.text || '')}</p>
+          <div class="message-schedule-presets">
+            <button data-action="schedule-message" data-scheduled-for="${esc(later.toISOString())}"><span>${icon('clock')}<strong>Later today</strong></span><small>${esc(shortTime(later))}</small></button>
+            <button data-action="schedule-message" data-scheduled-for="${esc(tomorrow.toISOString())}"><span>${icon('clock')}<strong>Tomorrow</strong></span><small>${esc(shortTime(tomorrow))}</small></button>
+            <button data-action="schedule-message" data-scheduled-for="${esc(weekend.toISOString())}"><span>${icon('clock')}<strong>This weekend</strong></span><small>${esc(shortTime(weekend))}</small></button>
+          </div>
+          <label class="message-schedule-custom"><span>Choose a date and time</span><div><input id="message-schedule-time" type="datetime-local" min="${esc(localDateTimeInputValue(new Date(now.getTime() + 5 * 60 * 1000)))}" max="${esc(localDateTimeInputValue(new Date(now.getTime() + 29 * 24 * 60 * 60 * 1000)))}" value="${esc(localDateTimeInputValue(tomorrow))}"><button class="primary" data-action="schedule-message-custom">Schedule</button></div></label>
+        </section>
+      `;
+    }
+    if (sheet.type === 'repost-thought' && sheetPost) {
+      const author = postAuthor(sheetPost);
+      body = `
+        <section class="repost-thought-sheet-shell">
+          <header><span class="story-sheet-grabber" aria-hidden="true"></span><strong>${sheetPost.repostedByMe ? 'Edit repost' : 'Repost'}</strong><button data-action="close-overlays" aria-label="Close">${icon('x')}</button></header>
+          <div class="repost-thought-preview">
+            <div class="repost-thought-bubble"><textarea id="repost-thought-input" maxlength="60" rows="2" placeholder="Add a thought..." aria-label="Add a thought">${esc(sheet.note || '')}</textarea><small><span data-repost-thought-count>${String(sheet.note || '').length}</span>/60</small></div>
+            ${avatarHtml(state.me)}
+            <span class="repost-post-context"><strong>@${esc(author?.username || 'user')}</strong><small>${esc(sheetPost.title || sheetPost.description || (sheetPost.mediaType === 'video' ? 'Reel' : 'Post'))}</small></span>
+          </div>
+          <footer>
+            ${sheetPost.repostedByMe ? `<button class="repost-remove" data-action="remove-repost" data-post-id="${esc(sheetPost.id)}">Remove repost</button>` : '<span></span>'}
+            <button class="primary repost-confirm" data-action="save-repost-thought" data-post-id="${esc(sheetPost.id)}">${sheetPost.repostedByMe ? 'Save' : 'Repost'}</button>
+          </footer>
+        </section>
+      `;
+    }
+    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner', 'note-reply', 'repost-thought', 'message-schedule'].includes(sheet.type);
     const compactClass = sheet.type === 'post-comments' ? 'story-comments-sheet post-comments-sheet' : `${sheet.type}-sheet`;
     const dialogLabel = ({
       'post-share': 'Share post',
@@ -7044,6 +7128,8 @@
       'story-comments': 'Story comments',
       'story-owner': 'Story options',
       'note-reply': 'Reply to note',
+      'repost-thought': 'Add a thought to your repost',
+      'message-schedule': 'Schedule message',
       'post-options': 'Clip options',
       'post-owner': 'Post options',
       message: 'Message options',
@@ -8267,6 +8353,37 @@
     }
     if (action === 'save') await loadProfilePosts(state.me, 'saved', { render: false }).catch(() => []);
     if (action === 'repost') await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
+  }
+
+  function openRepostThought(postId) {
+    const post = postById(postId);
+    if (!post) return;
+    currentAppShell()?.querySelector(`.clip-card[data-post-id="${window.CSS?.escape ? CSS.escape(postId) : postId}"] .clip-video`)?.pause?.();
+    openActionSheet({ type: 'repost-thought', postId, note: post.repostNote || '' });
+    requestAnimationFrame(() => {
+      const input = document.getElementById('repost-thought-input');
+      input?.focus?.({ preventScroll: true });
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    });
+  }
+
+  async function updateRepost(postId, intent) {
+    const sheet = state.actionSheet?.type === 'repost-thought' && state.actionSheet.postId === postId ? state.actionSheet : null;
+    const note = intent === 'save' ? String(document.getElementById('repost-thought-input')?.value ?? sheet?.note ?? '').trim().slice(0, 60) : '';
+    const data = await api(`/api/posts/${encodeURIComponent(postId)}/repost`, { method: 'POST', body: { intent, note } });
+    replacePost(data.post);
+    syncPostEngagement(data.post, 'repost');
+    await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
+    closeOverlays();
+    pushToast({ key: `repost-${postId}-${Date.now()}`, kind: 'social', title: intent === 'remove' ? 'Repost removed' : 'Reposted', body: intent === 'remove' ? 'This post is no longer on your reposts tab.' : (note ? 'Your thought was added to the repost.' : 'This post now appears on your reposts tab.') });
+  }
+
+  async function setConversationPinned(conversationId, pinned) {
+    const data = await api('/api/chats/pins', { method: 'PATCH', body: { conversationId, pinned } });
+    await refreshChatsOnly();
+    closeOverlays();
+    renderSidebarState();
+    pushToast({ key: `chat-pin-${conversationId}`, kind: 'social', title: data.pinned ? 'Chat pinned' : 'Chat unpinned', body: data.pinned ? 'This chat will stay near the top of your inbox.' : 'This chat now follows the latest-message order.' });
   }
 
   function postShareDetails(postId) {
@@ -11133,6 +11250,28 @@
     await sendMessage({ kind: 'text', text });
   }
 
+  function openMessageSchedule() {
+    const input = document.getElementById('composer-text');
+    const text = String(input?.value || state.composerDrafts[activeConversationKey()] || '').trim();
+    if (!text || !hasActiveConversation()) return false;
+    openActionSheet({ type: 'message-schedule', text });
+    return true;
+  }
+
+  async function scheduleCurrentText(value) {
+    const sheet = state.actionSheet?.type === 'message-schedule' ? state.actionSheet : null;
+    const text = String(sheet?.text || '').trim();
+    const scheduledDate = new Date(value);
+    if (!text || !Number.isFinite(scheduledDate.getTime())) throw new Error('Choose a valid date and time.');
+    const key = activeConversationKey();
+    const input = document.getElementById('composer-text');
+    if (input) input.value = '';
+    delete state.composerDrafts[key];
+    await sendMessage({ kind: 'text', text, scheduledFor: scheduledDate.toISOString() });
+    closeOverlays();
+    pushToast({ key: `scheduled-${Date.now()}`, kind: 'social', title: 'Message scheduled', body: `It will send ${shortTime(scheduledDate)}.` });
+  }
+
   async function sendMessage(payload) {
     if (!hasActiveConversation()) return;
     const body = {
@@ -11147,7 +11286,8 @@
         catalogId: payload.music.catalogId,
         start: Number(payload.music.start || 0),
         clipDuration: Number(payload.music.clipDuration || 30)
-      } : null
+      } : null,
+      scheduledFor: payload.scheduledFor || null
     };
     state.replyTo = null;
     const data = await api(activeMessagesUrl(), {
@@ -11836,6 +11976,21 @@
       }
       await refreshChatsOnly();
       updateSidebar();
+    }
+    if (event.type === 'message:read' && event.chatId === activeChatId()) {
+      const ids = new Set(event.messageIds || []);
+      let changed = false;
+      state.messages.forEach((message) => {
+        if (!ids.has(message.id) || message.senderId !== state.me.id) return;
+        const seenBy = new Set(message.seenBy || []);
+        seenBy.add(event.readerId);
+        message.seenBy = [...seenBy];
+        changed = true;
+      });
+      if (changed) {
+        rememberActiveConversation();
+        updateMessagesList({ scroll: 'preserve' });
+      }
     }
     if (event.type === 'message:deleted') {
       const message = state.messages.find((item) => item.id === event.messageId);
@@ -13166,7 +13321,9 @@
       if (action === 'post-carousel-next') movePostCarousel(target.dataset.postId, 1);
       if (action === 'toggle-post-like') await togglePostAction(target.dataset.postId, 'like');
       if (action === 'toggle-post-save') await togglePostAction(target.dataset.postId, 'save');
-      if (action === 'toggle-post-repost') await togglePostAction(target.dataset.postId, 'repost');
+      if (action === 'toggle-post-repost') openRepostThought(target.dataset.postId);
+      if (action === 'save-repost-thought') await updateRepost(target.dataset.postId, 'save');
+      if (action === 'remove-repost') await updateRepost(target.dataset.postId, 'remove');
       if (action === 'share-post') await sharePost(target.dataset.postId);
       if (action === 'copy-post-link') await copyPostLink(target.dataset.postId);
       if (action === 'share-post-external') await sharePostExternally(target.dataset.postId);
@@ -13338,6 +13495,10 @@
         await openChat(target.dataset.userId, target.dataset.messageId || null);
       }
       if (action === 'open-group') {
+        if (state.longPressTriggered) {
+          state.longPressTriggered = false;
+          return;
+        }
         await openGroup(target.dataset.groupId, target.dataset.messageId || null);
       }
       if (action === 'new-group') {
@@ -13421,6 +13582,9 @@
         const option = chatBackgroundOptions().find(([value]) => value === background);
         if (option) await updateChatAppearance({ theme: 'custom', background, backgroundColor: option[2] });
       }
+      if (action === 'toggle-chat-read-receipts') {
+        await updateChatAppearance({ readReceipts: state.chatAppearance?.readReceipts === false });
+      }
       if (action === 'close-chat-profile') {
         navigationBackOr(() => {
           state.chatProfileOpen = false;
@@ -13431,6 +13595,13 @@
       }
       if (action === 'send-text') {
         await sendCurrentText();
+      }
+      if (action === 'schedule-message') {
+        await scheduleCurrentText(target.dataset.scheduledFor);
+      }
+      if (action === 'schedule-message-custom') {
+        const value = document.getElementById('message-schedule-time')?.value;
+        await scheduleCurrentText(value);
       }
       if (action === 'attach-open') {
         openCameraCapture('chat', {}, target);
@@ -14427,6 +14598,9 @@
       if (action === 'set-mute') {
         await setMuteFor(target.dataset.userId, target.dataset.minutes);
       }
+      if (action === 'toggle-chat-pin') {
+        await setConversationPinned(target.dataset.conversationId, target.dataset.pinned !== 'true');
+      }
       if (action === 'remove-friend') {
         if (confirm('Remove this friend? The chat stays archived on the server and returns if you add each other again. Following and followers stay unchanged.')) await removeFriend(target.dataset.userId);
       }
@@ -14578,6 +14752,12 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.id === 'repost-thought-input' && state.actionSheet?.type === 'repost-thought') {
+      state.actionSheet.note = event.target.value.slice(0, 60);
+      const count = document.querySelector('[data-repost-thought-count]');
+      if (count) count.textContent = String(state.actionSheet.note.length);
+      return;
+    }
     if (event.target.id === 'note-reply-input' && state.actionSheet?.type === 'note-reply') {
       state.actionSheet.replyDraft = event.target.value.slice(0, 1000);
       const send = document.querySelector('[data-action="send-note-reply"]');
@@ -15231,6 +15411,23 @@
       }
       return;
     }
+    const sendButton = event.target.closest('[data-action="send-text"]');
+    if (sendButton) {
+      const input = document.getElementById('composer-text');
+      if (String(input?.value || '').trim()) {
+        const press = { pointerId: event.pointerId, opened: false, timer: null };
+        press.timer = setTimeout(() => {
+          if (state.sendPress !== press) return;
+          press.opened = openMessageSchedule();
+          if (press.opened) {
+            navigator.vibrate?.(8);
+          }
+        }, 480);
+        state.sendPress = press;
+        sendButton.setPointerCapture?.(event.pointerId);
+      }
+      return;
+    }
     const videoTrimHandle = event.target.closest('[data-story-video-trim]');
     const videoTimeline = event.target.closest('.story-video-timeline');
     if (state.storyEditor?.isVideo && videoTimeline) {
@@ -15540,11 +15737,29 @@
 
     const chatItem = event.target.closest('.chat-item');
     if (chatItem) {
+      const chatRow = chatItem.closest('.chat-swipe-row');
+      state.tabSwipe = null;
+      document.querySelectorAll('.chat-swipe-row.is-open').forEach((row) => {
+        if (row !== chatRow) row.classList.remove('is-open');
+      });
+      if (chatRow && isMobileLayout()) {
+        state.chatRowSwipe = {
+          pointerId: event.pointerId,
+          row: chatRow,
+          item: chatItem,
+          startX: event.clientX,
+          startY: event.clientY,
+          startOffset: chatRow.classList.contains('is-open') ? -82 : 0,
+          currentOffset: chatRow.classList.contains('is-open') ? -82 : 0,
+          moved: false
+        };
+        chatItem.setPointerCapture?.(event.pointerId);
+      }
       state.longPressTriggered = false;
       clearTimeout(state.longPressTimer);
       state.longPressTimer = setTimeout(() => {
         state.longPressTriggered = true;
-        openActionSheet({ type: 'chat-user', peerId: chatItem.dataset.peerId });
+        openActionSheet({ type: 'chat-thread', peerId: chatRow?.dataset.peerId || chatItem.dataset.peerId, groupId: chatRow?.dataset.groupId || chatItem.dataset.groupId });
       }, 560);
       return;
     }
@@ -15564,6 +15779,26 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.chatRowSwipe?.pointerId === event.pointerId) {
+      const swipe = state.chatRowSwipe;
+      const dx = event.clientX - swipe.startX;
+      const dy = event.clientY - swipe.startY;
+      if (Math.abs(dx) > 4 && Math.abs(dx) > Math.abs(dy)) {
+        event.preventDefault();
+        swipe.moved = true;
+        clearTimeout(state.longPressTimer);
+        state.longPressTimer = null;
+        swipe.currentOffset = clamp(swipe.startOffset + dx, -92, 0);
+        swipe.item.style.transition = 'none';
+        swipe.item.style.transform = `translate3d(${swipe.currentOffset}px, 0, 0)`;
+        swipe.row.classList.add('is-dragging');
+      }
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+        clearTimeout(state.longPressTimer);
+        state.longPressTimer = null;
+      }
+      return;
+    }
     if (state.commentSheetDrag?.pointerId === event.pointerId) {
       event.preventDefault();
       const drag = state.commentSheetDrag;
@@ -15816,6 +16051,16 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.sendPress?.pointerId === event.pointerId) {
+      clearTimeout(state.sendPress.timer);
+      const opened = state.sendPress.opened;
+      state.sendPress = null;
+      if (opened) {
+        state.suppressClickUntil = Date.now() + 140;
+        event.preventDefault();
+        return;
+      }
+    }
     if (state.commentSheetDrag?.pointerId === event.pointerId) {
       const drag = state.commentSheetDrag;
       const dy = Math.max(0, event.clientY - drag.startY);
@@ -15935,6 +16180,22 @@
     }
     clearTimeout(state.longPressTimer);
     state.longPressTimer = null;
+    if (state.chatRowSwipe?.pointerId === event.pointerId) {
+      const swipe = state.chatRowSwipe;
+      const dx = event.clientX - swipe.startX;
+      const open = swipe.moved ? swipe.currentOffset < -38 : swipe.startOffset < 0;
+      swipe.row.classList.remove('is-dragging');
+      swipe.row.classList.toggle('is-open', open);
+      swipe.item.style.transition = 'transform 320ms cubic-bezier(.2,.88,.24,1)';
+      swipe.item.style.transform = `translate3d(${open ? -82 : 0}px, 0, 0)`;
+      afterVisualMotion(swipe.item, 'transitionend', 340, () => {
+        swipe.item.style.removeProperty('transition');
+        swipe.item.style.removeProperty('transform');
+      }, 'transform');
+      if (swipe.moved || Math.abs(dx) > 8) state.suppressClickUntil = Date.now() + 280;
+      state.chatRowSwipe = null;
+      return;
+    }
     finishMessagePress(event.pointerId);
     const recordButton = event.target.closest('[data-action="record-voice"]') || document.querySelector('.recording');
     if (recordButton) stopRecording(recordButton);
@@ -16058,6 +16319,16 @@
 
   document.addEventListener('pointercancel', (event) => {
     clearActiveMessagePress({ pointerId: event.pointerId });
+    if (state.sendPress?.pointerId === event.pointerId) {
+      clearTimeout(state.sendPress.timer);
+      state.sendPress = null;
+    }
+    if (state.chatRowSwipe?.pointerId === event.pointerId) {
+      state.chatRowSwipe.item.style.removeProperty('transition');
+      state.chatRowSwipe.item.style.removeProperty('transform');
+      state.chatRowSwipe.row.classList.remove('is-dragging');
+      state.chatRowSwipe = null;
+    }
     if (state.commentSheetDrag) {
       const { sheet, overlay } = state.commentSheetDrag;
       sheet.style.transition = 'transform 220ms cubic-bezier(.2, .9, .25, 1)';

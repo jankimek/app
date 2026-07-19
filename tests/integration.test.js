@@ -187,6 +187,17 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function syncPostPreviewMusic/);
   assert.match(clientSource, /function capturePersistentScroll/);
   assert.match(clientSource, /state\.tabSwipe = \{/);
+  assert.match(clientSource, /state\.chatRowSwipe = \{/);
+  assert.match(clientSource, /type: 'message-schedule'/);
+  assert.match(clientSource, /function openMessageSchedule/);
+  assert.match(clientSource, /function openRepostThought/);
+  assert.match(clientSource, /data-action="toggle-chat-read-receipts"/);
+  assert.match(clientSource, /event\.type === 'message:read'/);
+  assert.match(styleSource, /\.chat-swipe-row\.is-open \.chat-item/);
+  assert.match(styleSource, /\.action-sheet\.compact-sheet\.repost-thought-sheet/);
+  assert.match(styleSource, /\.action-sheet\.compact-sheet\.message-schedule-sheet/);
+  assert.match(serverSource, /function pinnedConversationIdsFor/);
+  assert.match(serverSource, /async function processScheduledMessages/);
   assert.match(styleSource, /background-attachment: fixed/);
   assert.match(clientSource, /data-action="open-highlight-composer"/);
   assert.match(clientSource, /saved: publishToHighlight/);
@@ -932,6 +943,15 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   assert.equal(unreposted.data.post.repostedByMe, false);
   assert.equal(unreposted.data.post.repostCount, 0);
   assert.deepEqual((await bob.request('/api/me/activity?type=reposts')).data.items, []);
+  const repostedWithThought = await bob.request(`/api/posts/${post.id}/repost`, { method: 'POST', body: { intent: 'save', note: 'Worth watching twice' } });
+  assert.equal(repostedWithThought.status, 200);
+  assert.equal(repostedWithThought.data.post.repostedByMe, true);
+  assert.equal(repostedWithThought.data.post.repostNote, 'Worth watching twice');
+  const ownerViewOfThought = await alice.request(`/api/posts/${post.id}`);
+  assert.equal(ownerViewOfThought.data.post.repostNote, '');
+  const removedThoughtRepost = await bob.request(`/api/posts/${post.id}/repost`, { method: 'POST', body: { intent: 'remove' } });
+  assert.equal(removedThoughtRepost.data.post.repostedByMe, false);
+  assert.equal(removedThoughtRepost.data.post.repostNote, '');
   assert.equal((await alice.request('/api/me/profile', { method: 'PATCH', body: { allowReposts: false } })).status, 200);
   const globallyDisabledRepost = await bob.request(`/api/posts/${post.id}/repost`, { method: 'POST' });
   assert.equal(globallyDisabledRepost.status, 403);
@@ -1325,6 +1345,16 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(connectedBob.data.user.isFollowing, true);
   assert.equal(connectedBob.data.user.followsViewer, true);
 
+  const directChat = (await alice.request('/api/chats')).data.chats.find((chat) => chat.peer.id === bobUser.id);
+  assert.ok(directChat?.id);
+  const pinnedDirect = await alice.request('/api/chats/pins', { method: 'PATCH', body: { conversationId: directChat.id, pinned: true } });
+  assert.equal(pinnedDirect.status, 200);
+  assert.equal(pinnedDirect.data.pinned, true);
+  assert.equal((await alice.request('/api/chats')).data.chats.find((chat) => chat.id === directChat.id).pinned, true);
+  const unpinnedDirect = await alice.request('/api/chats/pins', { method: 'PATCH', body: { conversationId: directChat.id, pinned: false } });
+  assert.equal(unpinnedDirect.status, 200);
+  assert.equal(unpinnedDirect.data.pinned, false);
+
   assert.equal((await anonymous.request('/api/instants')).status, 401);
   const instantCreated = await alice.request('/api/instants', {
     method: 'POST',
@@ -1355,6 +1385,7 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   const defaultAppearance = await alice.request(`/api/chats/${bobUser.id}/appearance`);
   assert.equal(defaultAppearance.status, 200);
   assert.equal(defaultAppearance.data.settings.theme, 'midnight');
+  assert.equal(defaultAppearance.data.settings.readReceipts, true);
   const customAppearance = await alice.request(`/api/chats/${bobUser.id}/appearance`, {
     method: 'PATCH',
     body: {
@@ -1369,10 +1400,28 @@ test('account, social, messaging, media, story, privacy, and 2FA flows', async (
   assert.equal(customAppearance.data.settings.mineColor, '#c24f82');
   assert.equal((await alice.request(`/api/chats/${bobUser.id}/appearance`)).data.settings.background, 'dusk');
   assert.equal((await bob.request(`/api/chats/${aliceUser.id}/appearance`)).data.settings.theme, 'midnight');
+  const receiptMessage = await sendMessage(alice, bobUser.id, { kind: 'text', text: 'Read receipt check' });
+  assert.equal(receiptMessage.status, 201);
+  await bob.request(`/api/chats/${aliceUser.id}/messages?limit=200`);
+  const receiptSenderView = await alice.request(`/api/chats/${bobUser.id}/messages?limit=200`);
+  assert.ok(receiptSenderView.data.messages.find((message) => message.id === receiptMessage.data.message.id).seenBy.includes(bobUser.id));
+  assert.equal((await bob.request(`/api/chats/${aliceUser.id}/appearance`, { method: 'PATCH', body: { readReceipts: false } })).data.settings.readReceipts, false);
+  const privateReadMessage = await sendMessage(alice, bobUser.id, { kind: 'text', text: 'Private read check' });
+  await bob.request(`/api/chats/${aliceUser.id}/messages?limit=200`);
+  const privateReceiptSenderView = await alice.request(`/api/chats/${bobUser.id}/messages?limit=200`);
+  assert.deepEqual(privateReceiptSenderView.data.messages.find((message) => message.id === privateReadMessage.data.message.id).seenBy, []);
+  assert.equal((await bob.request(`/api/chats/${aliceUser.id}/appearance`, { method: 'PATCH', body: { readReceipts: true } })).data.settings.readReceipts, true);
   const poolGifMessage = await sendMessage(alice, bobUser.id, { kind: 'gif', gifId: gifSubmission.data.gif.id });
   assert.equal(poolGifMessage.status, 201);
   assert.equal(poolGifMessage.data.message.kind, 'gif');
   assert.equal((await bob.request(poolGifMessage.data.message.attachment.url)).status, 200);
+  const scheduledFor = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+  const scheduledMessage = await sendMessage(alice, bobUser.id, { kind: 'text', text: 'This arrives later', scheduledFor });
+  assert.equal(scheduledMessage.status, 201);
+  assert.equal(scheduledMessage.data.message.scheduledPending, true);
+  assert.equal(scheduledMessage.data.message.scheduledFor, scheduledFor);
+  assert.ok((await alice.request(`/api/chats/${bobUser.id}/messages?limit=200`)).data.messages.some((message) => message.id === scheduledMessage.data.message.id));
+  assert.ok(!(await bob.request(`/api/chats/${aliceUser.id}/messages?limit=200`)).data.messages.some((message) => message.id === scheduledMessage.data.message.id));
 
   const unfollowBob = await alice.request(`/api/follows/${bobUser.id}`, { method: 'DELETE' });
   assert.equal(unfollowBob.status, 200);

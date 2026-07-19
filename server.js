@@ -577,7 +577,8 @@ const DEFAULT_CHAT_APPEARANCE = Object.freeze({
   background: 'midnight',
   backgroundColor: '#070a12',
   mineColor: '#55339a',
-  theirsColor: '#182131'
+  theirsColor: '#182131',
+  readReceipts: true
 });
 
 function cleanHexColor(value, fallback) {
@@ -590,7 +591,8 @@ function cleanChatAppearance(value = {}) {
     background: CHAT_BACKGROUNDS.has(value.background) ? value.background : DEFAULT_CHAT_APPEARANCE.background,
     backgroundColor: cleanHexColor(value.backgroundColor, DEFAULT_CHAT_APPEARANCE.backgroundColor),
     mineColor: cleanHexColor(value.mineColor, DEFAULT_CHAT_APPEARANCE.mineColor),
-    theirsColor: cleanHexColor(value.theirsColor, DEFAULT_CHAT_APPEARANCE.theirsColor)
+    theirsColor: cleanHexColor(value.theirsColor, DEFAULT_CHAT_APPEARANCE.theirsColor),
+    readReceipts: value.readReceipts !== false
   };
 }
 
@@ -839,6 +841,18 @@ function favoriteUserIdsFor(user) {
   return Array.from(new Set(values)).filter((userId) => userId !== user.id && db.users[userId]);
 }
 
+function pinnedConversationIdsFor(user) {
+  if (!user) return [];
+  const values = Array.isArray(user.profile?.pinnedConversationIds) ? user.profile.pinnedConversationIds : [];
+  return Array.from(new Set(values.map((value) => cleanText(value, 240)).filter(Boolean))).slice(0, 3);
+}
+
+function conversationExistsFor(userId, conversationId) {
+  const group = db.groups[conversationId];
+  if (group) return (group.memberIds || []).includes(userId);
+  return (db.contacts[userId] || []).some((peerId) => chatIdFor(userId, peerId) === conversationId && canViewChat(userId, peerId));
+}
+
 function activePostsFor(ownerId = null) {
   return Object.values(db.posts || {})
     .filter((post) => post && !post.deletedAt && (!ownerId || post.ownerId === ownerId))
@@ -965,7 +979,7 @@ function publicPost(post, viewerId = null) {
       if (friendIds.has(userId)) friendActivity.push({ userId, action: 'liked', createdAt: post.updatedAt || post.createdAt });
     }
     for (const userId of reposts) {
-      if (friendIds.has(userId)) friendActivity.push({ userId, action: 'reposted', createdAt: post.repostDates?.[userId] || post.updatedAt || post.createdAt });
+      if (friendIds.has(userId)) friendActivity.push({ userId, action: 'reposted', note: cleanText(post.repostNotes?.[userId] || '', 60), createdAt: post.repostDates?.[userId] || post.updatedAt || post.createdAt });
     }
     const latestCommentByFriend = new Map();
     for (const comment of comments) {
@@ -1019,6 +1033,7 @@ function publicPost(post, viewerId = null) {
     savedByMe: Boolean(viewerId && saves.includes(viewerId)),
     repostCount: reposts.length,
     repostedByMe: Boolean(viewerId && reposts.includes(viewerId)),
+    repostNote: viewerId && reposts.includes(viewerId) ? cleanText(post.repostNotes?.[viewerId] || '', 60) : '',
     friendActivity: publicFriendActivity,
     commentCount: comments.length,
     comments: comments.slice(-100).sort((a, b) => {
@@ -1675,6 +1690,7 @@ function messageParticipantIds(message) {
 
 function canViewMessage(userId, message) {
   if (!message || (message.hiddenFor || []).includes(userId)) return false;
+  if (message.scheduledFor && !message.deliveredAt && message.senderId !== userId) return false;
   const group = messageGroup(message);
   if (group) return Boolean(groupForMember(group.id, userId));
   const peerId = message.senderId === userId ? message.recipientId : message.senderId;
@@ -1834,6 +1850,10 @@ function decorateMessage(message, viewerId = null) {
     pinnedAt: message.pinnedAt || null,
     pinnedBy: message.pinnedBy || null,
     forwardedFrom: message.forwardedFrom || null,
+    seenBy: message.senderId === viewerId ? Array.from(new Set(message.seenBy || [])).filter((userId) => userId !== message.senderId && db.users[userId]) : [],
+    scheduledFor: message.scheduledFor || null,
+    scheduledPending: Boolean(message.scheduledFor && !message.deliveredAt),
+    deliveredAt: message.deliveredAt || null,
     createdAt: message.createdAt,
     editedAt: message.editedAt || null,
     deletedAt: message.deletedAt || null,
@@ -1842,8 +1862,8 @@ function decorateMessage(message, viewerId = null) {
 }
 
 function latestVisibleMessage(messages, viewerId) {
-  const visible = messages.filter((message) => !(message.hiddenFor || []).includes(viewerId));
-  return visible[visible.length - 1] || null;
+  const visible = messages.filter((message) => !(message.hiddenFor || []).includes(viewerId) && !(message.scheduledFor && !message.deliveredAt));
+  return visible.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || ''))).at(-1) || null;
 }
 
 function sendJson(res, status, payload, headers = {}) {
@@ -3531,13 +3551,22 @@ async function handleApi(req, res, pathname, query) {
     } else {
       if (!Array.isArray(post.repostedBy)) post.repostedBy = [];
       if (!post.repostDates || typeof post.repostDates !== 'object') post.repostDates = {};
+      if (!post.repostNotes || typeof post.repostNotes !== 'object') post.repostNotes = {};
       const active = post.repostedBy.includes(user.id);
-      if (!active && !postRepostsAllowed(post)) return sendError(res, 403, 'The author has turned off reposts for this post.');
-      post.repostedBy = active ? post.repostedBy.filter((userId) => userId !== user.id) : [...post.repostedBy, user.id];
-      if (active) delete post.repostDates[user.id];
-      else {
+      const body = await readJsonBody(req);
+      const intent = cleanText(body.intent || '', 20);
+      const shouldRemove = intent === 'remove' || (!intent && active);
+      const shouldAdd = intent === 'save' || (!intent && !active);
+      if (shouldAdd && !active && !postRepostsAllowed(post)) return sendError(res, 403, 'The author has turned off reposts for this post.');
+      if (shouldRemove) {
+        post.repostedBy = post.repostedBy.filter((userId) => userId !== user.id);
+        delete post.repostDates[user.id];
+        delete post.repostNotes[user.id];
+      } else if (shouldAdd) {
+        if (!active) post.repostedBy = [...post.repostedBy, user.id];
         post.repostDates[user.id] = nowIso();
-        if (post.ownerId !== user.id) notification = addNotification(post.ownerId, 'post_repost', user.id, null, `${user.username} reposted your post.`, { postId: post.id });
+        post.repostNotes[user.id] = cleanText(body.note || '', 60);
+        if (!active && post.ownerId !== user.id) notification = addNotification(post.ownerId, 'post_repost', user.id, null, `${user.username} reposted your post.`, { postId: post.id });
       }
     }
     await Promise.all([savePosts(), notification ? saveNotifications() : Promise.resolve()]);
@@ -4770,13 +4799,14 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'GET' && pathname === '/api/groups') {
     const user = await requireAuth(req, res);
     if (!user) return;
+    const pins = pinnedConversationIdsFor(user);
     const groups = Object.values(db.groups)
       .filter((group) => (group.memberIds || []).includes(user.id))
       .map((group) => {
         const latest = latestVisibleMessage(db.messages[group.id] || [], user.id);
-        return { ...publicGroup(group, user.id), latest: latest ? decorateMessage(latest, user.id) : null };
+        return { ...publicGroup(group, user.id), latest: latest ? decorateMessage(latest, user.id) : null, pinned: pins.includes(group.id), pinOrder: pins.indexOf(group.id) };
       })
-      .sort((a, b) => String(b.latest?.createdAt || b.updatedAt || '').localeCompare(String(a.latest?.createdAt || a.updatedAt || '')));
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || (a.pinned ? a.pinOrder - b.pinOrder : String(b.latest?.createdAt || b.updatedAt || '').localeCompare(String(a.latest?.createdAt || a.updatedAt || ''))));
     return sendJson(res, 200, { groups });
   }
 
@@ -4974,7 +5004,7 @@ async function handleApi(req, res, pathname, query) {
       const limit = Math.max(1, Math.min(500, Number(query.get('limit') || 200)));
       const before = String(query.get('before') || '');
       let visible = list
-        .filter((message) => !(message.hiddenFor || []).includes(user.id))
+        .filter((message) => canViewMessage(user.id, message))
         .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
       if (before) visible = visible.filter((message) => String(message.createdAt) < before);
       const hasMore = visible.length > limit;
@@ -4988,6 +5018,15 @@ async function handleApi(req, res, pathname, query) {
     const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post', 'music'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
+    let scheduledFor = null;
+    if (body.scheduledFor) {
+      if (kind !== 'text') return sendError(res, 400, 'Only text messages can be scheduled.');
+      const scheduledTime = new Date(body.scheduledFor).getTime();
+      const earliest = Date.now() + 5000;
+      const latest = Date.now() + 29 * 24 * 60 * 60 * 1000;
+      if (!Number.isFinite(scheduledTime) || scheduledTime < earliest || scheduledTime > latest) return sendError(res, 400, 'Choose a time between 5 seconds and 29 days from now.');
+      scheduledFor = new Date(scheduledTime).toISOString();
+    }
     let sharedPost = null;
     if (kind === 'post') {
       const validation = validateSharedPostForRecipients(
@@ -5039,6 +5078,8 @@ async function handleApi(req, res, pathname, query) {
       pinnedAt: null,
       pinnedBy: null,
       forwardedFrom: null,
+      scheduledFor,
+      deliveredAt: scheduledFor ? null : nowIso(),
       createdAt: nowIso(),
       editedAt: null,
       deletedAt: null,
@@ -5051,6 +5092,11 @@ async function handleApi(req, res, pathname, query) {
     list.push(message);
     group.updatedAt = message.createdAt;
     const decorated = decorateMessage(message);
+    if (scheduledFor) {
+      await Promise.all([saveMessages(), saveGroups()]);
+      pushToUser(user.id, { type: 'message:new', chatId: group.id, groupId: group.id, message: decorated });
+      return sendJson(res, 201, { message: decorated });
+    }
     const notifications = group.memberIds
       .filter((memberId) => memberId !== user.id)
       .map((memberId) => ({
@@ -5072,7 +5118,7 @@ async function handleApi(req, res, pathname, query) {
     const group = groupForMember(decodeURIComponent(groupExportMatch[1]), user.id);
     if (!group) return sendError(res, 404, 'Group not found.');
     const messages = (db.messages[group.id] || [])
-      .filter((message) => !(message.hiddenFor || []).includes(user.id))
+      .filter((message) => canViewMessage(user.id, message))
       .map((message) => decorateMessage(message, user.id));
     const created = new Date().toISOString().replace(/[:.]/g, '-');
     const safeName = group.name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'group';
@@ -5104,7 +5150,7 @@ async function handleApi(req, res, pathname, query) {
       if (!peer || !canViewChat(user.id, peer.id)) continue;
       const chatId = chatIdFor(user.id, peer.id);
       for (const message of db.messages[chatId] || []) {
-        if ((message.hiddenFor || []).includes(user.id)) continue;
+        if (!canViewMessage(user.id, message)) continue;
         if (!messageSearchText(message, user.id).toLowerCase().includes(term)) continue;
         results.push({
           chatId,
@@ -5118,7 +5164,7 @@ async function handleApi(req, res, pathname, query) {
     for (const group of Object.values(db.groups)) {
       if (!(group.memberIds || []).includes(user.id)) continue;
       for (const message of db.messages[group.id] || []) {
-        if ((message.hiddenFor || []).includes(user.id)) continue;
+        if (!canViewMessage(user.id, message)) continue;
         if (!messageSearchText(message, user.id).toLowerCase().includes(term)) continue;
         results.push({
           chatId: group.id,
@@ -5136,6 +5182,7 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'GET' && pathname === '/api/chats') {
     const user = await requireAuth(req, res);
     if (!user) return;
+    const pins = pinnedConversationIdsFor(user);
     const chats = (db.contacts[user.id] || [])
       .map((peerId) => {
         const peer = db.users[peerId];
@@ -5145,12 +5192,30 @@ async function handleApi(req, res, pathname, query) {
         return {
           id: chatId,
           peer: publicUser(peer, user.id),
-          latest: latest ? decorateMessage(latest, user.id) : null
+          latest: latest ? decorateMessage(latest, user.id) : null,
+          pinned: pins.includes(chatId),
+          pinOrder: pins.indexOf(chatId)
         };
       })
       .filter(Boolean)
-      .sort((a, b) => String(b.latest?.createdAt || '').localeCompare(String(a.latest?.createdAt || '')));
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || (a.pinned ? a.pinOrder - b.pinOrder : String(b.latest?.createdAt || '').localeCompare(String(a.latest?.createdAt || ''))));
     return sendJson(res, 200, { chats });
+  }
+
+  if (req.method === 'PATCH' && pathname === '/api/chats/pins') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const body = await readJsonBody(req);
+    const conversationId = cleanText(body.conversationId || '', 240);
+    if (!conversationId || !conversationExistsFor(user.id, conversationId)) return sendError(res, 404, 'Conversation not found.');
+    const pins = pinnedConversationIdsFor(user).filter((value) => value !== conversationId);
+    if (body.pinned !== false) {
+      if (pins.length >= 3) return sendError(res, 400, 'You can pin up to 3 chats.');
+      pins.push(conversationId);
+    }
+    user.profile.pinnedConversationIds = pins;
+    await saveUsers();
+    return sendJson(res, 200, { conversationId, pinned: pins.includes(conversationId), pinnedConversationIds: pins });
   }
 
   const exportMatch = /^\/api\/chats\/([^/]+)\/export$/.exec(pathname);
@@ -5161,7 +5226,7 @@ async function handleApi(req, res, pathname, query) {
     if (!peer || !canViewChat(user.id, peer.id)) return sendError(res, 404, 'Chat not found.');
     const chatId = chatIdFor(user.id, peer.id);
     const messages = (db.messages[chatId] || [])
-      .filter((message) => !(message.hiddenFor || []).includes(user.id))
+      .filter((message) => canViewMessage(user.id, message))
       .map((message) => decorateMessage(message, user.id));
     const created = new Date().toISOString().replace(/[:.]/g, '-');
     const baseName = `chat-${peer.username}-${created}`;
@@ -5222,11 +5287,27 @@ async function handleApi(req, res, pathname, query) {
     const limit = Math.max(1, Math.min(500, Number(query.get('limit') || 200)));
     const before = String(query.get('before') || '');
     let visible = (db.messages[chatId] || [])
-      .filter((message) => !(message.hiddenFor || []).includes(user.id))
+      .filter((message) => canViewMessage(user.id, message))
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     if (before) visible = visible.filter((message) => String(message.createdAt) < before);
     const hasMore = visible.length > limit;
-    const page = visible.slice(Math.max(0, visible.length - limit)).map((message) => decorateMessage(message, user.id));
+    const pageMessages = visible.slice(Math.max(0, visible.length - limit));
+    const readMessageIds = [];
+    if (chatAppearanceFor(user.id, peer.id).readReceipts !== false) {
+      for (const message of pageMessages) {
+        if (message.senderId !== peer.id || message.deletedAt || (message.scheduledFor && !message.deliveredAt)) continue;
+        if (!Array.isArray(message.seenBy)) message.seenBy = [];
+        if (!message.seenBy.includes(user.id)) {
+          message.seenBy.push(user.id);
+          readMessageIds.push(message.id);
+        }
+      }
+    }
+    if (readMessageIds.length) {
+      await saveMessages();
+      pushToUser(peer.id, { type: 'message:read', chatId, readerId: user.id, messageIds: readMessageIds, readAt: nowIso() });
+    }
+    const page = pageMessages.map((message) => decorateMessage(message, user.id));
     return sendJson(res, 200, { messages: page, hasMore, peer: publicUser(peer, user.id) });
   }
 
@@ -5242,6 +5323,15 @@ async function handleApi(req, res, pathname, query) {
     const kind = ['text', 'image', 'video', 'document', 'voice', 'sticker', 'gif', 'post', 'music'].includes(body.kind) ? body.kind : 'text';
     const text = cleanText(body.text || '', kind === 'text' ? 8000 : 500);
     if (kind === 'text' && !text) return sendError(res, 400, 'Message cannot be empty.');
+    let scheduledFor = null;
+    if (body.scheduledFor) {
+      if (kind !== 'text') return sendError(res, 400, 'Only text messages can be scheduled.');
+      const scheduledTime = new Date(body.scheduledFor).getTime();
+      const earliest = Date.now() + 5000;
+      const latest = Date.now() + 29 * 24 * 60 * 60 * 1000;
+      if (!Number.isFinite(scheduledTime) || scheduledTime < earliest || scheduledTime > latest) return sendError(res, 400, 'Choose a time between 5 seconds and 29 days from now.');
+      scheduledFor = new Date(scheduledTime).toISOString();
+    }
 
     let sharedPost = null;
     if (kind === 'post') {
@@ -5301,9 +5391,12 @@ async function handleApi(req, res, pathname, query) {
       hiddenFor: [],
       reactions: {},
       messageStickers: [],
+      seenBy: [],
       pinnedAt: null,
       pinnedBy: null,
       forwardedFrom: null,
+      scheduledFor,
+      deliveredAt: scheduledFor ? null : nowIso(),
       createdAt: nowIso(),
       editedAt: null,
       deletedAt: null,
@@ -5315,6 +5408,11 @@ async function handleApi(req, res, pathname, query) {
     }
     list.push(message);
     const decorated = decorateMessage(message);
+    if (scheduledFor) {
+      await saveMessages();
+      pushToUser(user.id, { type: 'message:new', chatId, message: decorated });
+      return sendJson(res, 201, { message: decorated });
+    }
     const notification = addNotification(peer.id, 'message', user.id, null, `${user.username}: ${messageSnippet(message)}`);
     await Promise.all([saveMessages(), saveNotifications()]);
     pushToUsers([user.id, peer.id], { type: 'message:new', chatId, message: decorated });
@@ -5893,6 +5991,60 @@ function broadcastPresence(userId, online) {
     pushToUser(contactId, { type: 'presence', userId, online });
   }
 }
+
+let scheduledDeliveryBusy = false;
+async function processScheduledMessages() {
+  if (scheduledDeliveryBusy) return;
+  scheduledDeliveryBusy = true;
+  try {
+    const due = [];
+    let changed = false;
+    const currentTime = Date.now();
+    for (const list of Object.values(db.messages)) {
+      for (const message of list || []) {
+        if (!message.scheduledFor || message.deliveredAt || new Date(message.scheduledFor).getTime() > currentTime) continue;
+        message.deliveredAt = nowIso();
+        message.createdAt = message.scheduledFor;
+        changed = true;
+        if (!message.deletedAt) due.push(message);
+      }
+    }
+    if (!changed) return;
+    const notifications = [];
+    for (const message of due) {
+      const group = messageGroup(message);
+      const recipients = group
+        ? (group.memberIds || []).filter((memberId) => memberId !== message.senderId)
+        : [message.recipientId].filter((recipientId) => db.users[recipientId]);
+      for (const recipientId of recipients) {
+        const prefix = group ? `${group.name}: ` : '';
+        notifications.push({
+          message,
+          recipientId,
+          note: addNotification(recipientId, 'message', message.senderId, null, `${prefix}${db.users[message.senderId]?.username || 'user'}: ${messageSnippet(message)}`, group ? { groupId: group.id } : {})
+        });
+      }
+    }
+    await Promise.all([saveMessages(), due.length ? saveNotifications() : Promise.resolve()]);
+    for (const message of due) {
+      const decorated = decorateMessage(message);
+      const group = messageGroup(message);
+      const participants = group ? group.memberIds : [message.senderId, message.recipientId];
+      pushToUsers(participants, { type: 'message:new', chatId: message.chatId, groupId: group?.id || null, message: decorated });
+    }
+    for (const { recipientId, note } of notifications) {
+      if (note) pushToUser(recipientId, { type: 'notification:new', pendingRequestCount: pendingIncomingRequests(recipientId).length, notification: publicNotification(note, recipientId) });
+    }
+  } finally {
+    scheduledDeliveryBusy = false;
+  }
+}
+
+const scheduledDeliveryTimer = setInterval(() => {
+  processScheduledMessages().catch((error) => console.error('Scheduled message delivery failed:', error));
+}, 1000);
+scheduledDeliveryTimer.unref?.();
+void processScheduledMessages();
 
 server.listen(PORT, () => {
   console.log(`Chat app is running at http://localhost:${PORT}`);
