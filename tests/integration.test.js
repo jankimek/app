@@ -348,6 +348,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /function renderAccountIdentity[\s\S]*?href="\$\{esc\(accountProfileHref\(user\)\)\}"/);
   assert.match(clientSource, /class="chat-pane searched-profile-pane"/);
   for (const category of ['For you', 'Accounts', 'Reels', 'Audio', 'Tags', 'Places']) assert.match(clientSource, new RegExp(`['"]${category}['"]`));
+  const searchBrowseSource = sourceSection(clientSource, 'function renderSearchBrowsePanel', 'function renderProfileStats');
+  assert.doesNotMatch(searchBrowseSource, /Suggested for you|search-discover/);
   assert.match(clientSource, /\/api\/me\/search-history/);
   assert.match(clientSource, /function renderReplyPreviewContent/);
   assert.match(clientSource, /class="reply-preview-media/);
@@ -591,7 +593,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(noteUiSource, /data-action="\$\{action\}"/);
   assert.match(noteUiSource, /class="note-audio-toggle" data-action="play-note"/);
   assert.match(clientSource, /data-action="toggle-note-like"/);
-  assert.match(noteUiSource, /<audio[^>]*preload="metadata"/);
+  assert.match(clientSource, /const noteAudioPlayer = new Audio\(\)/);
+  assert.doesNotMatch(sourceSection(clientSource, 'function renderNoteRailItem', 'function renderNoteRail()'), /<audio/);
   assert.doesNotMatch(noteUiSource, /autoplay/);
   assert.match(noteUiSource, /id="note-text" maxlength="60"/);
   assert.match(noteUiSource, /up to 30 seconds/);
@@ -599,10 +602,19 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(noteBehaviorSource, /duration > 30\.15/);
   assert.match(noteBehaviorSource, /setTimeout\(\(\) => stopNoteRecording\(\), 30000\)/);
   assert.match(noteBehaviorSource, /function playNote\(noteId\)/);
-  assert.match(noteBehaviorSource, /selected\.play\(\)\.catch\(\(\) => selected\.onerror\?\.\(\)\)/);
-  assert.match(noteBehaviorSource, /selected\.currentTime >= end/);
+  assert.match(noteBehaviorSource, /noteAudioPlayer\.play\(\)\.then/);
+  assert.match(noteBehaviorSource, /noteAudioPlayer\.currentTime \+ \.04 >= notePlaybackEnd/);
   assert.match(serverSource, /Array\.from\(textValue\)\.length > 60/);
   assert.match(serverSource, /audioDuration > 30/);
+
+  const callDockSource = sourceSection(clientSource, 'function renderCallDock', 'async function loadFeed');
+  assert.match(callDockSource, /data-call-dock/);
+  assert.match(callDockSource, /data-call-drag-handle/);
+  assert.match(callDockSource, /data-action="toggle-call-minimized"/);
+  assert.match(callDockSource, /data-action="toggle-call-mute"/);
+  assert.match(clientSource, /function renderUploadDock/);
+  assert.match(clientSource, /createUploadJob\('post'/);
+  assert.match(clientSource, /createUploadJob\('story'/);
 
   const settingsSource = sourceSection(clientSource, 'function settingsSectionTitle', 'function renderAvatarCropper');
   for (const [section, label] of [['account', 'Account'], ['blocked', 'Blocked'], ['comments', 'Comments'], ['reposts', 'Reposts']]) {

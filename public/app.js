@@ -89,9 +89,9 @@
   }
 
   setViewportHeight(true);
-  window.addEventListener('resize', () => scheduleViewportHeight());
-  window.addEventListener('orientationchange', () => setTimeout(() => scheduleViewportHeight(true), 180));
-  window.visualViewport?.addEventListener('resize', () => scheduleViewportHeight());
+  window.addEventListener('resize', () => { scheduleViewportHeight(); requestAnimationFrame(() => { clampCallDockToViewport(); positionUploadDock(); }); });
+  window.addEventListener('orientationchange', () => setTimeout(() => { scheduleViewportHeight(true); clampCallDockToViewport(); positionUploadDock(); }, 180));
+  window.visualViewport?.addEventListener('resize', () => { scheduleViewportHeight(); requestAnimationFrame(() => { clampCallDockToViewport(); positionUploadDock(); }); });
   window.visualViewport?.addEventListener('scroll', () => scheduleViewportHeight());
 
   const state = {
@@ -164,6 +164,7 @@
     clipMuted: localStorage.getItem('clipMuted') !== '0',
     feedMuted: localStorage.getItem('feedMuted') !== '0',
     notes: [],
+    notePlayback: { noteId: null, status: 'paused' },
     instants: { piles: [], sent: [] },
     inboxFeature: null,
     instantComposer: null,
@@ -171,6 +172,7 @@
     mapLocation: null,
     postComposer: null,
     postPublishing: false,
+    uploads: [],
     musicPicker: null,
     profileMediaTab: 'posts',
     searchProfileMediaTab: 'posts',
@@ -256,6 +258,7 @@
     longPressTriggered: false,
     chatRowSwipe: null,
     sendPress: null,
+    callDockDrag: null,
     call: freshCallState()
   };
 
@@ -281,6 +284,12 @@
   let chatScrollSettleCleanup = null;
   let navigationMaintenanceFrame = 0;
   let navigationMaintenanceIdle = 0;
+  let callDurationTimer = null;
+  const noteAudioPlayer = new Audio();
+  noteAudioPlayer.preload = 'metadata';
+  let notePlaybackStart = 0;
+  let notePlaybackEnd = Infinity;
+  let notePlaybackLoadTimer = null;
 
   function freshCallState() {
     return {
@@ -291,7 +300,13 @@
       incoming: null,
       active: false,
       video: false,
-      status: ''
+      status: '',
+      minimized: false,
+      muted: false,
+      cameraOff: false,
+      startedAt: null,
+      position: null,
+      pendingCandidates: []
     };
   }
 
@@ -1702,6 +1717,7 @@
       </div>
       ${state.navigationStack.length ? '<div class="navigation-edge-zone" aria-hidden="true"></div>' : ''}
       <div id="call-dock-slot">${renderCallDock()}</div>
+      <div id="upload-dock-slot">${renderUploadDock()}</div>
       <div id="toast-slot">${renderToastStack()}</div>
       <div id="action-sheet-slot">${renderActionSheet()}</div>
       <div id="message-focus-slot">${renderMessageFocus()}</div>
@@ -1758,6 +1774,7 @@
         centerStoryActiveChoice();
       }
       attachCallStreams();
+      positionUploadDock();
       attachCameraStream();
       attachStoryEditorVideo();
       attachStoryViewerVideo();
@@ -3104,8 +3121,10 @@
     const targetData = own ? '' : `data-note-id="${esc(note.id)}"`;
     const title = note.audioTitle || note.music?.title || 'Music';
     const artist = note.audioArtist || note.music?.artist || owner.displayName || owner.username;
+    const playbackStatus = state.notePlayback.noteId === note.id ? state.notePlayback.status : 'paused';
+    const isPlaying = playbackStatus === 'playing';
     return `
-      <article class="note-item ${own ? 'own-note' : ''}" data-note-card="${esc(note.id)}">
+      <article class="note-item ${own ? 'own-note' : ''} ${isPlaying ? 'is-playing' : ''} ${playbackStatus === 'loading' ? 'is-loading' : ''}" data-note-card="${esc(note.id)}">
         <button class="note-main" data-action="${action}" ${targetData} aria-label="${own ? 'Edit your note' : `Reply to ${esc(owner.username)}'s note`}">
           <span class="note-bubble">
             ${hasAudio ? `<b>${esc(title)}</b><em>${esc(artist)}</em>` : ''}
@@ -3115,9 +3134,8 @@
           <small>${own ? 'You' : esc(owner.username)}</small>
         </button>
         ${own ? `<button class="note-edit" data-action="open-note-composer" aria-label="Edit your note">${icon('plus')}</button>` : ''}
-        ${hasAudio ? `<button class="note-audio-toggle" data-action="play-note" data-note-id="${esc(note.id)}" aria-label="Play ${esc(title)}" aria-pressed="false"><span class="note-play-state">${icon('play')}</span></button>` : ''}
+        ${hasAudio ? `<button class="note-audio-toggle" data-action="play-note" data-note-audio data-note-id="${esc(note.id)}" aria-label="${isPlaying ? 'Pause' : 'Play'} ${esc(title)}" aria-busy="${playbackStatus === 'loading'}" aria-pressed="${isPlaying}"><span class="note-play-state">${playbackStatus === 'loading' ? '<i></i><i></i><i></i>' : icon(isPlaying ? 'pause' : 'play')}</span></button>` : ''}
         ${note.likeCount ? `<span class="note-like-badge">${icon('heart')} ${Number(note.likeCount)}</span>` : ''}
-        ${hasAudio ? `<audio id="note-audio-${esc(note.id)}" src="${esc(note.audio.url)}" preload="metadata" data-note-audio data-start="${Number(note.audioStart || note.music?.start || 0)}" data-duration="${Number(note.audioDuration || note.music?.clipDuration || 0)}"></audio>` : ''}
       </article>
     `;
   }
@@ -3545,7 +3563,6 @@
   }
 
   function renderSearchBrowsePanel() {
-    const recommendations = visibleRecommendations();
     const query = state.userQuery.trim();
     return `
       <section class="search-page">
@@ -3562,17 +3579,6 @@
           <section class="search-explore-section">
             <div class="section-heading"><h2>Explore</h2><small>Popular right now</small></div>
             ${renderExploreGrid()}
-          </section>
-          <section class="search-discover">
-            <div class="section-heading">
-              <h2>Suggested for you</h2>
-              <small>People you may know</small>
-            </div>
-            <div class="suggested-user-list">
-              ${recommendations.length
-                ? recommendations.map((user) => renderAccountRow(user, { dismissible: true })).join('')
-                : `<div class="search-empty">${icon('profile')}<strong>No suggestions yet</strong><small>Try searching for a username.</small></div>`}
-            </div>
           </section>
         `}
       </section>
@@ -7075,7 +7081,7 @@
           <div class="note-reply-preview">${avatarHtml(owner)}<span><strong>${esc(owner.username)}</strong><p>${esc(note.text || note.audioTitle || 'Shared a note')}</p>${note.audioTitle ? `<small>${icon('music')} ${esc(note.audioTitle)}${note.audioArtist ? ` · ${esc(note.audioArtist)}` : ''}</small>` : ''}</span></div>
           <div class="note-reply-actions">
             <button class="${note.likedByMe ? 'active' : ''}" data-action="toggle-note-like" data-note-id="${esc(note.id)}" aria-label="${note.likedByMe ? 'Unlike' : 'Like'} note" aria-pressed="${note.likedByMe ? 'true' : 'false'}">${icon('heart')}<span>${note.likeCount ? Number(note.likeCount) : ''}</span></button>
-            ${note.audio?.url ? `<button data-action="play-note" data-note-id="${esc(note.id)}">${icon('play')}<span>Play music</span></button>` : ''}
+            ${note.audio?.url ? `<button data-action="play-note" data-note-id="${esc(note.id)}" aria-pressed="${state.notePlayback.noteId === note.id && state.notePlayback.status === 'playing'}">${icon(state.notePlayback.noteId === note.id && state.notePlayback.status === 'playing' ? 'pause' : 'play')}<span>${state.notePlayback.noteId === note.id && state.notePlayback.status === 'playing' ? 'Pause music' : 'Play music'}</span></button>` : ''}
           </div>
           <div class="note-reply-composer"><input id="note-reply-input" maxlength="1000" value="${esc(sheet.replyDraft || '')}" placeholder="Send a message…" autocomplete="off" enterkeyhint="send"><button data-action="send-note-reply" data-note-id="${esc(note.id)}" ${String(sheet.replyDraft || '').trim() ? '' : 'disabled'}>Send</button></div>
         </section>
@@ -7760,33 +7766,140 @@
     `;
   }
 
+  function createUploadJob(type, label, controller = null) {
+    const job = {
+      id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      type,
+      label,
+      status: 'uploading',
+      progress: 0,
+      detail: 'Preparing upload',
+      controller
+    };
+    state.uploads.push(job);
+    updateUploadDock();
+    return job;
+  }
+
+  function updateUploadJob(job, patch = {}) {
+    if (!job || !state.uploads.includes(job)) return;
+    Object.assign(job, patch);
+    updateUploadDock();
+  }
+
+  function removeUploadJob(jobId, delay = 0) {
+    const remove = () => {
+      state.uploads = state.uploads.filter((job) => job.id !== jobId);
+      updateUploadDock();
+    };
+    if (delay) setTimeout(remove, delay);
+    else remove();
+  }
+
+  function renderUploadDock() {
+    const jobs = state.uploads.slice(-3).reverse();
+    if (!jobs.length) return '';
+    return `
+      <aside class="upload-dock" aria-label="Uploads" aria-live="polite">
+        ${jobs.map((job) => {
+          const progress = clamp(Math.round(Number(job.progress || 0) * 100), 0, 100);
+          const active = ['uploading', 'processing'].includes(job.status);
+          return `
+            <article class="upload-job ${esc(job.status)}" data-upload-id="${esc(job.id)}">
+              <span class="upload-job-symbol">${job.status === 'complete' ? icon('check') : job.status === 'error' ? icon('x') : icon(job.type === 'story' ? 'story' : 'plus')}</span>
+              <span class="upload-job-copy"><strong>${esc(job.label)}</strong><small>${esc(job.detail || (active ? 'Uploading' : job.status))}</small></span>
+              ${active
+                ? `<button data-action="cancel-upload" data-upload-id="${esc(job.id)}" aria-label="Cancel ${esc(job.label)}">${icon('x')}</button>`
+                : `<button data-action="dismiss-upload" data-upload-id="${esc(job.id)}" aria-label="Dismiss ${esc(job.label)}">${icon('x')}</button>`}
+              <span class="upload-job-progress" style="--upload-progress:${progress}%" aria-hidden="true"></span>
+            </article>
+          `;
+        }).join('')}
+      </aside>
+    `;
+  }
+
+  function updateUploadDock() {
+    updateSlot('upload-dock-slot', renderUploadDock());
+    requestAnimationFrame(positionUploadDock);
+  }
+
+  function callDurationLabel(startedAt = state.call.startedAt) {
+    if (!startedAt) return '00:00';
+    const seconds = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const rest = seconds % 60;
+    return hours
+      ? `${hours}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
+      : `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+  }
+
+  function syncCallDuration() {
+    document.querySelectorAll('[data-call-duration]').forEach((node) => { node.textContent = callDurationLabel(); });
+  }
+
+  function syncCallDurationTimer() {
+    clearInterval(callDurationTimer);
+    callDurationTimer = null;
+    if (!state.call.active) return;
+    syncCallDuration();
+    callDurationTimer = setInterval(syncCallDuration, 1000);
+  }
+
   function renderCallDock() {
     const call = state.call;
     if (!call.active && !call.incoming) return '';
     const peer = userById(call.peerId || call.incoming?.from);
+    const peerName = peer?.displayName || peer?.username || 'Someone';
+    const dockStyle = call.position
+      ? `left:${Math.round(call.position.x)}px;top:${Math.round(call.position.y)}px;right:auto;bottom:auto;`
+      : '';
+    const peerAvatar = peer?.avatar?.url
+      ? `<img src="${esc(peer.avatar.url)}" alt="">`
+      : `<span>${esc(initials(peer || { username: peerName }))}</span>`;
     if (call.incoming) {
       return `
-        <section class="call-dock">
-          <h3>Incoming ${call.incoming.video ? 'video' : 'voice'} call</h3>
-          <p class="hint">${esc(peer?.displayName || 'Someone')} is calling.</p>
-          <div class="toolbar">
-            <button class="primary" data-action="accept-call">Accept</button>
-            <button class="danger" data-action="reject-call">Reject</button>
+        <section class="call-dock incoming" data-call-dock style="${esc(dockStyle)}" aria-label="Incoming call from ${esc(peerName)}">
+          <div class="call-drag-head" data-call-drag-handle>
+            <span class="call-peer-avatar">${peerAvatar}</span>
+            <span class="call-dock-copy"><strong>${esc(peerName)}</strong><small>Incoming ${call.incoming.video ? 'video' : 'voice'} call</small></span>
+            <span class="call-drag-grip" aria-hidden="true"></span>
+          </div>
+          <div class="call-incoming-actions">
+            <button class="call-control reject" data-action="reject-call" aria-label="Decline call">${icon('x')}<small>Decline</small></button>
+            <button class="call-control accept" data-action="accept-call" aria-label="Accept call">${icon(call.incoming.video ? 'video' : 'phone')}<small>Accept</small></button>
           </div>
         </section>
       `;
     }
     return `
-      <section class="call-dock">
-        <h3>${esc(call.status || 'Call')}</h3>
-        <p class="hint">${esc(peer?.displayName || 'Connected user')}</p>
-        <div class="call-videos">
-          <video id="remote-video" autoplay playsinline></video>
-          <video id="local-video" autoplay muted playsinline></video>
-        </div>
-        <div class="toolbar">
-          <button class="danger" data-action="hangup-call">Hang up</button>
-        </div>
+      <section class="call-dock active-call ${call.video ? 'video-call' : 'voice-call'} ${call.minimized ? 'minimized' : ''}" data-call-dock style="${esc(dockStyle)}" aria-label="Call with ${esc(peerName)}">
+        ${call.minimized ? `
+          <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
+          <button class="call-mini-main" data-action="toggle-call-minimized" aria-label="Expand call with ${esc(peerName)}">
+            <span class="call-peer-avatar">${peerAvatar}</span>
+            <span><strong>${esc(peerName)}</strong><small data-call-duration>${esc(callDurationLabel(call.startedAt))}</small></span>
+          </button>
+          <button class="call-mini-hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}</button>
+        ` : `
+          <div class="call-stage">
+            <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
+            <div class="call-voice-backdrop"><span class="call-peer-avatar large">${peerAvatar}</span><i></i><i></i></div>
+            <div class="call-stage-shade"></div>
+            <div class="call-drag-head" data-call-drag-handle>
+              <span class="call-dock-copy"><strong>${esc(peerName)}</strong><small>${esc(call.status || 'Call')} · <span data-call-duration>${esc(callDurationLabel(call.startedAt))}</span></small></span>
+              <span class="call-drag-grip" aria-hidden="true"></span>
+              <button class="call-minimize" data-action="toggle-call-minimized" aria-label="Minimize call">${icon('chevron')}</button>
+            </div>
+            ${call.video ? `<video id="local-video" class="call-local-media ${call.cameraOff ? 'camera-off' : ''}" autoplay muted playsinline></video>` : ''}
+          </div>
+          <div class="call-controls">
+            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'mute' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
+            ${call.video ? `<button class="call-control ${call.cameraOff ? 'off' : ''}" data-action="toggle-call-camera" aria-label="${call.cameraOff ? 'Turn camera on' : 'Turn camera off'}" aria-pressed="${call.cameraOff}">${icon('video')}<small>Camera</small></button>` : ''}
+            <button class="call-control hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}<small>End</small></button>
+          </div>
+        `}
       </section>
     `;
   }
@@ -7826,6 +7939,7 @@
   async function loadNotes(options = {}) {
     const data = await api('/api/notes');
     state.notes = data.notes || [];
+    if (state.notePlayback.noteId && !state.notes.some((note) => note.id === state.notePlayback.noteId)) stopNotePlayback({ clear: true });
     if (options.render && ['chats', 'profile'].includes(state.tab)) updateSidebar();
   }
 
@@ -7936,9 +8050,9 @@
   const POST_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
   const POST_VIDEO_MAX_BYTES = 128 * 1024 * 1024;
 
-  function releasePostComposerMedia(composer) {
+  function releasePostComposerMedia(composer, options = {}) {
     if (!composer) return;
-    composer.uploadController?.abort();
+    if (options.abort !== false) composer.uploadController?.abort();
     unloadPostComposerVideos();
     const urls = new Set([
       composer.previewUrl,
@@ -8265,21 +8379,32 @@
     };
     const controller = new AbortController();
     composer.uploadController = controller;
-    setPostPublishing(true);
+    const job = createUploadJob('post', publishItems.length > 1 ? `Sharing ${publishItems.length} items` : 'Sharing post', controller);
+    state.postPublishing = true;
+    state.postComposer = null;
+    if (state.musicPicker?.context === 'post') state.musicPicker = null;
+    state.postCropDrag = null;
+    state.postCropGesture = null;
+    postCropPointers.clear();
+    releasePostComposerMedia(composer, { abort: false });
+    state.postPublishing = false;
     updatePostComposerSlot();
     let pendingFileId = '';
     const pendingFileIds = [];
     try {
       for (let index = 0; index < publishItems.length; index += 1) {
         const item = publishItems[index];
-        const button = document.querySelector('#post-composer-slot [data-action="publish-post"]');
-        if (button) button.textContent = `Uploading ${index + 1}/${publishItems.length}`;
+        updateUploadJob(job, {
+          status: 'uploading',
+          progress: (index / publishItems.length) * .82,
+          detail: `Uploading item ${index + 1} of ${publishItems.length}`
+        });
         const uploaded = await uploadPostMedia(item.file, item.type, controller.signal);
         pendingFileId = uploaded.file?.id || uploaded.fileId || '';
         if (!pendingFileId) throw new Error('A media upload did not return a file ID.');
         pendingFileIds.push(pendingFileId);
-        if (state.postComposer !== composer) throw new DOMException('Post upload cancelled.', 'AbortError');
       }
+      updateUploadJob(job, { status: 'processing', progress: .9, detail: 'Finishing your post' });
       const data = await api('/api/posts', {
         method: 'POST',
         signal: controller.signal,
@@ -8311,23 +8436,21 @@
       pendingFileId = '';
       pendingFileIds.length = 0;
       if (data.user) state.me = data.user;
-      state.postComposer = null;
-      state.postPublishing = false;
-      releasePostComposerMedia(composer);
-      updatePostComposerSlot();
       await Promise.all([loadFeed(state.feedMode, { render: false }), loadExplore(), loadClips(), loadProfilePosts(state.me, 'posts', { render: false })]);
       state.profileMediaTab = 'posts';
-      state.tab = 'home';
       updateSidebar();
+      updateUploadJob(job, { status: 'complete', progress: 1, detail: 'Shared' });
+      removeUploadJob(job.id, 3200);
       pushToast({ key: `post-${data.post?.id || Date.now()}`, kind: 'social', title: 'Post shared', body: 'Your photo or video is now live.' });
     } catch (error) {
       await Promise.all(Array.from(new Set([...pendingFileIds, pendingFileId].filter(Boolean))).map(discardPendingPostMedia));
-      if (state.postComposer === composer) {
-        setPostPublishing(false);
-        updatePostComposerSlot();
+      if (error?.name === 'AbortError') {
+        updateUploadJob(job, { status: 'cancelled', detail: 'Upload cancelled' });
+        removeUploadJob(job.id, 1600);
+      } else {
+        updateUploadJob(job, { status: 'error', detail: error.message || 'Upload failed' });
+        pushToast({ key: `post-upload-error-${job.id}`, kind: 'social', title: 'Post not shared', body: error.message || 'The upload failed. Please try again.' });
       }
-      if (error?.name === 'AbortError') return;
-      throw error;
     } finally {
       composer.uploadController = null;
     }
@@ -8895,59 +9018,100 @@
     pushToast({ key: `note-reply-${noteId}-${Date.now()}`, kind: 'social', title: 'Reply sent', body: `Your reply was sent privately to @${owner.username}.` });
   }
 
-  function syncNotePlayerUi(audio, status = audio?.paused ? 'paused' : 'playing') {
-    const card = audio?.closest('[data-note-card]');
-    const button = card?.querySelector('.note-audio-toggle');
-    const marker = card?.querySelector('.note-play-state');
-    card?.classList.toggle('is-loading', status === 'loading');
-    card?.classList.toggle('is-playing', status === 'playing');
-    if (button) {
-      button.setAttribute('aria-busy', status === 'loading' ? 'true' : 'false');
-      button.setAttribute('aria-pressed', status === 'playing' ? 'true' : 'false');
+  function syncNotePlayerUi(noteId, status = 'paused') {
+    state.notePlayback = { noteId: noteId || null, status };
+    document.querySelectorAll('[data-note-card]').forEach((card) => {
+      const selected = card.dataset.noteCard === String(noteId || '');
+      card.classList.toggle('is-loading', selected && status === 'loading');
+      card.classList.toggle('is-playing', selected && status === 'playing');
+    });
+    document.querySelectorAll('[data-action="play-note"]').forEach((button) => {
+      const selected = button.dataset.noteId === String(noteId || '');
+      const playing = selected && status === 'playing';
+      const loading = selected && status === 'loading';
+      button.setAttribute('aria-busy', loading ? 'true' : 'false');
+      button.setAttribute('aria-pressed', playing ? 'true' : 'false');
+      const marker = button.querySelector('.note-play-state');
+      if (marker) marker.innerHTML = loading ? '<i></i><i></i><i></i>' : icon(playing ? 'pause' : 'play');
+      else if (button.closest('.note-reply-actions')) button.innerHTML = `${icon(playing ? 'pause' : 'play')}<span>${playing ? 'Pause music' : 'Play music'}</span>`;
+    });
+  }
+
+  function stopNotePlayback(options = {}) {
+    clearTimeout(notePlaybackLoadTimer);
+    notePlaybackLoadTimer = null;
+    noteAudioPlayer.pause();
+    if (options.reset !== false && Number.isFinite(notePlaybackStart)) {
+      try { noteAudioPlayer.currentTime = notePlaybackStart; } catch {}
     }
-    if (marker) marker.innerHTML = status === 'loading' ? '<i></i><i></i><i></i>' : icon(status === 'playing' ? 'pause' : 'play');
+    syncNotePlayerUi(options.clear ? null : state.notePlayback.noteId, 'paused');
   }
 
   function playNote(noteId) {
-    const selected = document.getElementById(`note-audio-${noteId}`);
-    if (!selected) return;
-    const wasPlaying = !selected.paused;
-    document.querySelectorAll('.note-rail audio[data-note-audio]').forEach((audio) => {
-      if (audio !== selected) audio.pause();
-      syncNotePlayerUi(audio, 'paused');
-    });
-    if (wasPlaying) {
-      selected.pause();
-      syncNotePlayerUi(selected, 'paused');
+    const note = state.notes.find((item) => item.id === noteId);
+    const audioUrl = note?.audio?.url;
+    if (!audioUrl) {
+      pushToast({ key: `note-audio-missing-${noteId}`, kind: 'social', title: 'Music unavailable', body: 'This Note no longer has a playable preview.' });
       return;
     }
-    syncNotePlayerUi(selected, 'loading');
-    const begin = () => {
-      const available = Number.isFinite(selected.duration) && selected.duration > 0 ? selected.duration : Infinity;
-      const requestedStart = Math.max(0, Number(selected.dataset.start || 0));
-      const start = Math.min(requestedStart, Math.max(0, available - 0.25));
-      const requestedDuration = Math.max(0, Number(selected.dataset.duration || 0));
-      const end = requestedDuration ? Math.min(available, start + requestedDuration) : available;
+    const sameNote = state.notePlayback.noteId === noteId;
+    if (sameNote && !noteAudioPlayer.paused) {
+      stopNotePlayback({ reset: false });
+      return;
+    }
+
+    if (!sameNote) noteAudioPlayer.pause();
+
+    stopMusicCatalogPreview();
+    stopSearchAudioPreview();
+    document.querySelectorAll('audio').forEach((audio) => audio.pause?.());
+    document.querySelectorAll('.clip-video, .clip-music').forEach((media) => media.pause?.());
+    clearTimeout(notePlaybackLoadTimer);
+    const requestedStart = Math.max(0, Number(note.audioStart || note.music?.start || 0));
+    const requestedDuration = Math.max(1, Number(note.audioDuration || note.music?.clipDuration || 30));
+    notePlaybackStart = requestedStart;
+    notePlaybackEnd = requestedStart + requestedDuration;
+
+    const configureClip = () => {
+      const available = Number.isFinite(noteAudioPlayer.duration) && noteAudioPlayer.duration > 0 ? noteAudioPlayer.duration : requestedStart + requestedDuration;
+      notePlaybackStart = Math.min(requestedStart, Math.max(0, available - .2));
+      notePlaybackEnd = Math.min(available, notePlaybackStart + requestedDuration);
       try {
-        if (!Number.isFinite(selected.currentTime) || selected.currentTime < start || selected.currentTime >= end) selected.currentTime = start;
+        if (noteAudioPlayer.currentTime < notePlaybackStart || noteAudioPlayer.currentTime >= notePlaybackEnd) noteAudioPlayer.currentTime = notePlaybackStart;
       } catch {}
-      selected.ontimeupdate = () => {
-        if (selected.currentTime >= end) {
-          selected.pause();
-          try { selected.currentTime = start; } catch {}
-          syncNotePlayerUi(selected, 'paused');
-        }
-      };
-      selected.onplay = () => syncNotePlayerUi(selected, 'playing');
-      selected.onpause = () => { if (selected.currentTime < end) syncNotePlayerUi(selected, 'paused'); };
-      selected.onerror = () => {
-        syncNotePlayerUi(selected, 'paused');
-        pushToast({ key: `note-audio-${noteId}`, kind: 'social', title: 'Music unavailable', body: 'This preview could not be played. Try again in a moment.' });
-      };
-      selected.play().catch(() => selected.onerror?.());
     };
-    if (selected.readyState >= 1) begin();
-    else selected.addEventListener('loadedmetadata', begin, { once: true });
+
+    noteAudioPlayer.onloadedmetadata = configureClip;
+    noteAudioPlayer.ontimeupdate = () => {
+      if (noteAudioPlayer.currentTime + .04 >= notePlaybackEnd) stopNotePlayback();
+    };
+    noteAudioPlayer.onended = () => stopNotePlayback();
+    noteAudioPlayer.onplay = () => syncNotePlayerUi(noteId, 'playing');
+    noteAudioPlayer.onpause = () => {
+      if (state.notePlayback.noteId === noteId && state.notePlayback.status !== 'loading') syncNotePlayerUi(noteId, 'paused');
+    };
+    noteAudioPlayer.onerror = () => {
+      clearTimeout(notePlaybackLoadTimer);
+      syncNotePlayerUi(noteId, 'paused');
+      pushToast({ key: `note-audio-${noteId}`, kind: 'social', title: 'Music unavailable', body: 'This preview could not be played. Try again in a moment.' });
+    };
+
+    if (!sameNote || !noteAudioPlayer.currentSrc) {
+      noteAudioPlayer.src = audioUrl;
+      noteAudioPlayer.load();
+    } else if (noteAudioPlayer.readyState >= 1) configureClip();
+    syncNotePlayerUi(noteId, noteAudioPlayer.readyState >= 2 ? 'playing' : 'loading');
+    // Calling play inside the tap handler keeps mobile Safari's media gesture
+    // permission. Waiting for metadata first makes an otherwise valid Note fail.
+    noteAudioPlayer.play().then(() => {
+      configureClip();
+      syncNotePlayerUi(noteId, 'playing');
+    }).catch((error) => {
+      if (error?.name !== 'AbortError') noteAudioPlayer.onerror?.();
+    });
+    notePlaybackLoadTimer = setTimeout(() => {
+      if (state.notePlayback.noteId === noteId && state.notePlayback.status === 'loading') noteAudioPlayer.onerror?.();
+    }, 9000);
   }
 
   function toggleNoteComposerMusicPreview(button) {
@@ -8963,7 +9127,7 @@
       setButton(false);
       return;
     }
-    const begin = () => {
+    const configureClip = () => {
       const available = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 30;
       const start = Math.min(Math.max(0, Number(audio.dataset.start || 0)), Math.max(0, available - 0.25));
       const end = Math.min(available, start + Math.max(1, Number(audio.dataset.duration || 30)));
@@ -8976,10 +9140,13 @@
         }
       };
       audio.onended = () => setButton(false);
-      audio.play().then(() => setButton(true)).catch(() => setButton(false));
     };
-    if (audio.readyState >= 1) begin();
-    else audio.addEventListener('loadedmetadata', begin, { once: true });
+    audio.addEventListener('loadedmetadata', configureClip, { once: true });
+    if (audio.readyState >= 1) configureClip();
+    audio.play().then(() => {
+      configureClip();
+      setButton(true);
+    }).catch(() => setButton(false));
   }
 
   async function loadContactsAndChats() {
@@ -10765,45 +10932,62 @@
     const highlightId = options.highlightId || null;
     const highlightTitle = String(options.highlightTitle || '').trim();
     const publishToHighlight = Boolean(highlightId || highlightTitle);
+    const payload = {
+      file: {
+        name: editor.name,
+        type: editor.type,
+        dataUrl: editor.dataUrl,
+        lastModified: editor.lastModified ? new Date(editor.lastModified).toISOString() : null
+      },
+      edits: storyEditPayload(editor),
+      audio: editor.audio ? {
+        name: editor.audio.name,
+        type: editor.audio.type,
+        dataUrl: editor.audio.dataUrl,
+        lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
+      } : null,
+      saved: publishToHighlight,
+      highlightId,
+      highlightTitle
+    };
+    const controller = new AbortController();
+    const job = createUploadJob('story', publishToHighlight ? 'Adding to highlight' : 'Sharing story', controller);
     state.storyPublishing = true;
+    state.storyEditor = null;
+    state.highlightComposer = null;
+    state.storyVideoTrimDrag = null;
+    storyTextPointers.clear();
+    storyMediaPointers.clear();
+    storyStickerPointers.clear();
+    state.storyPublishing = false;
     updateStoryEditorView();
+    updateHighlightComposerSlot();
     try {
+      updateUploadJob(job, { progress: .18, detail: 'Uploading story' });
       const data = await api('/api/me/story', {
         method: 'POST',
-        body: {
-          file: {
-            name: editor.name,
-            type: editor.type,
-            dataUrl: editor.dataUrl,
-            lastModified: editor.lastModified ? new Date(editor.lastModified).toISOString() : null
-          },
-          edits: storyEditPayload(editor),
-          audio: editor.audio ? {
-            name: editor.audio.name,
-            type: editor.audio.type,
-            dataUrl: editor.audio.dataUrl,
-            lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
-          } : null,
-          saved: publishToHighlight,
-          highlightId,
-          highlightTitle
-        }
+        signal: controller.signal,
+        body: payload
       });
+      updateUploadJob(job, { status: 'processing', progress: .9, detail: 'Finishing story' });
       state.me = data.user;
-      state.storyEditor = null;
-      state.highlightComposer = null;
-      updateStoryEditorView();
-      updateHighlightComposerSlot();
       updateSidebar();
+      updateUploadJob(job, { status: 'complete', progress: 1, detail: publishToHighlight ? 'Added to highlight' : 'Shared' });
+      removeUploadJob(job.id, 3200);
       pushToast({
         key: `story-published-${data.story.id}`,
         kind: 'social',
         title: publishToHighlight ? 'Added to highlight' : 'Story shared',
         body: publishToHighlight ? 'The story was added to your highlight.' : 'Your story is live for 24 hours.'
       });
-    } finally {
-      state.storyPublishing = false;
-      if (state.storyEditor === editor) updateStoryEditorView();
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        updateUploadJob(job, { status: 'cancelled', detail: 'Upload cancelled' });
+        removeUploadJob(job.id, 1600);
+      } else {
+        updateUploadJob(job, { status: 'error', detail: error.message || 'Upload failed' });
+        pushToast({ key: `story-upload-error-${job.id}`, kind: 'social', title: 'Story not shared', body: error.message || 'The upload failed. Please try again.' });
+      }
     }
   }
 
@@ -11837,6 +12021,7 @@
   function updateToastSlot() {
     const slot = document.getElementById('toast-slot');
     if (slot) slot.innerHTML = renderToastStack();
+    requestAnimationFrame(positionUploadDock);
   }
 
   function dismissToast(toastId) {
@@ -12359,13 +12544,26 @@
     };
     pc.ontrack = (event) => {
       if (!state.call.remoteStream) state.call.remoteStream = new MediaStream();
-      event.streams[0].getTracks().forEach((track) => state.call.remoteStream.addTrack(track));
+      const incomingTracks = event.streams[0]?.getTracks?.() || [event.track];
+      incomingTracks.filter(Boolean).forEach((track) => {
+        if (!state.call.remoteStream.getTracks().some((item) => item.id === track.id)) state.call.remoteStream.addTrack(track);
+      });
       state.call.status = 'Connected';
+      state.call.startedAt ||= Date.now();
       updateCallDock();
     };
     pc.onconnectionstatechange = () => {
-      state.call.status = pc.connectionState === 'connected' ? 'Connected' : `Call ${pc.connectionState}`;
+      if (state.call.pc !== pc) return;
+      if (pc.connectionState === 'connected') {
+        state.call.status = 'Connected';
+        state.call.startedAt ||= Date.now();
+      } else if (pc.connectionState === 'connecting') state.call.status = 'Connecting…';
+      else if (pc.connectionState === 'disconnected') state.call.status = 'Reconnecting…';
+      else if (pc.connectionState === 'failed') state.call.status = 'Connection lost';
       updateCallDock();
+      if (pc.connectionState === 'failed') setTimeout(() => {
+        if (state.call.pc === pc && pc.connectionState === 'failed') endCall(false);
+      }, 1800);
     };
     return pc;
   }
@@ -12391,6 +12589,10 @@
   async function handleSignal(from, payload) {
     if (!payload) return;
     if (payload.kind === 'offer') {
+      if (state.call.active || state.call.incoming) {
+        sendSignal(from, { kind: 'reject', reason: 'busy' });
+        return;
+      }
       state.call = { ...freshCallState(), incoming: { from, offer: payload.offer, video: Boolean(payload.video) } };
       updateCallDock();
       return;
@@ -12409,9 +12611,13 @@
       }
       return;
     }
+    if (payload.kind === 'candidate' && state.call.incoming?.from === from) {
+      state.call.pendingCandidates.push(payload.candidate);
+      return;
+    }
     if (payload.kind === 'reject') {
       await endCall(false);
-      alert('Call rejected.');
+      pushToast({ key: `call-rejected-${Date.now()}`, kind: 'social', title: payload.reason === 'busy' ? 'They’re already on a call' : 'Call declined', body: payload.reason === 'busy' ? 'Try calling again later.' : 'The call was not answered.' });
       return;
     }
     if (payload.kind === 'hangup') {
@@ -12422,6 +12628,8 @@
   async function acceptCall() {
     const incoming = state.call.incoming;
     if (!incoming) return;
+    const pendingCandidates = [...state.call.pendingCandidates];
+    const position = state.call.position;
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.video });
     const pc = createPeerConnection(incoming.from);
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
@@ -12432,10 +12640,12 @@
       localStream,
       active: true,
       video: incoming.video,
-      status: 'Connecting...'
+      status: 'Connecting…',
+      position
     };
     updateCallDock();
     await pc.setRemoteDescription(incoming.offer);
+    await Promise.all(pendingCandidates.map((candidate) => pc.addIceCandidate(candidate).catch(() => {})));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     sendSignal(incoming.from, { kind: 'answer', answer });
@@ -12453,8 +12663,74 @@
     if (state.call.pc) state.call.pc.close();
     if (state.call.localStream) state.call.localStream.getTracks().forEach((track) => track.stop());
     if (state.call.remoteStream) state.call.remoteStream.getTracks().forEach((track) => track.stop());
+    clearInterval(callDurationTimer);
+    callDurationTimer = null;
+    state.callDockDrag = null;
     state.call = freshCallState();
     updateCallDock();
+  }
+
+  function toggleCallMute() {
+    if (!state.call.active) return;
+    state.call.muted = !state.call.muted;
+    state.call.localStream?.getAudioTracks?.().forEach((track) => { track.enabled = !state.call.muted; });
+    updateCallDock();
+  }
+
+  function toggleCallCamera() {
+    if (!state.call.active || !state.call.video) return;
+    state.call.cameraOff = !state.call.cameraOff;
+    state.call.localStream?.getVideoTracks?.().forEach((track) => { track.enabled = !state.call.cameraOff; });
+    updateCallDock();
+  }
+
+  function toggleCallMinimized() {
+    if (!state.call.active) return;
+    state.call.minimized = !state.call.minimized;
+    updateCallDock();
+    requestAnimationFrame(clampCallDockToViewport);
+  }
+
+  function clampCallDockToViewport() {
+    const dock = document.querySelector('[data-call-dock]');
+    if (!dock || !state.call.position) return;
+    const bottomClearance = isMobileLayout() ? 62 + Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom') || 0) : 12;
+    const maxX = Math.max(8, window.innerWidth - dock.offsetWidth - 8);
+    const maxY = Math.max(8, window.innerHeight - dock.offsetHeight - bottomClearance);
+    state.call.position = { x: clamp(state.call.position.x, 8, maxX), y: clamp(state.call.position.y, 8, maxY) };
+    dock.style.left = `${state.call.position.x}px`;
+    dock.style.top = `${state.call.position.y}px`;
+    dock.style.right = 'auto';
+    dock.style.bottom = 'auto';
+    positionUploadDock();
+  }
+
+  function positionUploadDock() {
+    const upload = document.querySelector('.upload-dock');
+    if (!upload) return;
+    ['top', 'right', 'bottom', 'left', 'width', 'transform'].forEach((property) => upload.style.removeProperty(property));
+    const call = document.querySelector('[data-call-dock]');
+    if (!call || !isMobileLayout()) return;
+    const callRect = call.getBoundingClientRect();
+    const toastRect = document.querySelector('.toast-stack')?.getBoundingClientRect();
+    const safeTop = Math.max(10, (toastRect?.bottom || 4) + 8);
+    const uploadHeight = upload.offsetHeight;
+    if (callRect.top - safeTop >= uploadHeight + 8) {
+      upload.style.top = `${Math.round(callRect.top - uploadHeight - 8)}px`;
+      upload.style.bottom = 'auto';
+      return;
+    }
+    const leftRoom = callRect.left - 16;
+    const rightRoom = window.innerWidth - callRect.right - 16;
+    const room = Math.max(leftRoom, rightRoom);
+    if (room >= 220) {
+      upload.style.width = `${Math.min(360, room)}px`;
+      upload.style.left = leftRoom >= rightRoom ? '8px' : 'auto';
+      upload.style.right = rightRoom > leftRoom ? '8px' : 'auto';
+      upload.style.transform = 'none';
+    }
+    upload.style.top = `${Math.round(safeTop)}px`;
+    upload.style.bottom = 'auto';
   }
 
   function updateCallDock() {
@@ -12462,6 +12738,8 @@
     if (slot) {
       slot.innerHTML = renderCallDock();
       attachCallStreams();
+      syncCallDurationTimer();
+      requestAnimationFrame(() => { clampCallDockToViewport(); positionUploadDock(); });
     }
   }
 
@@ -12470,9 +12748,11 @@
     const remote = document.getElementById('remote-video');
     if (local && state.call.localStream && local.srcObject !== state.call.localStream) {
       local.srcObject = state.call.localStream;
+      local.play?.().catch(() => {});
     }
     if (remote && state.call.remoteStream && remote.srcObject !== state.call.remoteStream) {
       remote.srcObject = state.call.remoteStream;
+      remote.play?.().catch(() => {});
     }
   }
 
@@ -13076,7 +13356,10 @@
       }
       if (action === 'logout') {
         await api('/api/auth/logout', { method: 'POST' });
+        stopNotePlayback({ clear: true });
         if (state.postComposer) closePostComposer();
+        state.uploads.forEach((job) => job.controller?.abort?.());
+        state.uploads = [];
         closeCameraCapture({ immediate: true });
         if (state.ws) state.ws.close();
         toastTimers.forEach((timer) => clearTimeout(timer));
@@ -14485,6 +14768,16 @@
       if (action === 'dismiss-toast') {
         dismissToast(target.dataset.toastId);
       }
+      if (action === 'cancel-upload') {
+        const job = state.uploads.find((item) => item.id === target.dataset.uploadId);
+        if (job && ['uploading', 'processing'].includes(job.status)) {
+          job.controller?.abort?.();
+          updateUploadJob(job, { status: 'cancelled', detail: 'Cancelling upload' });
+        }
+      }
+      if (action === 'dismiss-upload') {
+        removeUploadJob(target.dataset.uploadId);
+      }
       if (action === 'open-toast') {
         const toast = state.toasts.find((item) => item.id === target.dataset.toastId);
         if (toast) {
@@ -14642,6 +14935,15 @@
       }
       if (action === 'hangup-call') {
         await endCall(true);
+      }
+      if (action === 'toggle-call-mute') {
+        toggleCallMute();
+      }
+      if (action === 'toggle-call-camera') {
+        toggleCallCamera();
+      }
+      if (action === 'toggle-call-minimized') {
+        toggleCallMinimized();
       }
     } catch (error) {
       alert(error.message || 'Something went wrong.');
@@ -15386,6 +15688,27 @@
   });
 
   document.addEventListener('pointerdown', async (event) => {
+    const callDragHandle = event.target.closest('[data-call-drag-handle]');
+    if (callDragHandle && !event.target.closest('button')) {
+      const dock = callDragHandle.closest('[data-call-dock]');
+      if (dock) {
+        const rect = dock.getBoundingClientRect();
+        state.call.position = { x: rect.left, y: rect.top };
+        state.callDockDrag = {
+          pointerId: event.pointerId,
+          dock,
+          startX: event.clientX,
+          startY: event.clientY,
+          originX: rect.left,
+          originY: rect.top,
+          moved: false
+        };
+        dock.classList.add('is-dragging');
+        callDragHandle.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+      }
+      return;
+    }
     if (event.target.matches('[data-story-slider]')) {
       clearStoryAdvance();
       state.edgeSwipe = null;
@@ -15779,6 +16102,26 @@
   });
 
   document.addEventListener('pointermove', (event) => {
+    if (state.callDockDrag?.pointerId === event.pointerId) {
+      event.preventDefault();
+      const drag = state.callDockDrag;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      drag.moved ||= Math.hypot(dx, dy) > 3;
+      const bottomClearance = isMobileLayout() ? 62 : 12;
+      const maxX = Math.max(8, window.innerWidth - drag.dock.offsetWidth - 8);
+      const maxY = Math.max(8, window.innerHeight - drag.dock.offsetHeight - bottomClearance);
+      state.call.position = {
+        x: clamp(drag.originX + dx, 8, maxX),
+        y: clamp(drag.originY + dy, 8, maxY)
+      };
+      drag.dock.style.left = `${state.call.position.x}px`;
+      drag.dock.style.top = `${state.call.position.y}px`;
+      drag.dock.style.right = 'auto';
+      drag.dock.style.bottom = 'auto';
+      positionUploadDock();
+      return;
+    }
     if (state.chatRowSwipe?.pointerId === event.pointerId) {
       const swipe = state.chatRowSwipe;
       const dx = event.clientX - swipe.startX;
@@ -16051,6 +16394,17 @@
   });
 
   document.addEventListener('pointerup', (event) => {
+    if (state.callDockDrag?.pointerId === event.pointerId) {
+      const drag = state.callDockDrag;
+      drag.dock.classList.remove('is-dragging');
+      state.callDockDrag = null;
+      if (drag.moved) {
+        state.suppressClickUntil = Date.now() + 100;
+        event.preventDefault();
+      }
+      clampCallDockToViewport();
+      return;
+    }
     if (state.sendPress?.pointerId === event.pointerId) {
       clearTimeout(state.sendPress.timer);
       const opened = state.sendPress.opened;
@@ -16318,6 +16672,11 @@
   });
 
   document.addEventListener('pointercancel', (event) => {
+    if (state.callDockDrag?.pointerId === event.pointerId) {
+      state.callDockDrag.dock?.classList.remove('is-dragging');
+      state.callDockDrag = null;
+      clampCallDockToViewport();
+    }
     clearActiveMessagePress({ pointerId: event.pointerId });
     if (state.sendPress?.pointerId === event.pointerId) {
       clearTimeout(state.sendPress.timer);
@@ -16492,6 +16851,7 @@
 
   window.addEventListener('pagehide', () => {
     if (state.postComposer) closePostComposer();
+    stopNotePlayback({ reset: false });
     stopHomeFeedPlayback();
     stopMusicCatalogPreview();
     stopCameraStream();
@@ -16500,6 +16860,7 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       stopHomeFeedPlayback();
+      stopNotePlayback({ reset: false });
       document.querySelectorAll('.clip-video, .clip-music, #music-picker-audio').forEach((media) => media.pause?.());
       return;
     }
