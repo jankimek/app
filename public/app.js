@@ -238,6 +238,8 @@
     recorder: null,
     recordStream: null,
     recordChunks: [],
+    voiceWaveforms: new Map(),
+    voicePlayback: { messageId: null, status: 'paused', currentTime: 0, duration: 0, url: '', pendingSeekRatio: null },
     drag: null,
     storyTextDrag: null,
     storyTextGesture: null,
@@ -288,8 +290,14 @@
   const noteAudioPlayer = new Audio();
   noteAudioPlayer.preload = 'metadata';
   let notePlaybackStart = 0;
-  let notePlaybackEnd = Infinity;
   let notePlaybackLoadTimer = null;
+  let notePlaybackStopTimer = null;
+  let notePlaybackRemainingMs = Infinity;
+  let notePlaybackRunStartedAt = 0;
+  const voiceAudioPlayer = new Audio();
+  voiceAudioPlayer.preload = 'metadata';
+  const voiceWaveformLoads = new Map();
+  let voiceWaveformObserver = null;
 
   function freshCallState() {
     return {
@@ -371,6 +379,12 @@
       hour: '2-digit',
       minute: '2-digit'
     }).format(new Date(iso));
+  }
+
+  function formatMediaDuration(value) {
+    const seconds = Math.max(0, Math.floor(Number(value) || 0));
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
   }
 
   function localDateTimeInputValue(value) {
@@ -1782,6 +1796,8 @@
       attachHomeFeedPlayback();
       attachHomePullRefresh();
       attachClipPlayback();
+      hydrateVoiceWaveforms();
+      syncVoicePlayerUi();
       state.chatReturnAnimation = false;
       state.chatOpening = false;
     }, 0);
@@ -6362,13 +6378,15 @@
       return `<video class="media-video" src="${esc(attachment.url)}" controls playsinline preload="metadata"></video>${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}`;
     }
     if (message.kind === 'voice' && attachment) {
+      const voiceKey = attachment.id || attachment.url;
       return `
-        <button class="voice-note" data-action="toggle-voice" data-message-id="${esc(message.id)}">
-          <span class="voice-play">${icon('play')}</span>
-          <span class="voice-wave">${Array.from({ length: 18 }, (_, index) => `<i style="--h:${24 + ((index * 17) % 42)}%"></i>`).join('')}</span>
-          <span class="voice-time">Voice</span>
-          <audio src="${esc(attachment.url)}" preload="metadata"></audio>
-        </button>
+        <div class="voice-note" data-message-id="${esc(message.id)}" data-voice-key="${esc(voiceKey)}" data-voice-url="${esc(attachment.url)}" aria-busy="true">
+          <button type="button" class="voice-play" data-action="toggle-voice" data-message-id="${esc(message.id)}" aria-label="Play voice message" aria-pressed="false">${icon('play')}</button>
+          <button type="button" class="voice-wave" data-action="seek-voice" data-message-id="${esc(message.id)}" aria-label="Seek voice message">
+            ${Array.from({ length: 30 }, () => '<i style="--h:18%"></i>').join('')}
+          </button>
+          <span class="voice-time" aria-label="Voice message duration">--:--</span>
+        </div>
         ${message.text ? `<div class="message-text">${esc(message.text)}</div>` : ''}
       `;
     }
@@ -9018,6 +9036,217 @@
     pushToast({ key: `note-reply-${noteId}-${Date.now()}`, kind: 'social', title: 'Reply sent', body: `Your reply was sent privately to @${owner.username}.` });
   }
 
+  function voiceMessageById(messageId) {
+    return state.messages.find((message) => message.id === messageId && message.kind === 'voice') || null;
+  }
+
+  async function decodeVoiceWaveform(arrayBuffer, barCount = 30) {
+    const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const RealtimeContext = window.AudioContext || window.webkitAudioContext;
+    if (!OfflineContext && !RealtimeContext) throw new Error('Audio decoding is not supported.');
+    const context = OfflineContext ? new OfflineContext(1, 1, 44100) : new RealtimeContext();
+    try {
+      const decoded = await context.decodeAudioData(arrayBuffer.slice(0));
+      const length = decoded.length;
+      const peaks = [];
+      for (let bar = 0; bar < barCount; bar += 1) {
+        const start = Math.floor((bar / barCount) * length);
+        const end = Math.max(start + 1, Math.floor(((bar + 1) / barCount) * length));
+        const stride = Math.max(1, Math.floor((end - start) / 320));
+        let sum = 0;
+        let samples = 0;
+        for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+          const data = decoded.getChannelData(channel);
+          for (let index = start; index < end; index += stride) {
+            const sample = data[index] || 0;
+            sum += sample * sample;
+            samples += 1;
+          }
+        }
+        peaks.push(samples ? Math.sqrt(sum / samples) : 0);
+      }
+      const ranked = [...peaks].sort((a, b) => a - b);
+      const normalizer = ranked[Math.max(0, Math.floor(ranked.length * .9) - 1)] || Math.max(...peaks) || 1;
+      return {
+        duration: Number(decoded.duration) || 0,
+        peaks: peaks.map((peak) => Math.max(.14, Math.min(1, Math.sqrt(peak / normalizer))))
+      };
+    } finally {
+      if (!OfflineContext) context.close?.().catch?.(() => {});
+    }
+  }
+
+  function applyVoiceWaveform(key, waveform, failed = false) {
+    document.querySelectorAll('.voice-note[data-voice-key]').forEach((note) => {
+      if (note.dataset.voiceKey !== String(key)) return;
+      note.classList.toggle('waveform-ready', Boolean(waveform));
+      note.classList.toggle('waveform-unavailable', failed);
+      note.setAttribute('aria-busy', 'false');
+      const bars = [...note.querySelectorAll('.voice-wave i')];
+      bars.forEach((bar, index) => {
+        const peak = waveform?.peaks?.[index] ?? .14;
+        bar.style.setProperty('--h', `${Math.round(peak * 100)}%`);
+      });
+      if (waveform?.duration && state.voicePlayback.messageId !== note.dataset.messageId) {
+        const label = note.querySelector('.voice-time');
+        if (label) label.textContent = formatMediaDuration(waveform.duration);
+      }
+    });
+  }
+
+  function loadVoiceWaveform(note) {
+    const key = note.dataset.voiceKey;
+    if (!key || voiceWaveformLoads.has(key) || state.voiceWaveforms.has(key)) return;
+    const load = fetch(note.dataset.voiceUrl, { credentials: 'same-origin' })
+      .then((response) => {
+        if (!response.ok) throw new Error('Voice message could not be loaded.');
+        return response.arrayBuffer();
+      })
+      .then((buffer) => decodeVoiceWaveform(buffer))
+      .then((waveform) => {
+        state.voiceWaveforms.set(key, waveform);
+        applyVoiceWaveform(key, waveform);
+        syncVoicePlayerUi();
+        return waveform;
+      })
+      .catch(() => {
+        applyVoiceWaveform(key, null, true);
+        return null;
+      })
+      .finally(() => voiceWaveformLoads.delete(key));
+    voiceWaveformLoads.set(key, load);
+  }
+
+  function hydrateVoiceWaveforms(root = document) {
+    voiceWaveformObserver?.disconnect();
+    voiceWaveformObserver = null;
+    const notes = [...root.querySelectorAll('.voice-note[data-voice-key][data-voice-url]')];
+    const pending = notes.filter((note) => {
+      const cached = state.voiceWaveforms.get(note.dataset.voiceKey);
+      if (cached) applyVoiceWaveform(note.dataset.voiceKey, cached);
+      return !cached && !voiceWaveformLoads.has(note.dataset.voiceKey);
+    });
+    if (!pending.length) return;
+    if (!('IntersectionObserver' in window)) {
+      pending.forEach(loadVoiceWaveform);
+      return;
+    }
+    const scrollRoot = root.matches?.('.messages') ? root : pending[0].closest('.messages');
+    voiceWaveformObserver = new IntersectionObserver((entries, observer) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        observer.unobserve(entry.target);
+        loadVoiceWaveform(entry.target);
+      });
+    }, { root: scrollRoot || null, rootMargin: '320px 0px' });
+    pending.forEach((note) => voiceWaveformObserver.observe(note));
+  }
+
+  function syncVoicePlayerUi() {
+    document.querySelectorAll('.voice-note[data-message-id]').forEach((note) => {
+      const selected = note.dataset.messageId === String(state.voicePlayback.messageId || '');
+      const playing = selected && state.voicePlayback.status === 'playing';
+      const loading = selected && state.voicePlayback.status === 'loading';
+      const waveform = state.voiceWaveforms.get(note.dataset.voiceKey);
+      const duration = selected && state.voicePlayback.duration > 0 ? state.voicePlayback.duration : Number(waveform?.duration || 0);
+      const currentTime = selected ? Math.min(duration || Infinity, Math.max(0, state.voicePlayback.currentTime || 0)) : 0;
+      const progress = selected && duration > 0 ? Math.min(1, currentTime / duration) : 0;
+      note.classList.toggle('playing', playing);
+      note.classList.toggle('loading', loading);
+      note.style.setProperty('--voice-progress', `${progress * 100}%`);
+      const playButton = note.querySelector('.voice-play');
+      if (playButton) {
+        playButton.innerHTML = loading ? '<i class="voice-loading-dot"></i>' : icon(playing ? 'pause' : 'play');
+        playButton.setAttribute('aria-label', playing ? 'Pause voice message' : 'Play voice message');
+        playButton.setAttribute('aria-pressed', playing ? 'true' : 'false');
+      }
+      const bars = [...note.querySelectorAll('.voice-wave i')];
+      bars.forEach((bar, index) => bar.classList.toggle('played', selected && ((index + .5) / bars.length) <= progress));
+      const label = note.querySelector('.voice-time');
+      if (label) label.textContent = duration > 0
+        ? formatMediaDuration(selected && currentTime > 0 ? currentTime : duration)
+        : '--:--';
+    });
+  }
+
+  function pauseVoicePlayback(options = {}) {
+    voiceAudioPlayer.pause();
+    state.voicePlayback.status = 'paused';
+    state.voicePlayback.currentTime = Number(voiceAudioPlayer.currentTime) || state.voicePlayback.currentTime || 0;
+    if (options.clear) {
+      voiceAudioPlayer.removeAttribute('src');
+      voiceAudioPlayer.load();
+      state.voicePlayback = { messageId: null, status: 'paused', currentTime: 0, duration: 0, url: '', pendingSeekRatio: null };
+    }
+    syncVoicePlayerUi();
+  }
+
+  function playVoiceMessage(messageId, seekRatio = null) {
+    const message = voiceMessageById(messageId);
+    const url = message?.attachment?.url;
+    if (!url) return;
+    const sameMessage = state.voicePlayback.messageId === messageId && state.voicePlayback.url === url;
+    if (sameMessage && seekRatio === null && !voiceAudioPlayer.paused) {
+      pauseVoicePlayback();
+      return;
+    }
+
+    pauseNotePlayback();
+    stopMusicCatalogPreview();
+    stopSearchAudioPreview();
+    document.querySelectorAll('audio').forEach((audio) => audio.pause?.());
+    document.querySelectorAll('.clip-video, .clip-music').forEach((media) => media.pause?.());
+    if (!sameMessage) {
+      voiceAudioPlayer.pause();
+      state.voicePlayback = { messageId, status: 'loading', currentTime: 0, duration: 0, url, pendingSeekRatio: seekRatio };
+      voiceAudioPlayer.src = url;
+      voiceAudioPlayer.load();
+    } else {
+      state.voicePlayback.status = 'loading';
+      if (seekRatio !== null) state.voicePlayback.pendingSeekRatio = seekRatio;
+      if (seekRatio !== null && Number.isFinite(voiceAudioPlayer.duration) && voiceAudioPlayer.duration > 0) {
+        voiceAudioPlayer.currentTime = Math.min(voiceAudioPlayer.duration - .02, Math.max(0, seekRatio * voiceAudioPlayer.duration));
+        state.voicePlayback.pendingSeekRatio = null;
+      }
+    }
+    syncVoicePlayerUi();
+    voiceAudioPlayer.play().catch((error) => {
+      if (error?.name === 'AbortError') return;
+      state.voicePlayback.status = 'paused';
+      syncVoicePlayerUi();
+      pushToast({ key: `voice-audio-${messageId}`, kind: 'social', title: 'Voice message unavailable', body: 'This recording could not be played.' });
+    });
+  }
+
+  voiceAudioPlayer.onloadedmetadata = () => {
+    state.voicePlayback.duration = Number(voiceAudioPlayer.duration) || 0;
+    if (state.voicePlayback.pendingSeekRatio !== null && state.voicePlayback.duration > 0) {
+      voiceAudioPlayer.currentTime = Math.min(state.voicePlayback.duration - .02, Math.max(0, state.voicePlayback.pendingSeekRatio * state.voicePlayback.duration));
+      state.voicePlayback.pendingSeekRatio = null;
+    }
+    syncVoicePlayerUi();
+  };
+  voiceAudioPlayer.ontimeupdate = () => {
+    state.voicePlayback.currentTime = Number(voiceAudioPlayer.currentTime) || 0;
+    syncVoicePlayerUi();
+  };
+  voiceAudioPlayer.onplay = () => {
+    state.voicePlayback.status = 'playing';
+    syncVoicePlayerUi();
+  };
+  voiceAudioPlayer.onpause = () => {
+    if (state.voicePlayback.status === 'loading') return;
+    state.voicePlayback.status = 'paused';
+    state.voicePlayback.currentTime = Number(voiceAudioPlayer.currentTime) || 0;
+    syncVoicePlayerUi();
+  };
+  voiceAudioPlayer.onended = () => {
+    try { voiceAudioPlayer.currentTime = 0; } catch {}
+    state.voicePlayback.status = 'paused';
+    state.voicePlayback.currentTime = 0;
+    syncVoicePlayerUi();
+  };
+
   function syncNotePlayerUi(noteId, status = 'paused') {
     state.notePlayback = { noteId: noteId || null, status };
     document.querySelectorAll('[data-note-card]').forEach((card) => {
@@ -9037,9 +9266,39 @@
     });
   }
 
+  function clearNotePlaybackClock(consume = false) {
+    if (consume && notePlaybackRunStartedAt && Number.isFinite(notePlaybackRemainingMs)) {
+      notePlaybackRemainingMs = Math.max(0, notePlaybackRemainingMs - (performance.now() - notePlaybackRunStartedAt));
+    }
+    notePlaybackRunStartedAt = 0;
+    clearTimeout(notePlaybackStopTimer);
+    notePlaybackStopTimer = null;
+  }
+
+  function armNotePlaybackClock() {
+    clearNotePlaybackClock();
+    if (!Number.isFinite(notePlaybackRemainingMs)) return;
+    if (notePlaybackRemainingMs <= 40) {
+      stopNotePlayback();
+      return;
+    }
+    notePlaybackRunStartedAt = performance.now();
+    notePlaybackStopTimer = setTimeout(() => stopNotePlayback(), notePlaybackRemainingMs);
+  }
+
+  function pauseNotePlayback() {
+    clearTimeout(notePlaybackLoadTimer);
+    notePlaybackLoadTimer = null;
+    clearNotePlaybackClock(true);
+    noteAudioPlayer.pause();
+    syncNotePlayerUi(state.notePlayback.noteId, 'paused');
+  }
+
   function stopNotePlayback(options = {}) {
     clearTimeout(notePlaybackLoadTimer);
     notePlaybackLoadTimer = null;
+    clearNotePlaybackClock();
+    notePlaybackRemainingMs = Infinity;
     noteAudioPlayer.pause();
     if (options.reset !== false && Number.isFinite(notePlaybackStart)) {
       try { noteAudioPlayer.currentTime = notePlaybackStart; } catch {}
@@ -9056,12 +9315,13 @@
     }
     const sameNote = state.notePlayback.noteId === noteId;
     if (sameNote && !noteAudioPlayer.paused) {
-      stopNotePlayback({ reset: false });
+      pauseNotePlayback();
       return;
     }
 
-    if (!sameNote) noteAudioPlayer.pause();
+    if (!sameNote) stopNotePlayback({ reset: false });
 
+    pauseVoicePlayback();
     stopMusicCatalogPreview();
     stopSearchAudioPreview();
     document.querySelectorAll('audio').forEach((audio) => audio.pause?.());
@@ -9069,30 +9329,37 @@
     clearTimeout(notePlaybackLoadTimer);
     const requestedStart = Math.max(0, Number(note.audioStart || note.music?.start || 0));
     const requestedDuration = Math.max(1, Number(note.audioDuration || note.music?.clipDuration || 30));
+    const catalogClip = Boolean(note.music);
     notePlaybackStart = requestedStart;
-    notePlaybackEnd = requestedStart + requestedDuration;
+    if (!sameNote || (catalogClip && !Number.isFinite(notePlaybackRemainingMs))) {
+      notePlaybackRemainingMs = catalogClip ? requestedDuration * 1000 : Infinity;
+    }
 
     const configureClip = () => {
       const available = Number.isFinite(noteAudioPlayer.duration) && noteAudioPlayer.duration > 0 ? noteAudioPlayer.duration : requestedStart + requestedDuration;
       notePlaybackStart = Math.min(requestedStart, Math.max(0, available - .2));
-      notePlaybackEnd = Math.min(available, notePlaybackStart + requestedDuration);
       try {
-        if (noteAudioPlayer.currentTime < notePlaybackStart || noteAudioPlayer.currentTime >= notePlaybackEnd) noteAudioPlayer.currentTime = notePlaybackStart;
+        const selectedEnd = Math.min(available, notePlaybackStart + requestedDuration);
+        if (noteAudioPlayer.currentTime < notePlaybackStart || (catalogClip && noteAudioPlayer.currentTime + .04 >= selectedEnd)) {
+          noteAudioPlayer.currentTime = notePlaybackStart;
+        }
       } catch {}
     };
 
     noteAudioPlayer.onloadedmetadata = configureClip;
-    noteAudioPlayer.ontimeupdate = () => {
-      if (noteAudioPlayer.currentTime + .04 >= notePlaybackEnd) stopNotePlayback();
-    };
     noteAudioPlayer.onended = () => stopNotePlayback();
-    noteAudioPlayer.onplay = () => syncNotePlayerUi(noteId, 'playing');
+    noteAudioPlayer.onplay = () => {
+      clearTimeout(notePlaybackLoadTimer);
+      notePlaybackLoadTimer = null;
+      armNotePlaybackClock();
+      syncNotePlayerUi(noteId, 'playing');
+    };
     noteAudioPlayer.onpause = () => {
+      clearNotePlaybackClock(true);
       if (state.notePlayback.noteId === noteId && state.notePlayback.status !== 'loading') syncNotePlayerUi(noteId, 'paused');
     };
     noteAudioPlayer.onerror = () => {
-      clearTimeout(notePlaybackLoadTimer);
-      syncNotePlayerUi(noteId, 'paused');
+      stopNotePlayback({ reset: false });
       pushToast({ key: `note-audio-${noteId}`, kind: 'social', title: 'Music unavailable', body: 'This preview could not be played. Try again in a moment.' });
     };
 
@@ -9100,7 +9367,7 @@
       noteAudioPlayer.src = audioUrl;
       noteAudioPlayer.load();
     } else if (noteAudioPlayer.readyState >= 1) configureClip();
-    syncNotePlayerUi(noteId, noteAudioPlayer.readyState >= 2 ? 'playing' : 'loading');
+    syncNotePlayerUi(noteId, 'loading');
     // Calling play inside the tap handler keeps mobile Safari's media gesture
     // permission. Waiting for metadata first makes an otherwise valid Note fail.
     noteAudioPlayer.play().then(() => {
@@ -11483,6 +11750,7 @@
     updateChatFooter({ focus: true });
     await refreshChatsOnly();
     updateSidebar();
+    return data.message;
   }
 
   function classifyFile(file) {
@@ -11500,7 +11768,7 @@
     if (input) input.value = '';
     delete state.composerDrafts[key];
     const kind = forcedKind || classifyFile(file);
-    await sendMessage({
+    return sendMessage({
       kind,
       text: caption,
       stickerId,
@@ -12276,8 +12544,16 @@
       stopRecordStream();
       state.recorder = null;
       if (blob.size) {
+        const waveformPromise = blob.arrayBuffer().then((buffer) => decodeVoiceWaveform(buffer)).catch(() => null);
         const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type });
-        await sendFile(file, 'voice');
+        const message = await sendFile(file, 'voice');
+        const waveform = await waveformPromise;
+        const key = message?.attachment?.id || message?.attachment?.url;
+        if (key && waveform) {
+          state.voiceWaveforms.set(String(key), waveform);
+          applyVoiceWaveform(String(key), waveform);
+          syncVoicePlayerUi();
+        }
       }
     };
     button?.classList.add('recording');
@@ -13113,6 +13389,8 @@
     const wasNearBottom = snapshot && snapshot.bottom < 80;
     if (options.settle) messages.classList.add('chat-settling');
     messages.innerHTML = renderMessagesList();
+    hydrateVoiceWaveforms(messages);
+    syncVoicePlayerUi();
     const pinToBottom = options.scroll === 'bottom' || (options.scroll === 'auto' && wasNearBottom);
     if (pinToBottom) scrollMessagesToBottom();
     else if (options.scroll === 'restore') restoreMessagesScroll(snapshot);
@@ -13132,6 +13410,8 @@
     currentAppShell()?.classList.toggle('chat-open', hasVisibleConversation());
     resizeComposerInput();
     applyRenderScroll(options.scroll || 'preserve', options.scrollSnapshot || null);
+    hydrateVoiceWaveforms(next);
+    syncVoicePlayerUi();
     setTimeout(() => {
       next.classList.remove('chat-opening');
       state.chatOpening = false;
@@ -13357,6 +13637,7 @@
       if (action === 'logout') {
         await api('/api/auth/logout', { method: 'POST' });
         stopNotePlayback({ clear: true });
+        pauseVoicePlayback({ clear: true });
         if (state.postComposer) closePostComposer();
         state.uploads.forEach((job) => job.controller?.abort?.());
         state.uploads = [];
@@ -14466,24 +14747,12 @@
         if (response?.trim()) await respondToStorySticker(target.dataset.storyId, target.dataset.stickerId, response.trim());
       }
       if (action === 'toggle-voice') {
-        const button = target.closest('.voice-note');
-        const audio = button?.querySelector('audio');
-        if (audio) {
-          if (audio.paused) {
-            document.querySelectorAll('.voice-note audio').forEach((item) => {
-              if (item !== audio) {
-                item.pause();
-                item.closest('.voice-note')?.classList.remove('playing');
-              }
-            });
-            await audio.play();
-            button.classList.add('playing');
-            audio.onended = () => button.classList.remove('playing');
-          } else {
-            audio.pause();
-            button.classList.remove('playing');
-          }
-        }
+        playVoiceMessage(target.dataset.messageId);
+      }
+      if (action === 'seek-voice') {
+        const rect = target.getBoundingClientRect();
+        const ratio = rect.width > 0 ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0;
+        playVoiceMessage(target.dataset.messageId, ratio);
       }
       if (action === 'close-message-focus') {
         closeMessageFocus();
@@ -16851,7 +17120,8 @@
 
   window.addEventListener('pagehide', () => {
     if (state.postComposer) closePostComposer();
-    stopNotePlayback({ reset: false });
+    pauseNotePlayback();
+    pauseVoicePlayback();
     stopHomeFeedPlayback();
     stopMusicCatalogPreview();
     stopCameraStream();
@@ -16860,7 +17130,8 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       stopHomeFeedPlayback();
-      stopNotePlayback({ reset: false });
+      pauseNotePlayback();
+      pauseVoicePlayback();
       document.querySelectorAll('.clip-video, .clip-music, #music-picker-audio').forEach((media) => media.pause?.());
       return;
     }

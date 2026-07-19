@@ -603,7 +603,22 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(noteBehaviorSource, /setTimeout\(\(\) => stopNoteRecording\(\), 30000\)/);
   assert.match(noteBehaviorSource, /function playNote\(noteId\)/);
   assert.match(noteBehaviorSource, /noteAudioPlayer\.play\(\)\.then/);
-  assert.match(noteBehaviorSource, /noteAudioPlayer\.currentTime \+ \.04 >= notePlaybackEnd/);
+  assert.match(noteBehaviorSource, /catalogClip \? requestedDuration \* 1000 : Infinity/);
+  assert.match(noteBehaviorSource, /function armNotePlaybackClock\(\)/);
+  assert.doesNotMatch(noteBehaviorSource, /noteAudioPlayer\.currentTime \+ \.04 >= notePlaybackEnd/);
+  const voiceMessageSource = sourceSection(clientSource, 'function renderMessageBody(message)', 'function presetStickerSvg');
+  const voiceBubbleSource = sourceSection(voiceMessageSource, "if (message.kind === 'voice'", "if (message.kind === 'document'");
+  assert.match(voiceMessageSource, /data-action="seek-voice"/);
+  assert.match(voiceMessageSource, /Array\.from\(\{ length: 30 \}/);
+  assert.doesNotMatch(voiceBubbleSource, /<audio/);
+  assert.doesNotMatch(voiceBubbleSource, /index \* 17/);
+  assert.match(clientSource, /async function decodeVoiceWaveform\(arrayBuffer, barCount = 30\)/);
+  assert.match(clientSource, /decoded\.getChannelData\(channel\)/);
+  assert.match(clientSource, /const voiceAudioPlayer = new Audio\(\)/);
+  assert.match(clientSource, /function playVoiceMessage\(messageId, seekRatio = null\)/);
+  assert.match(clientSource, /new IntersectionObserver[\s\S]{0,500}?rootMargin: '320px 0px'/);
+  assert.match(styleSource, /\.voice-note \.voice-wave i\.played/);
+  assert.doesNotMatch(styleSource, /@keyframes wavePulse/);
   assert.match(serverSource, /Array\.from\(textValue\)\.length > 60/);
   assert.match(serverSource, /audioDuration > 30/);
 
