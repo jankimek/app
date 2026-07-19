@@ -14,21 +14,21 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Public user pages at `/u/username`.
 - Responsive Instagram-inspired Home feed with For you, Following, and Favorites views; story rail, desktop suggestions, likes, comments, reposts, sharing, saves, and swipeable media.
 - Three-step photo/video post composer with up to 20 mixed items, ordered thumbnails, add/remove/reorder controls, per-item drag/pinch/wheel crop, shared and mixed aspect modes, filters/adjustments, streamed uploads, captions, hashtags, and positioned person tags.
-- Custom inline video playback with byte-range streaming plus a vertically snapping **Clips** tab for single-video posts.
+- Custom inline video playback with byte-range streaming plus a vertically snapping **Clips** tab, one-line captions, audio pages, Use Audio, and credited remixes.
 - In-place post detail viewing from Explore, profiles, DMs, maps, and account activity, with browser-back and source-page scroll/state preservation.
 - Profile tab with display name, permanent tag username, post/follower/following counts, profile details, 24-hour stories, editable highlights, and profile-link sharing.
 - Profile media tabs for posts, private saves, reposts, and tagged photos/videos.
 - Search Explore grid, account suggestions, favorites, post activity, and block-aware discovery.
 - 24-hour Notes above chats and on your profile, including searchable music, automatic title/artist credit, selectable sections, and original-audio snippets up to 30 seconds.
 - Inbox Map for location-tagged posts with explicit, device-only current-location controls, plus camera-only Instants that disappear from recipients after opening and remain in a private one-year sender archive.
-- Account, privacy, interaction, blocked-user, comment-history, and repost settings.
+- Account, privacy, interaction, Close Friends, blocked-user, comment-history, and repost settings, including Close Friends story/Instant audiences.
 - Full-screen story editor with direct text editing, movable/rotatable text and stickers, drawing, filters, interactive polls/quizzes/sliders, mentions, maps, live weather, audio clips, and downloads.
 - Searchable GIPHY GIFs in chat when `GIPHY_API_KEY` is configured, with a separate shared upload pool under moderator control; the usernames in `MODERATOR_USERNAMES` can approve or remove submissions. The chat picker does not fall back to another catalog.
 - Searchable iTunes music previews for single-video clips and Notes, with canonical title/artist metadata and a 15- or 30-second section picker; Openverse/Jamendo remains available through `MUSIC_PROVIDER=openverse`.
 - Full-screen story/highlight viewer with progress, navigation, likes, comments, and private-account access control.
 - Phone-first bottom navigation for Home, Search, Create, Clips, and Profile, with Messages in the Home header; desktop uses an expanded navigation rail.
 - Username search, friend requests, and a notification center for accepting or declining requests.
-- Conversation search on the Messages tab that finds saved message references.
+- Conversation search, message requests, and suggested chats on the Messages tab.
 - Public/private followers and following lists.
 - Friends-of-friends recommendations on the Profile tab.
 - Real-time direct messages through WebSockets.
@@ -41,7 +41,7 @@ GitHub should be used first to store your code. Oracle Cloud Free Tier should ru
 - Create stickers on your device. When another user receives one, they must download it before viewing it.
 - Export a chat as JSON or HTML.
 - Download image/file metadata as JSON before deleting the message.
-- Full-screen voice/video calls using WebRTC signaling, with minimize, speaker, mute, camera, and camera-flip controls.
+- Full-screen direct and group voice/video calls using call-scoped WebRTC signaling, with collision/busy handling, add-people, minimize, independent speaker/microphone, camera, and camera-flip controls.
 
 ## Project Files
 

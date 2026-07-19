@@ -504,7 +504,9 @@ function basicPublicUser(user, viewerId = null) {
     ageVisible: isOwner ? profile.ageVisible === true : undefined,
     genderVisible: isOwner ? profile.genderVisible === true : undefined,
     favoriteUserIds: isOwner ? favoriteUserIdsFor(user) : undefined,
+    closeFriendUserIds: isOwner ? closeFriendUserIdsFor(user) : undefined,
     isFavorite: Boolean(viewerId && favoriteUserIdsFor(db.users[viewerId]).includes(user.id)),
+    isCloseFriend: Boolean(viewerId && closeFriendUserIdsFor(db.users[viewerId]).includes(user.id)),
     displayNameChangedAt: isOwner ? (profile.displayNameChangedAt || null) : undefined,
     nextDisplayNameChangeAt: isOwner ? nextDisplayNameChangeAt : undefined,
     email: isOwner ? (user.email || '') : undefined,
@@ -803,7 +805,11 @@ function canViewStories(ownerId, viewerId = null) {
 function canViewStory(story, viewerId = null) {
   if (!story || story.deletedAt) return false;
   const active = story.saved || new Date(story.expiresAt).getTime() > Date.now();
-  return Boolean(active && canViewStories(story.ownerId, viewerId));
+  if (!active || !canViewStories(story.ownerId, viewerId)) return false;
+  if (story.audience === 'close_friends' && viewerId !== story.ownerId) {
+    return closeFriendUserIdsFor(db.users[story.ownerId]).includes(viewerId);
+  }
+  return true;
 }
 
 function canReplyToStory(story, viewerId) {
@@ -839,6 +845,12 @@ function favoriteUserIdsFor(user) {
   if (!user) return [];
   const values = Array.isArray(user.profile?.favoriteUserIds) ? user.profile.favoriteUserIds : [];
   return Array.from(new Set(values)).filter((userId) => userId !== user.id && db.users[userId]);
+}
+
+function closeFriendUserIdsFor(user) {
+  if (!user) return [];
+  const values = Array.isArray(user.profile?.closeFriendUserIds) ? user.profile.closeFriendUserIds : [];
+  return Array.from(new Set(values)).filter((userId) => userId !== user.id && db.users[userId] && !isBlockedBetween(user.id, userId));
 }
 
 function pinnedConversationIdsFor(user) {
@@ -964,6 +976,7 @@ function publicPost(post, viewerId = null) {
   });
   const firstMedia = mediaItems[0] || null;
   const firstEdits = firstMedia?.edits || post.edits || {};
+  const remixSource = post.remixOfPostId ? db.posts[post.remixOfPostId] : null;
   const friendActivity = [];
   if (viewerId && db.users[viewerId]) {
     const following = new Set(db.follows[viewerId] || []);
@@ -1023,6 +1036,11 @@ function publicPost(post, viewerId = null) {
     adjustments: firstEdits.adjustments || {},
     filter: firstEdits.filter || 'normal',
     music: publicMusicSelection(post.music, post.music ? `/api/posts/${post.id}/music` : ''),
+    remixOf: remixSource && canViewPost(remixSource, viewerId) ? {
+      id: remixSource.id,
+      author: postActor(db.users[remixSource.ownerId], viewerId),
+      media: publicFile(db.files[postMediaFileIds(remixSource)[0]])
+    } : null,
     allowReposts: postRepostsAllowed(post),
     allowComments: post.allowComments !== false,
     hideLikeCounts: Boolean(post.hideLikeCounts),
@@ -1031,6 +1049,9 @@ function publicPost(post, viewerId = null) {
     likeCount: likes.length,
     likedByMe: Boolean(viewerId && likes.includes(viewerId)),
     savedByMe: Boolean(viewerId && saves.includes(viewerId)),
+    interest: viewerId && Array.isArray(db.users[viewerId]?.profile?.interestedPostIds) && db.users[viewerId].profile.interestedPostIds.includes(post.id)
+      ? 'interested'
+      : viewerId && Array.isArray(db.users[viewerId]?.profile?.notInterestedPostIds) && db.users[viewerId].profile.notInterestedPostIds.includes(post.id) ? 'not_interested' : null,
     repostCount: reposts.length,
     repostedByMe: Boolean(viewerId && reposts.includes(viewerId)),
     repostNote: viewerId && reposts.includes(viewerId) ? cleanText(post.repostNotes?.[viewerId] || '', 60) : '',
@@ -1363,6 +1384,7 @@ function publicStory(story, viewerId = null) {
     createdAt: story.createdAt,
     expiresAt: story.expiresAt,
     saved: Boolean(story.saved),
+    audience: story.audience === 'close_friends' ? 'close_friends' : 'everyone',
     edits: story.edits || {},
     audio: publicFile(db.files[story.audioFileId]),
     viewed: Boolean(viewerId && (viewerId === story.ownerId || views.includes(viewerId))),
@@ -3013,6 +3035,9 @@ async function handleApi(req, res, pathname, query) {
         allowGroupAdds: true,
         allowReposts: true,
         favoriteUserIds: [],
+        closeFriendUserIds: [],
+        interestedPostIds: [],
+        notInterestedPostIds: [],
         mentionPermission: 'everyone',
         storyReplies: 'everyone',
         friendRequests: 'everyone',
@@ -3266,6 +3291,28 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { user: publicUser(target, user.id), favoriteUserIds: favoriteUserIdsFor(user) });
   }
 
+  if (req.method === 'GET' && pathname === '/api/close-friends') {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const users = closeFriendUserIdsFor(user).map((userId) => publicUser(db.users[userId], user.id)).filter(Boolean);
+    return sendJson(res, 200, { users, closeFriendUserIds: users.map((item) => item.id) });
+  }
+
+  const closeFriendMatch = /^\/api\/close-friends\/([^/]+)$/.exec(pathname);
+  if ((req.method === 'POST' || req.method === 'DELETE') && closeFriendMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const targetKey = decodeURIComponent(closeFriendMatch[1]);
+    const target = db.users[targetKey] || userByUsername(targetKey);
+    if (!target || target.id === user.id) return sendError(res, 404, 'User not found.');
+    if (isBlockedBetween(user.id, target.id)) return sendError(res, 403, 'This user cannot be added to Close Friends right now.');
+    const closeFriends = closeFriendUserIdsFor(user);
+    if (req.method === 'POST' && !closeFriends.includes(target.id)) closeFriends.push(target.id);
+    user.profile.closeFriendUserIds = req.method === 'DELETE' ? closeFriends.filter((userId) => userId !== target.id) : closeFriends;
+    await saveUsers();
+    return sendJson(res, 200, { user: publicUser(target, user.id), closeFriendUserIds: closeFriendUserIdsFor(user) });
+  }
+
   if (req.method === 'POST' && pathname === '/api/post-media') {
     const user = await requireAuth(req, res);
     if (!user) {
@@ -3316,11 +3363,13 @@ async function handleApi(req, res, pathname, query) {
     const mode = ['for_you', 'following', 'favorites'].includes(requestedMode) ? requestedMode : 'for_you';
     const following = new Set(db.follows[user.id] || []);
     const favorites = new Set(favoriteUserIdsFor(user));
+    const notInterested = new Set(Array.isArray(user.profile?.notInterestedPostIds) ? user.profile.notInterestedPostIds : []);
+    const interested = new Set(Array.isArray(user.profile?.interestedPostIds) ? user.profile.interestedPostIds : []);
     const limit = Math.floor(boundedNumber(query.get('limit') || 40, 1, 100, 40));
-    let posts = activePostsFor().filter((post) => canViewPost(post, user.id));
+    let posts = activePostsFor().filter((post) => canViewPost(post, user.id) && !notInterested.has(post.id));
     if (mode === 'following') posts = posts.filter((post) => following.has(post.ownerId));
     if (mode === 'favorites') posts = posts.filter((post) => favorites.has(post.ownerId));
-    if (mode === 'for_you') posts.sort((a, b) => postFeedScore(b) - postFeedScore(a) || String(b.createdAt).localeCompare(String(a.createdAt)));
+    if (mode === 'for_you') posts.sort((a, b) => Number(interested.has(b.id)) * 1000000 - Number(interested.has(a.id)) * 1000000 || postFeedScore(b) - postFeedScore(a) || String(b.createdAt).localeCompare(String(a.createdAt)));
     else posts.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     return sendJson(res, 200, { mode, posts: posts.slice(0, limit).map((post) => publicPost(post, user.id)) });
   }
@@ -3437,6 +3486,14 @@ async function handleApi(req, res, pathname, query) {
       const source = await resolveCatalogMusic(body.music.catalogId);
       music = cleanMusicSelection(source, body.music);
     }
+    let remixOfPostId = null;
+    if (body.remixOfPostId) {
+      const sourcePost = db.posts[cleanText(body.remixOfPostId, 120)];
+      if (!canViewPost(sourcePost, user.id)) return sendError(res, 404, 'The clip you want to remix is no longer available.');
+      if (!postMediaFileIds(sourcePost).some((fileId) => String(db.files[fileId]?.mime || '').startsWith('video/'))) return sendError(res, 400, 'Only video clips can be remixed.');
+      if (!postRepostsAllowed(sourcePost)) return sendError(res, 403, 'This creator has turned off remixes for this clip.');
+      remixOfPostId = sourcePost.id;
+    }
     const usesInlineUpload = !files.length;
     if (usesInlineUpload) files = [await saveUpload(upload, user.id, 'post')];
     const previousFileScopes = files.map((file) => file.scope);
@@ -3460,6 +3517,7 @@ async function handleApi(req, res, pathname, query) {
       edits: mediaEdits[0],
       mediaEdits,
       music,
+      remixOfPostId,
       allowReposts: body.allowReposts !== false,
       allowComments: body.allowComments !== false,
       hideLikeCounts: Boolean(body.hideLikeCounts),
@@ -3572,6 +3630,26 @@ async function handleApi(req, res, pathname, query) {
     await Promise.all([savePosts(), notification ? saveNotifications() : Promise.resolve()]);
     if (notification) pushToUser(post.ownerId, { type: 'notification:new', notification: publicNotification(notification, post.ownerId) });
     return sendJson(res, 200, { post: publicPost(post, user.id) });
+  }
+
+  const postInterestMatch = /^\/api\/posts\/([^/]+)\/interest$/.exec(pathname);
+  if (req.method === 'POST' && postInterestMatch) {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const post = db.posts[decodeURIComponent(postInterestMatch[1])];
+    if (!canViewPost(post, user.id)) return sendError(res, 404, 'Post not found.');
+    const body = await readJsonBody(req);
+    const preference = ['interested', 'not_interested', 'clear'].includes(body.preference) ? body.preference : 'clear';
+    const interested = new Set(Array.isArray(user.profile?.interestedPostIds) ? user.profile.interestedPostIds : []);
+    const notInterested = new Set(Array.isArray(user.profile?.notInterestedPostIds) ? user.profile.notInterestedPostIds : []);
+    interested.delete(post.id);
+    notInterested.delete(post.id);
+    if (preference === 'interested') interested.add(post.id);
+    if (preference === 'not_interested') notInterested.add(post.id);
+    user.profile.interestedPostIds = [...interested].slice(-1000);
+    user.profile.notInterestedPostIds = [...notInterested].slice(-1000);
+    await saveUsers();
+    return sendJson(res, 200, { post: publicPost(post, user.id), preference });
   }
 
   const postCommentMatch = /^\/api\/posts\/([^/]+)\/comments$/.exec(pathname);
@@ -3838,11 +3916,11 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return;
     const body = await readJsonBody(req);
     if (!body.file?.dataUrl || !mimeFromDataUrl(body.file.dataUrl).startsWith('image/')) return sendError(res, 400, 'Take a photo to share an instant.');
-    const requestedAudience = body.audience === 'favorites' ? 'favorites' : 'friends';
+    const requestedAudience = ['close_friends', 'favorites'].includes(body.audience) ? 'close_friends' : 'friends';
     const friends = Array.from(new Set(db.contacts[user.id] || [])).filter((userId) => db.users[userId] && canChat(user.id, userId));
-    const favorites = new Set(favoriteUserIdsFor(user));
-    const recipientIds = requestedAudience === 'favorites' ? friends.filter((userId) => favorites.has(userId)) : friends;
-    if (!recipientIds.length) return sendError(res, 400, requestedAudience === 'favorites' ? 'Add a friend to Favorites before sharing with that audience.' : 'Add a friend before sharing an instant.');
+    const closeFriends = new Set(closeFriendUserIdsFor(user));
+    const recipientIds = requestedAudience === 'close_friends' ? friends.filter((userId) => closeFriends.has(userId)) : friends;
+    if (!recipientIds.length) return sendError(res, 400, requestedAudience === 'close_friends' ? 'Add a friend to Close Friends before sharing with that audience.' : 'Add a friend before sharing an instant.');
     const file = await saveUpload(body.file, user.id, 'instant');
     const createdAt = nowIso();
     const instant = {
@@ -4061,6 +4139,7 @@ async function handleApi(req, res, pathname, query) {
       createdAt: nowIso(),
       expiresAt: saved ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       saved: false,
+      audience: body.audience === 'close_friends' ? 'close_friends' : 'everyone',
       edits: {
         compositionVersion: Number(body.edits?.compositionVersion) >= 3 ? 3 : Number(body.edits?.compositionVersion) >= 2 ? 2 : 1,
         filter: [
@@ -4762,6 +4841,8 @@ async function handleApi(req, res, pathname, query) {
     if (req.method === 'POST') {
       user.profile.favoriteUserIds = favoriteUserIdsFor(user).filter((userId) => userId !== peer.id);
       peer.profile.favoriteUserIds = favoriteUserIdsFor(peer).filter((userId) => userId !== user.id);
+      user.profile.closeFriendUserIds = closeFriendUserIdsFor(user).filter((userId) => userId !== peer.id);
+      peer.profile.closeFriendUserIds = closeFriendUserIdsFor(peer).filter((userId) => userId !== user.id);
     }
     await Promise.all([saveBlocks(), ...(req.method === 'POST' ? [saveUsers()] : [])]);
     pushToUsers([user.id, peer.id], { type: 'relationship:updated' });
@@ -5945,8 +6026,12 @@ function handleWsFrame(client, frame) {
       });
     }
   }
-  if (message.type === 'signal' && canChat(client.userId, message.to)) {
-    pushToUser(message.to, { type: 'signal', from: client.userId, payload: message.payload });
+  if (message.type === 'signal') {
+    const targetId = String(message.to || '');
+    const directAllowed = canChat(client.userId, targetId);
+    const signalGroup = message.payload?.groupId ? groupForMember(String(message.payload.groupId), client.userId) : null;
+    const groupAllowed = Boolean(signalGroup && signalGroup.memberIds.includes(targetId));
+    if (directAllowed || groupAllowed) pushToUser(targetId, { type: 'signal', from: client.userId, payload: message.payload });
   }
 }
 

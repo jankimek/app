@@ -457,7 +457,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   const swipeTabSource = sourceSection(clientSource, 'function tabSwipeTarget', 'function ensureTabSwipePreview');
   for (const tab of ['home', 'search', 'clips', 'chats', 'profile']) assert.match(swipeTabSource, new RegExp(`['"]${tab}['"]`));
   assert.match(swipeTabSource, /\['home', 'clips', 'chats', 'search', 'profile'\]/);
-  assert.doesNotMatch(swipeTabSource, /create|notifications/);
+  assert.match(swipeTabSource, /state\.tab === 'home' && dx < 0[^\n]*return 'create'/);
+  assert.doesNotMatch(swipeTabSource, /notifications/);
 
   const homeStorySource = sourceSection(clientSource, 'function homeStoryUsers', 'function postAuthor');
   assert.match(homeStorySource, /state\.me\?\.following/);
@@ -478,7 +479,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.doesNotMatch(clipCardSource, /\scontrols(?:\s|>)/);
   assert.match(clipCardSource, /playsinline webkit-playsinline/);
   assert.match(clipCardSource, /disablepictureinpicture disableremoteplayback/);
-  assert.match(clipCardSource, /caption\.length > 68 \? 'two-lines' : 'one-line'/);
+  assert.match(clipCardSource, /<p class="one-line"/);
+  assert.match(clipCardSource, /data-action="open-clip-audio"/);
+  assert.match(clientSource, /function renderClipAudioPage/);
+  assert.match(clientSource, /data-action="remix-clip"/);
   const postVisualSource = sourceSection(clientSource, 'function renderPostVisual', 'function renderPostPersonTags');
   assert.doesNotMatch(postVisualSource, /\scontrols(?:\s|>)/);
   assert.match(styleSource, /html\.clip-view-transition::view-transition-group\(active-post-video\)/);
@@ -497,14 +501,24 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /data-action="reply-post-comment"/);
   assert.match(clientSource, /data-action="toggle-post-comment-replies"/);
   assert.match(clientSource, /data-action="clear-post-comment-reply"/);
+  assert.match(clientSource, /data-action="set-comment-sort" data-sort="for_you"/);
+  assert.match(clientSource, /data-action="set-comment-sort" data-sort="newest"/);
   assert.match(clientSource, /Liked by creator/);
   assert.match(clientSource, /data-action="follow-user"[^>]*>Follow<\/button>/);
   assert.doesNotMatch(clientSource, /class="clip-follow" data-action="send-request"/);
   assert.match(styleSource, /@media \(min-width: 1100px\) \{[\s\S]*?\.overlay:has\(\.post-comments-sheet\)[\s\S]*?justify-items: end;/);
-  const postActionSource = sourceSection(clientSource, 'async function togglePostAction', 'async function deletePost');
+  const postActionSource = sourceSection(clientSource, 'async function togglePostAction', 'async function setPostInterest');
   assert.match(postActionSource, /syncPostEngagement\(data\.post, action\)/);
-  assert.match(postActionSource, /syncPostEngagement\(data\.post\)/);
   assert.doesNotMatch(postActionSource, /updateSidebar\(\)/);
+  assert.match(clientSource, /async function setPostInterest/);
+  assert.match(clientSource, /data-action="set-post-interest" data-preference="not_interested"/);
+  assert.match(clientSource, /function renderRequestedChats/);
+  assert.match(clientSource, /function renderSuggestedChats/);
+  assert.match(clientSource, /function renderProfileStarterSteps/);
+  assert.match(clientSource, /function startGroupCall/);
+  assert.match(clientSource, /function inviteCallParticipant/);
+  assert.match(clientSource, /function syncCallUi/);
+  assert.match(clientSource, /data-section="close_friends"/);
   assert.match(clientSource, /renderMentionText\(comment\.text \|\| ''\)/);
   assert.match(clientSource, /renderMentionText\(description\)/);
   assert.doesNotMatch(clientSource, /renderMentions\(/);
@@ -1070,6 +1084,22 @@ test('social posts, feeds, profile privacy, account settings, and notes remain r
   assert.deepEqual(favoritesFeed.data.posts.map((item) => item.id), [post.id]);
   assert.ok(explore.data.posts.some((item) => item.id === post.id));
   assert.equal((await bob.request('/api/feed?mode=unknown')).data.mode, 'for_you');
+
+  const closeFriendAdded = await bob.request(`/api/close-friends/${aliceUser.id}`, { method: 'POST' });
+  assert.equal(closeFriendAdded.status, 200);
+  assert.ok(closeFriendAdded.data.closeFriendUserIds.includes(aliceUser.id));
+  const closeFriends = await bob.request('/api/close-friends');
+  assert.equal(closeFriends.status, 200);
+  assert.ok(closeFriends.data.users.some((item) => item.id === aliceUser.id));
+  assert.equal((await bob.request(`/api/close-friends/${aliceUser.id}`, { method: 'DELETE' })).status, 200);
+
+  const interested = await bob.request(`/api/posts/${post.id}/interest`, { method: 'POST', body: { preference: 'interested' } });
+  assert.equal(interested.status, 200);
+  assert.equal(interested.data.post.interest, 'interested');
+  const hidden = await bob.request(`/api/posts/${post.id}/interest`, { method: 'POST', body: { preference: 'not_interested' } });
+  assert.equal(hidden.data.post.interest, 'not_interested');
+  assert.ok(!(await bob.request('/api/feed?mode=for_you')).data.posts.some((item) => item.id === post.id));
+  assert.equal((await bob.request(`/api/posts/${post.id}/interest`, { method: 'POST', body: { preference: 'clear' } })).data.post.interest, null);
 
   assert.equal((await charlie.request('/api/me/profile', {
     method: 'PATCH',

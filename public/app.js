@@ -161,12 +161,15 @@
     clips: [],
     clipMode: 'for_you',
     clipViewer: null,
+    clipAudioPage: null,
+    pendingClipCreation: null,
     postViewer: null,
     clipMuted: localStorage.getItem('clipMuted') !== '0',
     feedMuted: localStorage.getItem('feedMuted') !== '0',
     notes: [],
     notePlayback: { noteId: null, status: 'paused' },
     instants: { piles: [], sent: [] },
+    inboxView: 'primary',
     inboxFeature: null,
     instantComposer: null,
     instantViewer: null,
@@ -289,6 +292,8 @@
   let navigationMaintenanceFrame = 0;
   let navigationMaintenanceIdle = 0;
   let callDurationTimer = null;
+  let callTimeoutTimer = null;
+  let storyRailHintTimer = null;
   let postViewerAfterClose = null;
   let postViewerReturnFocus = null;
   let voiceRecordTimer = null;
@@ -309,7 +314,14 @@
 
   function freshCallState() {
     return {
+      callId: null,
       peerId: null,
+      groupId: null,
+      groupName: '',
+      participantIds: [],
+      connections: new Map(),
+      remoteStreams: new Map(),
+      pendingByPeer: new Map(),
       pc: null,
       localStream: null,
       remoteStream: null,
@@ -326,6 +338,10 @@
       position: null,
       pendingCandidates: []
     };
+  }
+
+  function newCallId() {
+    return window.crypto?.randomUUID?.() || `call-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   function esc(value) {
@@ -1074,6 +1090,7 @@
       file: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
       sticker: '<svg viewBox="0 0 24 24"><path d="M20 13.5V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h6.5"/><path d="M14 20c0-3.3 2.7-6 6-6"/><path d="M9 9h.01M15 9h.01M8.5 14a5 5 0 0 0 7 0"/></svg>',
       mic: '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg>',
+      micOff: '<svg viewBox="0 0 24 24"><path d="M9 9V5a3 3 0 0 1 5.8-1M15 9.5V11a3 3 0 0 1-.4 1.5M5 11a7 7 0 0 0 11.7 5.2M19 11a7 7 0 0 1-.7 3.1M12 18v4M8 22h8M3 3l18 18"/></svg>',
       play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7Z"/></svg>',
       send: '<svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4Z"/></svg>',
       bell: '<svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>',
@@ -1104,6 +1121,7 @@
       alignCenter: '<svg viewBox="0 0 24 24"><path d="M5 6h14M8 10h8M5 14h14M9 18h6"/></svg>',
       alignRight: '<svg viewBox="0 0 24 24"><path d="M6 6h14M10 10h10M6 14h14M12 18h8"/></svg>',
       sparkle: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>',
+      star: '<svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>',
       location: '<svg viewBox="0 0 24 24"><path d="M12 22s7-5.3 7-12a7 7 0 0 0-14 0c0 6.7 7 12 7 12Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
       hashtag: '<svg viewBox="0 0 24 24"><path d="M9 3 7 21M17 3l-2 18M4 9h17M3 15h17"/></svg>',
       more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
@@ -1309,6 +1327,7 @@
   }
 
   function tabSwipeTarget(dx) {
+    if (state.tab === 'home' && dx < 0) return 'create';
     const tabs = ['home', 'clips', 'chats', 'search', 'profile'];
     const index = tabIndex(state.tab);
     const targetIndex = index + (dx < 0 ? 1 : -1);
@@ -1323,7 +1342,9 @@
     const preview = document.createElement('div');
     preview.className = 'side-content tab-content tab-swipe-preview';
     preview.dataset.tab = targetTab;
-    preview.innerHTML = renderTabContent(targetTab);
+    preview.innerHTML = targetTab === 'create'
+      ? `<section class="create-swipe-preview">${icon('plus')}<strong>Create new post</strong><small>Release to choose photos or videos</small></section>`
+      : renderTabContent(targetTab);
     const sidebar = swipe.surface.closest('.sidebar');
     sidebar?.insertBefore(preview, sidebar.querySelector('.bottom-tabs'));
     swipe.preview = preview;
@@ -1812,6 +1833,7 @@
       attachPostViewerPlayback();
       attachHomeFeedPlayback();
       attachHomePullRefresh();
+      attachStoryScrollHint();
       attachClipPlayback();
       hydrateVoiceWaveforms();
       syncVoicePlayerUi();
@@ -2017,12 +2039,13 @@
     const suggested = visibleRecommendations().filter((user) => !storyIds.has(user.id)).slice(0, 8);
     return `
       <section class="home-story-rail" aria-label="Stories" data-scroll-memory="home-stories">
+        <output class="story-scroll-hint" aria-live="polite"></output>
         ${users.map((user) => {
           const story = activeProfileStory(user);
           const mine = user.id === state.me?.id;
           return `
             <button class="home-story" data-action="${story ? 'view-story' : 'open-story-create'}" ${story ? `data-story-id="${esc(story.id)}"` : ''}>
-              <span class="home-story-avatar ${story ? 'has-story' : ''}">
+              <span class="home-story-avatar ${story ? 'has-story' : ''} ${story?.audience === 'close_friends' ? 'close-friends' : ''}">
                 ${user.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : esc(initials(user))}
                 ${mine ? '<i>+</i>' : ''}
               </span>
@@ -2210,6 +2233,23 @@
     });
     if (track.closest('.post-viewer-overlay')) requestAnimationFrame(attachPostViewerPlayback);
     if (state.tab === 'home') requestAnimationFrame(playMostVisibleHomeVideo);
+  }
+
+  function attachStoryScrollHint(root = document) {
+    const rail = root.querySelector?.('.home-story-rail');
+    if (!rail || rail.dataset.hintReady === 'true') return;
+    rail.dataset.hintReady = 'true';
+    rail.addEventListener('scroll', () => {
+      const hint = rail.querySelector('.story-scroll-hint');
+      const stories = [...rail.querySelectorAll('.home-story')];
+      if (!hint || !stories.length) return;
+      const center = rail.getBoundingClientRect().left + rail.clientWidth / 2;
+      const nearest = stories.reduce((best, item) => Math.abs(item.getBoundingClientRect().left + item.offsetWidth / 2 - center) < Math.abs(best.getBoundingClientRect().left + best.offsetWidth / 2 - center) ? item : best, stories[0]);
+      hint.textContent = nearest.querySelector('small')?.textContent || 'Stories';
+      hint.classList.add('visible');
+      clearTimeout(storyRailHintTimer);
+      storyRailHintTimer = setTimeout(() => hint.classList.remove('visible'), 720);
+    }, { passive: true });
   }
 
   function initializePostCarousels(root = document) {
@@ -2436,12 +2476,15 @@
     const reposted = Boolean(post.repostedByMe);
     const postDate = `${post.location ? `${post.location} · ` : ''}${shortTime(post.createdAt)}`;
     const audioLabel = post.music ? `${post.music.title || 'Original audio'}${post.music.artist ? ` · ${post.music.artist}` : ''}` : '';
+    const followedAuthor = author.id === state.me?.id || Boolean(author.isFollowing || (state.me?.following || []).some((user) => user.id === author.id));
+    const suggestedLabel = state.feedMode === 'for_you' && !followedAuthor ? 'Suggested for you' : '';
+    const metaItems = [suggestedLabel, audioLabel, postDate].filter(Boolean);
     return `
       <article class="feed-post ${overlayIdentity ? 'overlay-video-identity' : ''}" data-post-id="${esc(post.id)}">
         <header class="post-head">
           <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">
             ${avatarHtml(author)}
-            <span><strong>${esc(author.username)}</strong><small class="post-meta-cycle ${audioLabel ? 'has-audio' : ''}">${audioLabel ? `<span>${icon('music')}${esc(audioLabel)}</span>` : ''}<span>${esc(postDate)}</span></small></span>
+            <span><strong>${esc(author.username)}</strong><small class="post-meta-cycle ${metaItems.length > 1 ? `is-cycling meta-${metaItems.length}` : ''}">${metaItems.map((label) => `<span>${label === audioLabel ? icon('music') : ''}${esc(label)}</span>`).join('')}</small></span>
           </a>
           ${author.id === state.me?.id ? `<button data-action="post-owner-menu" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>` : ''}
         </header>
@@ -2459,6 +2502,7 @@
           ${description ? `<p>${expanded ? renderMentionText(description) : renderMentionText(`${description.slice(0, 135).trim()}…`)} ${expanded ? '' : `<button data-action="expand-post" data-post-id="${esc(post.id)}">read more</button>`}</p>` : ''}
           ${hashtags.length ? `<p class="post-hashtags">${hashtags.map((tag) => `#${esc(String(tag).replace(/^#/, ''))}`).join(' ')}</p>` : ''}
           <small class="post-counts"><button data-action="open-post-comments" data-post-id="${esc(post.id)}" data-post-comment-count>${Number(post.commentCount ?? post.comments?.length ?? 0)} comments</button><span>·</span><span data-post-repost-count>${Number(post.repostCount || 0)} reposts</span></small>
+          ${suggestedLabel ? `<div class="post-interest-controls"><button class="${post.interest === 'interested' ? 'active' : ''}" data-action="set-post-interest" data-preference="interested" data-post-id="${esc(post.id)}">${icon('heart')} Interested</button><button data-action="set-post-interest" data-preference="not_interested" data-post-id="${esc(post.id)}">${icon('x')} Not interested</button></div>` : ''}
           ${post.repostNote ? `<div class="repost-thought-inline">${avatarHtml(state.me)}<span><small>Your repost thought</small><strong>${esc(post.repostNote)}</strong></span></div>` : ''}
           ${renderPostComments(post)}
           ${post.allowComments === false ? '<small class="post-comments-off">Comments are turned off.</small>' : ''}
@@ -2588,8 +2632,9 @@
                 <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">${avatarHtml(author)}<strong>${esc(author.username)}</strong></a>
                 ${followControl}
               </div>
-              ${caption ? `<p class="${caption.length > 68 ? 'two-lines' : 'one-line'}">${renderMentionText(caption)}</p>` : ''}
-              <small class="clip-audio-line">${icon('music')} ${music ? `${esc(music.title)} · ${esc(music.artist)}` : `Original audio · ${esc(author.username)}`}</small>
+              ${caption ? `<p class="one-line" title="${esc(caption)}">${renderMentionText(caption)}</p>` : ''}
+              ${post.remixOf ? `<button class="clip-remix-attribution" data-action="open-audio-clip" data-post-id="${esc(post.remixOf.id)}">${icon('repost')} Remix with @${esc(post.remixOf.author?.username || 'creator')}</button>` : ''}
+              <button class="clip-audio-line" data-action="open-clip-audio" data-post-id="${esc(post.id)}">${icon('music')} ${music ? `${esc(music.title)} · ${esc(music.artist)}` : `Original audio · ${esc(author.username)}`}</button>
             </div>
             <span class="clip-progress" aria-hidden="true"><i></i></span>
           </div>
@@ -2600,14 +2645,40 @@
             <button data-action="share-post" data-post-id="${esc(post.id)}" aria-label="Share">${icon('send')}</button>
             <button class="clip-save-action ${saved ? 'active' : ''}" data-action="toggle-post-save" data-post-id="${esc(post.id)}" aria-label="${saved ? 'Unsave' : 'Save'}" aria-pressed="${saved}">${icon('bookmark')}</button>
             <button data-action="post-options" data-post-id="${esc(post.id)}" aria-label="More options">${icon('more')}</button>
-            <button class="clip-audio-cover" data-action="view-user-profile" data-username="${esc(author.username)}" aria-label="View ${esc(author.username)}">${music?.artworkUrl ? `<img src="${esc(music.artworkUrl)}" alt="${esc(music.title)} artwork">` : author.avatar?.url ? `<img src="${esc(author.avatar.url)}" alt="">` : esc(initials(author))}</button>
+            <button class="clip-audio-cover" data-action="open-clip-audio" data-post-id="${esc(post.id)}" aria-label="Open audio page">${music?.artworkUrl ? `<img src="${esc(music.artworkUrl)}" alt="${esc(music.title)} artwork">` : author.avatar?.url ? `<img src="${esc(author.avatar.url)}" alt="">` : esc(initials(author))}</button>
           </aside>
         </div>
       </article>
     `;
   }
 
+  function renderClipAudioPage() {
+    const source = postById(state.clipAudioPage?.postId);
+    if (!source) return `<section class="clip-audio-page"><header><button data-action="close-clip-audio">${icon('back')}</button><strong>Audio</strong></header><div class="empty-state">Audio is no longer available.</div></section>`;
+    const author = postAuthor(source);
+    const music = source.music || null;
+    const entries = allKnownPosts().filter((post) => {
+      if (postMediaItems(post).every((item) => item.mediaType !== 'video')) return false;
+      if (music?.catalogId) return post.music?.catalogId === music.catalogId;
+      return !post.music && postAuthor(post)?.id === author?.id;
+    });
+    const title = music?.title || `Original audio · ${author?.username || 'creator'}`;
+    const art = music?.artworkUrl || author?.avatar?.url || '';
+    return `
+      <section class="clip-audio-page" aria-label="Audio page">
+        <header><button data-action="close-clip-audio" aria-label="Back to clips">${icon('back')}</button><strong>Audio</strong><button data-action="post-options" data-post-id="${esc(source.id)}" aria-label="Audio options">${icon('more')}</button></header>
+        <div class="clip-audio-hero">
+          <span class="clip-audio-art">${art ? `<img src="${esc(art)}" alt="">` : icon('music')}<i>${icon('music')}</i></span>
+          <div><h1>${esc(title)}</h1><button data-action="view-user-profile" data-username="${esc(author?.username || '')}">${esc(music?.artist || `@${author?.username || 'creator'}`)}</button><small>${entries.length} clip${entries.length === 1 ? '' : 's'}</small></div>
+        </div>
+        <div class="clip-audio-actions"><button class="primary" data-action="use-clip-audio" data-post-id="${esc(source.id)}">${icon('music')} Use audio</button><button data-action="remix-clip" data-post-id="${esc(source.id)}">${icon('repost')} Remix</button></div>
+        <div class="clip-audio-grid">${entries.map((post) => `<button data-action="open-audio-clip" data-post-id="${esc(post.id)}" aria-label="Open clip by ${esc(postAuthor(post)?.username || 'creator')}">${renderPostMedia(post, { grid: true })}<span>${icon('play')} ${Number(post.likeCount || 0).toLocaleString()}</span></button>`).join('')}</div>
+      </section>
+    `;
+  }
+
   function renderClipsPanel(options = {}) {
+    if (state.clipAudioPage) return renderClipAudioPage();
     const viewer = Boolean(options.viewer || state.clipViewer);
     const entries = viewer ? clipViewerEntries() : clipPosts().map((post) => ({ post, mediaIndex: 0 }));
     return `
@@ -3600,7 +3671,7 @@
           <label><input id="instant-caption" maxlength="220" value="${esc(composer.caption || '')}" placeholder="Add a caption…"></label>
           <div class="instant-audience" role="group" aria-label="Audience">
             <button class="${composer.audience === 'friends' ? 'active' : ''}" data-action="set-instant-audience" data-audience="friends">Friends</button>
-            <button class="${composer.audience === 'favorites' ? 'active' : ''}" data-action="set-instant-audience" data-audience="favorites">Favorites</button>
+            <button class="${composer.audience === 'close_friends' ? 'active' : ''}" data-action="set-instant-audience" data-audience="close_friends">Close Friends</button>
           </div>
           <button class="instant-send" data-action="publish-instant">Send ${icon('send')}</button>
         </footer>
@@ -3630,7 +3701,42 @@
     return '';
   }
 
+  function inboxSuggestedPeople(limit = 8) {
+    const conversationIds = new Set(state.chats.map((chat) => chat.peer?.id));
+    return visibleRecommendations().filter((user) => user?.id && !conversationIds.has(user.id) && !user.hasBlocked).slice(0, limit);
+  }
+
+  function renderSuggestedChats(compact = false) {
+    const people = inboxSuggestedPeople(compact ? 10 : 5);
+    if (!people.length) return '';
+    if (compact) return `
+      <section class="suggested-chat-rail" aria-label="Suggested chats">
+        <header><strong>Suggested</strong><button data-action="tab" data-tab="search">See all</button></header>
+        <div>${people.map((user) => `<button data-action="open-suggested-chat" data-user-id="${esc(user.id)}">${avatarHtml(user)}<strong>${esc(user.displayName)}</strong><small>@${esc(user.username)}</small></button>`).join('')}</div>
+      </section>
+    `;
+    return `
+      <section class="suggested-chat-list" aria-label="Suggested chats">
+        <header><strong>Suggestions</strong><small>People you may want to message</small></header>
+        ${people.map((user) => `<article class="account-row">${avatarHtml(user)}<button class="suggested-chat-person" data-action="view-user-profile" data-username="${esc(user.username)}"><strong>${esc(user.displayName)}</strong><small>@${esc(user.username)} · Suggested for you</small></button><button class="mini-btn" data-action="open-suggested-chat" data-user-id="${esc(user.id)}">Message</button></article>`).join('')}
+      </section>
+    `;
+  }
+
+  function renderRequestedChats() {
+    return `
+      <section class="requested-chats-page">
+        <header class="requested-chats-head"><button data-action="set-inbox-view" data-view="primary" aria-label="Back to messages">${icon('back')}</button><span><strong>Message requests</strong><small>Requests aren’t marked seen until you accept.</small></span></header>
+        <div class="requested-chat-list">
+          ${state.requests.length ? state.requests.map((request) => `<article class="requested-chat-row">${avatarHtml(request.from)}<button data-action="view-user-profile" data-username="${esc(request.from.username)}"><strong>${esc(request.from.displayName)}</strong><small>@${esc(request.from.username)} wants to chat</small></button><span><button class="primary" data-action="accept-request" data-request-id="${esc(request.id)}">Accept</button><button data-action="decline-request" data-request-id="${esc(request.id)}">Delete</button></span></article>`).join('') : `<div class="empty-state">${icon('messages')}<strong>No message requests</strong><small>Requests from people you don’t chat with will appear here.</small></div>`}
+        </div>
+        ${renderSuggestedChats(false)}
+      </section>
+    `;
+  }
+
   function renderChatsPanel() {
+    if (state.inboxView === 'requests') return renderRequestedChats();
     const query = state.conversationQuery.trim();
     const conversations = [
       ...state.chats.map((chat) => ({ type: 'direct', id: chat.peer.id, conversationId: chat.id, latest: chat.latest, pinned: Boolean(chat.pinned), pinOrder: chat.pinOrder, chat })),
@@ -3698,6 +3804,7 @@
     return `
       ${renderInboxConnectionRail()}
       ${renderNoteRail()}
+      ${renderSuggestedChats(true)}
       <section class="messages-head">
         <div class="messages-search-row" role="search">
           <span class="messages-search-icon" aria-hidden="true">${icon('search')}</span>
@@ -3707,11 +3814,12 @@
       </section>
       <section class="panel-heading">
         <h2>Messages</h2>
-        <button class="icon-btn new-group-btn" data-action="new-group" title="New group chat" aria-label="New group chat">${icon('edit')}</button>
+        <span class="messages-heading-actions"><button class="requested-chats-button" data-action="set-inbox-view" data-view="requests">Requests${state.pendingRequestCount ? `<b>${state.pendingRequestCount}</b>` : ''}</button><button class="icon-btn new-group-btn" data-action="new-group" title="New group chat" aria-label="New group chat">${icon('edit')}</button></span>
       </section>
       <section class="chat-list">
         ${query ? searchRows : chatRows}
       </section>
+      ${query ? '' : renderSuggestedChats(false)}
     `;
   }
 
@@ -3934,6 +4042,7 @@
           <button data-action="open-highlight-archive">${icon('archive')} Archive</button>
         </div>
       </section>
+      ${renderProfileStarterSteps()}
       ${renderHighlights(state.me, true)}
       ${renderRecommendations()}
       ${renderProfileMedia(state.me, true)}
@@ -6000,6 +6109,23 @@
     `;
   }
 
+  function renderProfileStarterSteps() {
+    const tasks = [
+      { key: 'photo', label: 'Add profile photo', detail: 'Help friends recognize you', iconName: 'camera', action: 'change-profile-picture', done: Boolean(state.me?.avatar?.url) },
+      { key: 'people', label: 'Find people', detail: 'Follow accounts you care about', iconName: 'search', action: 'tab', attr: 'data-tab="search"', done: Number(state.me?.followingCount || state.me?.following?.length || 0) > 0 },
+      { key: 'post', label: 'Share your first post', detail: 'Choose a photo or video', iconName: 'plus', action: 'open-post-create', done: Number(state.me?.postCount || 0) > 0 },
+      { key: 'bio', label: 'Add a bio', detail: 'Tell people a little about you', iconName: 'edit', action: 'open-profile-edit', done: Boolean(String(state.me?.bio || '').trim()) }
+    ];
+    const completed = tasks.filter((task) => task.done).length;
+    if (completed === tasks.length || Number(state.me?.postCount || 0) > 2) return '';
+    return `
+      <section class="profile-starter" aria-label="Getting started">
+        <header><span><strong>Get started</strong><small>${completed} of ${tasks.length} complete</small></span><i style="--starter-progress:${completed / tasks.length}"></i></header>
+        <div>${tasks.map((task, index) => `<button class="${task.done ? 'complete' : ''}" data-action="${task.action}" ${task.attr || ''} style="--starter-order:${index}">${icon(task.done ? 'check' : task.iconName)}<span><strong>${esc(task.label)}</strong><small>${task.done ? 'Done' : esc(task.detail)}</small></span>${task.done ? '' : icon('chevron')}</button>`).join('')}</div>
+      </section>
+    `;
+  }
+
   function renderChatPane() {
     if (state.searchProfileOpen && state.publicProfile) {
       return `
@@ -6044,7 +6170,7 @@
           ${peer ? `<div class="toolbar" style="margin-left:auto">
             <button class="icon-btn" title="Voice call" aria-label="Voice call" data-action="audio-call">${icon('phone')}</button>
             <button class="icon-btn" title="Video call" aria-label="Video call" data-action="video-call">${icon('video')}</button>
-          </div>` : `<button class="icon-btn group-header-info" data-action="open-chat-profile" aria-label="Group details">${icon('group')}</button>`}
+          </div>` : `<div class="toolbar group-call-toolbar" style="margin-left:auto"><button class="icon-btn" title="Group audio call" aria-label="Group audio call" data-action="group-audio-call">${icon('phone')}</button><button class="icon-btn" title="Group video call" aria-label="Group video call" data-action="group-video-call">${icon('video')}</button><button class="icon-btn group-header-info" data-action="open-chat-profile" aria-label="Group details">${icon('group')}</button></div>`}
         </header>
         <section class="messages" id="messages">
           ${renderMessagesList()}
@@ -6920,13 +7046,19 @@
       }
       return current?.id || comment.id;
     };
-    const roots = comments.filter((comment) => !comment.replyTo || !commentById.has(comment.replyTo));
+    let roots = comments.filter((comment) => !comment.replyTo || !commentById.has(comment.replyTo));
     const repliesByRoot = new Map(roots.map((comment) => [comment.id, []]));
     comments.forEach((comment) => {
       const rootId = rootIdFor(comment);
       if (rootId === comment.id) return;
       if (!repliesByRoot.has(rootId)) repliesByRoot.set(rootId, []);
       repliesByRoot.get(rootId).push(comment);
+    });
+    const commentSort = sheet.commentSort === 'newest' ? 'newest' : 'for_you';
+    roots = [...roots].sort((a, b) => {
+      if (commentSort === 'newest') return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+      const score = (comment) => Number(Boolean(comment.pinned)) * 100000 + Number(Boolean(comment.likedByCreator)) * 10000 + Number(comment.likeCount || 0) * 100 + Number(repliesByRoot.get(comment.id)?.length || 0) * 10;
+      return score(b) - score(a) || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
     });
     const expandedCommentIds = new Set(sheet.expandedCommentIds || []);
     const replyComment = commentById.get(sheet.replyToCommentId) || null;
@@ -6979,6 +7111,7 @@
         <strong>Comments</strong>
         <button class="story-sheet-icon" data-action="close-overlays" aria-label="Close comments">${icon('x')}</button>
       </header>
+      <div class="post-comment-sort" role="tablist" aria-label="Sort comments"><button class="${commentSort === 'for_you' ? 'active' : ''}" data-action="set-comment-sort" data-sort="for_you" role="tab" aria-selected="${commentSort === 'for_you'}">For you</button><button class="${commentSort === 'newest' ? 'active' : ''}" data-action="set-comment-sort" data-sort="newest" role="tab" aria-selected="${commentSort === 'newest'}">Newest</button></div>
       <div class="story-comment-list post-comment-list" role="feed" aria-label="Post comments">
         ${commentThreads || `
           <div class="story-comments-empty">
@@ -7096,6 +7229,7 @@
       body = `
         <div class="sheet-note"><strong>${esc(profileUser.displayName)}</strong><small>@${esc(profileUser.username)}</small></div>
         <button data-action="toggle-favorite-user" data-user-id="${esc(profileUser.id)}">${icon('bookmark')} ${profileUser.isFavorite ? 'Remove from favorites' : 'Add to favorites'}</button>
+        <button data-action="toggle-close-friend" data-user-id="${esc(profileUser.id)}">${icon('star')} ${profileUser.isCloseFriend ? 'Remove from Close Friends' : 'Add to Close Friends'}</button>
         <button data-action="open-report" data-report-type="user" data-user-id="${esc(profileUser.id)}">Report user</button>
         ${profileUser.hasBlocked
           ? `<button data-action="unblock-user" data-user-id="${esc(profileUser.id)}">Unblock</button>`
@@ -7113,6 +7247,8 @@
       body = `
         <div class="sheet-note"><strong>Clip options</strong><small>Choose what you want to do.</small></div>
         <button data-action="toggle-post-save" data-post-id="${esc(sheetPost.id)}">${icon('bookmark')} ${sheetPost.savedByMe ? 'Remove from saved' : 'Save'}</button>
+        ${author?.id !== state.me?.id ? `<button data-action="set-post-interest" data-preference="interested" data-post-id="${esc(sheetPost.id)}">${icon('heart')} Interested</button><button data-action="set-post-interest" data-preference="not_interested" data-post-id="${esc(sheetPost.id)}">${icon('x')} Not interested</button>` : ''}
+        ${postMediaItems(sheetPost).some((item) => item.mediaType === 'video') ? `<button data-action="open-clip-audio" data-post-id="${esc(sheetPost.id)}">${icon('music')} Audio page</button><button data-action="remix-clip" data-post-id="${esc(sheetPost.id)}">${icon('repost')} Remix this clip</button>` : ''}
         <button data-action="copy-post-link" data-post-id="${esc(sheetPost.id)}">${icon('link')} Copy link</button>
         ${author ? `<button data-action="view-user-profile" data-username="${esc(author.username)}">${icon('profile')} About this account</button>` : ''}
         ${author?.id === state.me?.id
@@ -7312,6 +7448,11 @@
         <button class="story-owner-action danger-text" data-action="delete-story" data-story-id="${esc(story.id)}">${icon('trash')}<span>Delete story</span></button>
       ` : '';
     }
+    if (sheet.type === 'call-add-people' && state.call.active) {
+      const group = state.call.groupId ? state.groups.find((item) => item.id === state.call.groupId) : null;
+      const candidates = (group?.members || state.contacts).filter((user) => user?.id !== state.me?.id && user.id !== state.call.peerId && !state.call.participantIds.includes(user.id) && !user.hasBlocked);
+      body = `<div class="sheet-note"><strong>Add people</strong><small>${state.call.groupId ? 'Invite more people to this call.' : 'Turn this into a group call.'}</small></div><div class="call-add-people-list">${candidates.length ? candidates.map((user) => `<article>${avatarHtml(user)}<span><strong>${esc(user.displayName)}</strong><small>@${esc(user.username)}</small></span><button class="mini-btn" data-action="invite-call-participant" data-user-id="${esc(user.id)}">Add</button></article>`).join('') : '<p class="hint">Everyone available is already in the call.</p>'}</div>`;
+    }
     if (sheet.type === 'note-reply') {
       const note = state.notes.find((item) => item.id === sheet.noteId);
       const owner = note?.owner || note?.user;
@@ -7366,7 +7507,7 @@
         </section>
       `;
     }
-    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner', 'note-reply', 'repost-thought', 'message-schedule'].includes(sheet.type);
+    const compact = ['post-comments', 'post-share', 'story-comments', 'story-owner', 'note-reply', 'repost-thought', 'message-schedule', 'call-add-people'].includes(sheet.type);
     const compactClass = sheet.type === 'post-comments' ? 'story-comments-sheet post-comments-sheet' : `${sheet.type}-sheet`;
     const dialogLabel = ({
       'post-share': 'Share post',
@@ -7649,6 +7790,7 @@
               ${avatarHtml(state.me)}
               <strong>${state.storyPublishing ? 'Posting...' : (editor.publishAsHighlight ? 'Add to highlight' : 'Your story')}</strong>
             </button>
+            ${editor.publishAsHighlight ? '' : `<button class="story-close-friends-share" data-action="publish-story-close-friends" aria-label="Share with Close Friends" ${state.storyPublishing ? 'disabled' : ''}>${icon('star')}<strong>Close Friends</strong></button>`}
             ${editor.publishAsHighlight
               ? `<button class="story-send-story" data-action="publish-story-only" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : 'Send to story'}</button>`
               : `<button class="story-share-send" data-action="publish-story" aria-label="Share story" ${state.storyPublishing ? 'disabled' : ''}>${state.storyPublishing ? '<span class="spinner"></span>' : icon('send')}</button>`}
@@ -7778,10 +7920,28 @@
   }
 
   function settingsSectionTitle(section) {
-    return { account: 'Account', blocked: 'Blocked accounts', comments: 'Your comments', reposts: 'Reposts' }[section] || 'Settings';
+    return { account: 'Account', close_friends: 'Close Friends', blocked: 'Blocked accounts', comments: 'Your comments', reposts: 'Reposts' }[section] || 'Settings';
   }
 
   function renderSettingsSubsection(section) {
+    if (section === 'close_friends') {
+      const selected = new Set(state.me?.closeFriendUserIds || []);
+      const candidates = [...(state.me?.following || []), ...state.contacts, ...state.recommendations]
+        .filter((user, index, list) => user?.id && user.id !== state.me?.id && list.findIndex((item) => item?.id === user.id) === index)
+        .sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)) || String(a.username).localeCompare(String(b.username)));
+      return `
+        <section class="settings-block settings-subpage close-friends-settings">
+          <div class="close-friends-intro">${icon('star')}<span><strong>Close Friends</strong><small>Only you can see this list. People aren’t notified when you add or remove them.</small></span></div>
+          <label class="close-friends-search">${icon('search')}<input type="search" placeholder="Search" data-close-friends-search aria-label="Search Close Friends"></label>
+          <div class="settings-user-list" data-close-friends-list>
+            ${candidates.length ? candidates.map((user) => `<article class="account-row" data-close-friend-row data-search="${esc(`${user.username} ${user.displayName}`.toLowerCase())}">
+              <span class="account-identity">${avatarHtml(user)}<span class="person"><strong>${esc(user.displayName)}</strong><small>@${esc(user.username)}</small></span></span>
+              <button class="close-friend-toggle ${selected.has(user.id) ? 'active' : ''}" data-action="toggle-close-friend" data-user-id="${esc(user.id)}" aria-pressed="${selected.has(user.id)}">${selected.has(user.id) ? icon('check') : ''}</button>
+            </article>`).join('') : '<div class="settings-empty-state">Follow people to build your Close Friends list.</div>'}
+          </div>
+        </section>
+      `;
+    }
     if (section === 'account') return `
       <section class="settings-block settings-subpage">
         <h3>Contact details</h3>
@@ -7873,6 +8033,7 @@
           </header>
           <nav class="settings-menu-grid" aria-label="Settings sections">
             <button data-action="open-settings-section" data-section="account">${icon('profile')}<span><strong>Account</strong><small>Email, phone, and password</small></span>${icon('chevron')}</button>
+            <button data-action="open-settings-section" data-section="close_friends">${icon('star')}<span><strong>Close Friends</strong><small>Choose who sees private stories</small></span>${icon('chevron')}</button>
             <button data-action="open-settings-section" data-section="blocked">${icon('block')}<span><strong>Blocked</strong><small>Review blocked accounts</small></span>${icon('chevron')}</button>
             <button data-action="open-settings-section" data-section="comments">${icon('comment')}<span><strong>Comments</strong><small>Your comment activity</small></span>${icon('chevron')}</button>
             <button data-action="open-settings-section" data-section="reposts">${icon('repost')}<span><strong>Reposts</strong><small>Sharing controls and activity</small></span>${icon('chevron')}</button>
@@ -8135,7 +8296,7 @@
             ${call.video ? `<video id="local-video" class="call-local-media ${call.cameraOff ? 'camera-off' : ''}" autoplay muted playsinline></video>` : ''}
           </div>
           <div class="call-controls">
-            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'mute' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
+            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
             ${call.video ? `<button class="call-control ${call.cameraOff ? 'off' : ''}" data-action="toggle-call-camera" aria-label="${call.cameraOff ? 'Turn camera on' : 'Turn camera off'}" aria-pressed="${call.cameraOff}">${icon('video')}<small>Camera</small></button>` : ''}
             <button class="call-control hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}<small>End</small></button>
           </div>
@@ -8144,11 +8305,21 @@
     `;
   }
 
+  function renderCallRemoteStage(call) {
+    if (!call.groupId) return '<video id="remote-video" class="call-remote-media" autoplay playsinline></video>';
+    const remoteIds = (call.participantIds || []).filter((userId) => userId !== state.me?.id);
+    return `<div class="call-participant-grid count-${Math.min(4, Math.max(1, remoteIds.length))}">${remoteIds.map((userId) => {
+      const user = userById(userId);
+      return `<div class="call-participant" data-call-participant="${esc(userId)}"><video class="call-remote-media" data-call-peer-id="${esc(userId)}" autoplay playsinline></video><span class="call-peer-avatar hero">${user?.avatar?.url ? `<img src="${esc(user.avatar.url)}" alt="">` : `<span>${esc(initials(user || { username: 'Guest' }))}</span>`}</span><small>${esc(user?.displayName || user?.username || 'Joining…')}</small></div>`;
+    }).join('')}</div>`;
+  }
+
   function renderInstagramCall() {
     const call = state.call;
     if (!call.active && !call.incoming) return '';
+    const group = call.groupId ? state.groups.find((item) => item.id === call.groupId) : null;
     const peer = userById(call.peerId || call.incoming?.from);
-    const peerName = peer?.displayName || peer?.username || 'Someone';
+    const peerName = call.groupName || group?.name || peer?.displayName || peer?.username || 'Someone';
     const dockStyle = call.minimized && call.position
       ? `left:${Math.round(call.position.x)}px;top:${Math.round(call.position.y)}px;right:auto;bottom:auto;`
       : '';
@@ -8160,11 +8331,11 @@
       return `
         <section class="call-screen incoming-call" data-call-dock aria-label="Incoming call from ${esc(peerName)}">
           <div class="call-ambient" ${ambient}></div>
-          <header class="call-screen-head"><span><small>New Around</small><strong>${call.incoming.video ? 'Video chat' : 'Audio call'}</strong></span><button data-action="reject-call" aria-label="Close incoming call">${icon('x')}</button></header>
+          <header class="call-screen-head"><span><small>${call.incoming.groupId ? 'Group call' : 'New Around'}</small><strong>${call.incoming.video ? 'Video chat' : 'Audio call'}</strong></span><button data-action="reject-call" aria-label="Close incoming call">${icon('x')}</button></header>
           <main class="incoming-call-copy">
             <span class="call-peer-avatar hero">${peerAvatar}</span>
             <h1>${esc(peerName)}</h1>
-            <p>Incoming ${call.incoming.video ? 'video chat' : 'audio call'}…</p>
+            <p>Incoming ${call.incoming.groupId ? 'group ' : ''}${call.incoming.video ? 'video chat' : 'audio call'}…</p>
           </main>
           <footer class="call-incoming-actions">
             <button class="call-control reject" data-action="reject-call" aria-label="Decline call">${icon('phone')}<small>Decline</small></button>
@@ -8176,29 +8347,30 @@
     return `
       <section class="call-screen active-call ${call.video ? 'video-call' : 'voice-call'} ${call.minimized ? 'minimized' : ''}" data-call-dock style="${esc(dockStyle)}" aria-label="Call with ${esc(peerName)}">
         ${call.minimized ? `
-          <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
+          ${renderCallRemoteStage(call)}
           <div class="call-mini-drag" data-call-drag-handle>
             <button class="call-mini-main" data-action="toggle-call-minimized" aria-label="Expand call with ${esc(peerName)}">
               <span class="call-peer-avatar">${peerAvatar}</span>
-              <span><strong>${esc(peerName)}</strong><small>${esc(call.status || 'Connected')} · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span>
+              <span><strong>${esc(peerName)}</strong><small><span data-call-status>${esc(call.status || 'Connected')}</span> · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span>
             </button>
             <button class="call-mini-hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}</button>
           </div>
         ` : `
           <div class="call-stage">
-            <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
+            ${renderCallRemoteStage(call)}
             <div class="call-ambient" ${ambient}></div>
             <div class="call-voice-backdrop"><span class="call-peer-avatar hero">${peerAvatar}</span><i></i><i></i></div>
             <div class="call-stage-shade"></div>
-            <header class="call-screen-head"><button class="call-minimize" data-action="toggle-call-minimized" aria-label="Minimize call">${icon('chevron')}</button><span><strong>${esc(peerName)}</strong><small>${esc(call.status || 'Call')} · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span><i></i></header>
-            <div class="active-call-copy"><h1>${esc(peerName)}</h1><p>${esc(call.status || 'Calling…')}</p></div>
+            <header class="call-screen-head"><button class="call-minimize" data-action="toggle-call-minimized" aria-label="Minimize call">${icon('chevron')}</button><span><strong>${esc(peerName)}</strong><small><span data-call-status>${esc(call.status || 'Call')}</span> · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span><i></i></header>
+            <div class="active-call-copy"><h1>${esc(peerName)}</h1><p data-call-status>${esc(call.status || 'Calling…')}</p></div>
             ${call.video ? `<video id="local-video" class="call-local-media ${call.cameraOff ? 'camera-off' : ''}" autoplay muted playsinline></video>` : ''}
           </div>
           <div class="call-controls">
             <button class="call-control ${call.speakerOn ? '' : 'off'}" data-action="toggle-call-speaker" aria-label="${call.speakerOn ? 'Turn speaker off' : 'Turn speaker on'}" aria-pressed="${call.speakerOn}">${icon(call.speakerOn ? 'volume' : 'mute')}<small>Speaker</small></button>
-            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'mute' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
+            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
             ${call.video ? `<button class="call-control ${call.cameraOff ? 'off' : ''}" data-action="toggle-call-camera" aria-label="${call.cameraOff ? 'Turn camera on' : 'Turn camera off'}" aria-pressed="${call.cameraOff}">${icon('video')}<small>Camera</small></button>` : ''}
             ${call.video ? `<button class="call-control" data-action="flip-call-camera" aria-label="Switch camera">${icon('refresh')}<small>Flip</small></button>` : ''}
+            <button class="call-control" data-action="add-call-people" aria-label="Add people to call">${icon('plus')}<small>Add</small></button>
             <button class="call-control hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}<small>End</small></button>
           </div>
         `}
@@ -8623,6 +8795,15 @@
       personTags: [],
       pendingTagPoint: null
     };
+    const pendingClip = state.pendingClipCreation;
+    state.pendingClipCreation = null;
+    if (pendingClip && items.length === 1 && items[0].isVideo) {
+      const source = postById(pendingClip.postId);
+      if (source?.music) composer.music = { ...source.music };
+      composer.remixOfPostId = pendingClip.mode === 'remix' || !source?.music ? source?.id || null : null;
+      composer.audioSourcePostId = source?.id || null;
+      if (pendingClip.mode === 'remix' && source) composer.description = `Remix with @${postAuthor(source)?.username || 'creator'}`;
+    }
     syncPostComposerAliases(composer);
     state.postComposer = composer;
     state.postPublishing = false;
@@ -8677,7 +8858,9 @@
         catalogId: composer.music.catalogId,
         start: Number(composer.music.start || 0),
         clipDuration: Number(composer.music.clipDuration || 30)
-      } : null
+      } : null,
+      remixOfPostId: composer.remixOfPostId || null,
+      audioSourcePostId: composer.audioSourcePostId || null
     };
     const controller = new AbortController();
     composer.uploadController = controller;
@@ -8778,6 +8961,26 @@
     }
     if (action === 'save') await loadProfilePosts(state.me, 'saved', { render: false }).catch(() => []);
     if (action === 'repost') await loadProfilePosts(state.me, 'reposts', { render: false }).catch(() => []);
+  }
+
+  async function setPostInterest(postId, preference) {
+    const choice = preference === 'not_interested' ? 'not_interested' : 'interested';
+    const data = await api(`/api/posts/${encodeURIComponent(postId)}/interest`, { method: 'POST', body: { preference: choice } });
+    replacePost(data.post);
+    state.actionSheet = null;
+    updateActionSheetSlot();
+    if (choice === 'not_interested') {
+      const selectorId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
+      document.querySelectorAll(`.feed-post[data-post-id="${selectorId}"], .clip-card[data-post-id="${selectorId}"]`).forEach((card) => card.classList.add('post-dismissed'));
+      setTimeout(() => {
+        state.homeFeed = state.homeFeed.filter((post) => post.id !== postId);
+        state.explorePosts = state.explorePosts.filter((post) => post.id !== postId);
+        state.clips = state.clips.filter((post) => post.id !== postId);
+        updateSidebar();
+        if (state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
+      }, 280);
+    } else updateSidebar();
+    pushToast({ key: `post-interest-${postId}`, kind: 'social', title: choice === 'interested' ? 'More like this' : 'Post hidden', body: choice === 'interested' ? 'Your For you recommendations will adapt.' : 'You’ll see fewer posts like this.' });
   }
 
   function openRepostThought(postId) {
@@ -9764,7 +9967,7 @@
   function setInstantAudience(audience) {
     if (!state.instantComposer) return;
     state.instantComposer.caption = document.getElementById('instant-caption')?.value.slice(0, 220) || '';
-    state.instantComposer.audience = audience === 'favorites' ? 'favorites' : 'friends';
+    state.instantComposer.audience = audience === 'close_friends' ? 'close_friends' : 'friends';
     updateInboxFeatureSlot();
   }
 
@@ -9811,6 +10014,23 @@
     await loadInstants();
     updateInboxFeatureSlot();
     updateSidebar();
+  }
+
+  async function toggleCloseFriend(userId) {
+    const selected = new Set(state.me?.closeFriendUserIds || []);
+    const removing = selected.has(userId);
+    const data = await api(`/api/close-friends/${encodeURIComponent(userId)}`, { method: removing ? 'DELETE' : 'POST' });
+    state.me.closeFriendUserIds = data.closeFriendUserIds || [...selected].filter((id) => id !== userId);
+    if (!removing && !state.me.closeFriendUserIds.includes(userId)) state.me.closeFriendUserIds.push(userId);
+    const user = userById(userId);
+    if (user) user.isCloseFriend = !removing;
+    if (state.publicProfile?.id === userId) state.publicProfile.isCloseFriend = !removing;
+    if (state.actionSheet?.type === 'profile-user') {
+      state.actionSheet = null;
+      updateActionSheetSlot();
+    }
+    updateProfileModalSlots();
+    pushToast({ key: `close-friend-${userId}`, kind: 'social', title: removing ? 'Removed from Close Friends' : 'Added to Close Friends', body: 'Only you can see changes to this list.' });
   }
 
   async function reactToInstant(emoji) {
@@ -10452,6 +10672,24 @@
     await loadContactsAndChats();
     await loadSocialSurfaces();
     renderApp();
+  }
+
+  async function openSuggestedChat(userId) {
+    const user = userById(userId);
+    if (!user) return;
+    const existing = state.chats.find((chat) => chat.peer?.id === userId);
+    if (existing || user.isContact) {
+      await openChat(userId);
+      return;
+    }
+    const data = await api(`/api/contacts/${encodeURIComponent(user.username)}`, { method: 'POST' });
+    await loadContactsAndChats();
+    const available = state.chats.find((chat) => chat.peer?.id === userId);
+    if (available || data.alreadyFriends || data.accepted) await openChat(userId);
+    else {
+      updateSidebar();
+      pushToast({ key: `chat-request-${userId}`, kind: 'social', title: 'Chat requested', body: `${user.displayName || user.username} can message you after accepting.` });
+    }
   }
 
   async function acceptRequest(requestId) {
@@ -11498,6 +11736,7 @@
         lastModified: editor.audio.lastModified ? new Date(editor.audio.lastModified).toISOString() : null
       } : null,
       saved: publishToHighlight,
+      audience: options.audience === 'close_friends' ? 'close_friends' : 'everyone',
       highlightId,
       highlightTitle
     };
@@ -13206,17 +13445,19 @@
 
   function sendSignal(to, payload) {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-    state.ws.send(JSON.stringify({ type: 'signal', to, payload }));
+    const callId = payload?.callId || state.call.callId || state.call.incoming?.callId || null;
+    state.ws.send(JSON.stringify({ type: 'signal', to, payload: { ...payload, callId } }));
   }
 
-  function createPeerConnection(peerId) {
+  function createPeerConnection(peerId, callId) {
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
     pc.onicecandidate = (event) => {
-      if (event.candidate) sendSignal(peerId, { kind: 'candidate', candidate: event.candidate });
+      if (event.candidate) sendSignal(peerId, { kind: 'candidate', candidate: event.candidate, callId });
     };
     pc.ontrack = (event) => {
+      if (state.call.callId !== callId || state.call.pc !== pc) return;
       if (!state.call.remoteStream) state.call.remoteStream = new MediaStream();
       const incomingTracks = event.streams[0]?.getTracks?.() || [event.track];
       incomingTracks.filter(Boolean).forEach((track) => {
@@ -13224,22 +13465,189 @@
       });
       state.call.status = 'Connected';
       state.call.startedAt ||= Date.now();
-      updateCallDock();
+      clearTimeout(callTimeoutTimer);
+      callTimeoutTimer = null;
+      syncCallUi();
     };
     pc.onconnectionstatechange = () => {
-      if (state.call.pc !== pc) return;
+      if (state.call.callId !== callId || state.call.pc !== pc) return;
       if (pc.connectionState === 'connected') {
         state.call.status = 'Connected';
         state.call.startedAt ||= Date.now();
       } else if (pc.connectionState === 'connecting') state.call.status = 'Connecting…';
       else if (pc.connectionState === 'disconnected') state.call.status = 'Reconnecting…';
       else if (pc.connectionState === 'failed') state.call.status = 'Connection lost';
-      updateCallDock();
+      syncCallUi();
       if (pc.connectionState === 'failed') setTimeout(() => {
         if (state.call.pc === pc && pc.connectionState === 'failed') endCall(false);
       }, 1800);
     };
     return pc;
+  }
+
+  async function createGroupPeerConnection(peerId, offerNow = false) {
+    if (!state.call.active || !state.call.groupId || peerId === state.me?.id) return null;
+    const existing = state.call.connections.get(peerId);
+    if (existing) return existing;
+    const callId = state.call.callId;
+    const groupId = state.call.groupId;
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    const connection = { pc, remoteStream: new MediaStream(), pending: state.call.pendingByPeer.get(peerId) || [] };
+    state.call.pendingByPeer.delete(peerId);
+    state.call.connections.set(peerId, connection);
+    state.call.localStream?.getTracks?.().forEach((track) => pc.addTrack(track, state.call.localStream));
+    pc.onicecandidate = (event) => {
+      if (event.candidate) sendSignal(peerId, { kind: 'group_candidate', candidate: event.candidate, callId, groupId });
+    };
+    pc.ontrack = (event) => {
+      if (state.call.callId !== callId || state.call.connections.get(peerId)?.pc !== pc) return;
+      const tracks = event.streams[0]?.getTracks?.() || [event.track];
+      tracks.filter(Boolean).forEach((track) => {
+        if (!connection.remoteStream.getTracks().some((item) => item.id === track.id)) connection.remoteStream.addTrack(track);
+      });
+      state.call.remoteStreams.set(peerId, connection.remoteStream);
+      if (!state.call.participantIds.includes(peerId)) state.call.participantIds.push(peerId);
+      state.call.status = 'Connected';
+      state.call.startedAt ||= Date.now();
+      updateCallDock();
+    };
+    pc.onconnectionstatechange = () => {
+      if (state.call.callId !== callId) return;
+      if (pc.connectionState === 'connected') {
+        state.call.status = 'Connected';
+        state.call.startedAt ||= Date.now();
+        syncCallUi();
+      }
+      if (['failed', 'closed'].includes(pc.connectionState)) removeGroupCallParticipant(peerId, false);
+    };
+    if (offerNow) {
+      const offer = await pc.createOffer();
+      if (state.call.callId !== callId) return connection;
+      await pc.setLocalDescription(offer);
+      sendSignal(peerId, { kind: 'group_offer', offer, callId, groupId });
+    }
+    return connection;
+  }
+
+  async function startGroupCall(video) {
+    const group = state.activeGroup;
+    if (!group || !navigator.mediaDevices?.getUserMedia) return;
+    await endCall(false);
+    const callId = newCallId();
+    const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { facingMode: 'user' } : false });
+    const participantIds = Array.from(new Set([state.me.id, ...(group.members || []).map((user) => user.id)]));
+    state.call = { ...freshCallState(), callId, groupId: group.id, groupName: group.name, localStream, active: true, video, status: 'Calling…', participantIds };
+    updateCallDock();
+    (group.members || []).filter((user) => user.id !== state.me.id).forEach((user) => sendSignal(user.id, {
+      kind: 'group_invite', callId, groupId: group.id, groupName: group.name, video, participantIds
+    }));
+  }
+
+  function promoteDirectCallToParty() {
+    if (!state.call.active || state.call.groupId || !state.call.peerId) return;
+    const peerId = state.call.peerId;
+    state.call.groupId = `party-${state.call.callId}`;
+    state.call.groupName = 'Group call';
+    state.call.participantIds = [state.me.id, peerId];
+    if (state.call.pc) state.call.connections.set(peerId, { pc: state.call.pc, remoteStream: state.call.remoteStream, pending: [] });
+    if (state.call.remoteStream) state.call.remoteStreams.set(peerId, state.call.remoteStream);
+    sendSignal(peerId, { kind: 'group_promote', callId: state.call.callId, groupId: state.call.groupId, groupName: state.call.groupName, participantIds: state.call.participantIds, video: state.call.video });
+  }
+
+  function inviteCallParticipant(userId) {
+    if (!state.call.active || !userId || state.call.participantIds.includes(userId)) return;
+    promoteDirectCallToParty();
+    state.call.participantIds.push(userId);
+    const payload = { callId: state.call.callId, groupId: state.call.groupId, groupName: state.call.groupName, participantIds: state.call.participantIds, video: state.call.video };
+    sendSignal(userId, { kind: 'group_invite', ...payload });
+    state.call.participantIds.filter((id) => id !== state.me.id && id !== userId).forEach((id) => sendSignal(id, { kind: 'group_participants', ...payload }));
+    state.actionSheet = null;
+    updateActionSheetSlot();
+    updateCallDock();
+  }
+
+  function removeGroupCallParticipant(peerId, notify = true) {
+    const connection = state.call.connections.get(peerId);
+    connection?.pc?.close?.();
+    connection?.remoteStream?.getTracks?.().forEach((track) => track.stop());
+    state.call.connections.delete(peerId);
+    state.call.remoteStreams.delete(peerId);
+    state.call.participantIds = state.call.participantIds.filter((id) => id !== peerId);
+    if (notify) sendSignal(peerId, { kind: 'group_leave', callId: state.call.callId, groupId: state.call.groupId });
+    if (state.call.active) updateCallDock();
+  }
+
+  async function handleGroupSignal(from, payload) {
+    if (!String(payload.kind || '').startsWith('group_')) return false;
+    const callId = payload.callId || `${from}-group-call`;
+    if (payload.kind === 'group_invite') {
+      if (state.call.active || state.call.incoming) {
+        if (state.call.callId !== callId) sendSignal(from, { kind: 'group_reject', reason: 'busy', callId, groupId: payload.groupId });
+        return true;
+      }
+      state.call = {
+        ...freshCallState(), callId, groupId: payload.groupId, groupName: payload.groupName || 'Group call',
+        participantIds: Array.from(new Set([...(payload.participantIds || []), from])),
+        incoming: { from, callId, offer: null, video: Boolean(payload.video), groupId: payload.groupId }
+      };
+      updateCallDock();
+      return true;
+    }
+    if (state.call.callId !== callId) return true;
+    if (payload.kind === 'group_promote' && state.call.active) {
+      const peerId = state.call.peerId || from;
+      state.call.groupId = payload.groupId;
+      state.call.groupName = payload.groupName || 'Group call';
+      state.call.participantIds = Array.from(new Set(payload.participantIds || [state.me.id, peerId]));
+      if (state.call.pc) state.call.connections.set(peerId, { pc: state.call.pc, remoteStream: state.call.remoteStream, pending: [] });
+      if (state.call.remoteStream) state.call.remoteStreams.set(peerId, state.call.remoteStream);
+      updateCallDock();
+      return true;
+    }
+    if (payload.kind === 'group_participants' && state.call.active) {
+      state.call.participantIds = Array.from(new Set([state.me.id, ...(payload.participantIds || [])]));
+      updateCallDock();
+      return true;
+    }
+    if (payload.kind === 'group_join' && state.call.active && state.call.groupId === payload.groupId) {
+      if (!state.call.participantIds.includes(from)) state.call.participantIds.push(from);
+      if (String(state.me?.id || '').localeCompare(String(from)) < 0) await createGroupPeerConnection(from, true);
+      updateCallDock();
+      return true;
+    }
+    if (payload.kind === 'group_offer' && state.call.active && state.call.groupId === payload.groupId) {
+      const connection = await createGroupPeerConnection(from, false);
+      await connection.pc.setRemoteDescription(payload.offer);
+      await Promise.all(connection.pending.splice(0).map((candidate) => connection.pc.addIceCandidate(candidate).catch(() => {})));
+      const answer = await connection.pc.createAnswer();
+      await connection.pc.setLocalDescription(answer);
+      sendSignal(from, { kind: 'group_answer', answer, callId, groupId: payload.groupId });
+      return true;
+    }
+    if (payload.kind === 'group_answer') {
+      const connection = state.call.connections.get(from);
+      if (connection?.pc) {
+        await connection.pc.setRemoteDescription(payload.answer);
+        await Promise.all(connection.pending.splice(0).map((candidate) => connection.pc.addIceCandidate(candidate).catch(() => {})));
+      }
+      return true;
+    }
+    if (payload.kind === 'group_candidate') {
+      const connection = state.call.connections.get(from);
+      if (connection?.pc?.remoteDescription) await connection.pc.addIceCandidate(payload.candidate).catch(() => {});
+      else if (connection) connection.pending.push(payload.candidate);
+      else {
+        const pending = state.call.pendingByPeer.get(from) || [];
+        pending.push(payload.candidate);
+        state.call.pendingByPeer.set(from, pending);
+      }
+      return true;
+    }
+    if (payload.kind === 'group_leave') {
+      removeGroupCallParticipant(from, false);
+      return true;
+    }
+    return true;
   }
 
   async function startCall(video) {
@@ -13250,34 +13658,60 @@
     }
     await endCall(false);
     const peerId = state.activePeer.id;
+    const callId = newCallId();
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { facingMode: 'user' } : false });
-    const pc = createPeerConnection(peerId);
+    state.call = { ...freshCallState(), callId, peerId, localStream, active: true, video, status: 'Calling…' };
+    const pc = createPeerConnection(peerId, callId);
+    state.call.pc = pc;
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
-    state.call = { ...freshCallState(), peerId, pc, localStream, active: true, video, status: 'Calling...' };
     updateCallDock();
     const offer = await pc.createOffer();
+    if (state.call.callId !== callId) return;
     await pc.setLocalDescription(offer);
-    sendSignal(peerId, { kind: 'offer', offer, video });
+    sendSignal(peerId, { kind: 'offer', offer, video, callId });
+    clearTimeout(callTimeoutTimer);
+    callTimeoutTimer = setTimeout(async () => {
+      if (state.call.callId !== callId || state.call.startedAt) return;
+      sendSignal(peerId, { kind: 'hangup', reason: 'unanswered', callId });
+      await endCall(false);
+      pushToast({ key: `call-unanswered-${callId}`, kind: 'social', title: 'No answer', body: 'You can try again or send a message.' });
+    }, 30000);
   }
 
   async function handleSignal(from, payload) {
     if (!payload) return;
+    if (await handleGroupSignal(from, payload)) return;
+    const callId = payload.callId || `${from}-legacy-call`;
     if (payload.kind === 'offer') {
       if (state.call.active || state.call.incoming) {
-        sendSignal(from, { kind: 'reject', reason: 'busy' });
-        return;
+        const samePeerOutgoing = state.call.active && state.call.peerId === from && !state.call.startedAt;
+        const yieldToIncoming = samePeerOutgoing && String(state.me?.id || '').localeCompare(String(from)) > 0;
+        if (!yieldToIncoming) {
+          sendSignal(from, { kind: 'reject', reason: samePeerOutgoing ? 'collision' : 'busy', callId });
+          return;
+        }
+        await endCall(false);
       }
-      state.call = { ...freshCallState(), incoming: { from, offer: payload.offer, video: Boolean(payload.video) } };
+      state.call = { ...freshCallState(), callId, incoming: { from, offer: payload.offer, video: Boolean(payload.video), callId } };
       updateCallDock();
       return;
     }
-    if (payload.kind === 'answer' && state.call.pc) {
+    const currentCallId = state.call.callId || state.call.incoming?.callId;
+    if (currentCallId && callId !== currentCallId) return;
+    if (payload.kind === 'answer' && state.call.pc && state.call.peerId === from) {
       await state.call.pc.setRemoteDescription(payload.answer);
+      await flushCallCandidates();
       state.call.status = 'Connected';
-      updateCallDock();
+      clearTimeout(callTimeoutTimer);
+      callTimeoutTimer = null;
+      syncCallUi();
       return;
     }
     if (payload.kind === 'candidate' && state.call.pc) {
+      if (!state.call.pc.remoteDescription) {
+        state.call.pendingCandidates.push(payload.candidate);
+        return;
+      }
       try {
         await state.call.pc.addIceCandidate(payload.candidate);
       } catch {
@@ -13291,7 +13725,7 @@
     }
     if (payload.kind === 'reject') {
       await endCall(false);
-      pushToast({ key: `call-rejected-${Date.now()}`, kind: 'social', title: payload.reason === 'busy' ? 'They’re already on a call' : 'Call declined', body: payload.reason === 'busy' ? 'Try calling again later.' : 'The call was not answered.' });
+      if (payload.reason !== 'collision') pushToast({ key: `call-rejected-${Date.now()}`, kind: 'social', title: payload.reason === 'busy' ? 'They’re already on a call' : 'Call declined', body: payload.reason === 'busy' ? 'Try calling again later.' : 'The call was not answered.' });
       return;
     }
     if (payload.kind === 'hangup') {
@@ -13299,16 +13733,29 @@
     }
   }
 
+  async function flushCallCandidates() {
+    const pc = state.call.pc;
+    if (!pc?.remoteDescription || !state.call.pendingCandidates.length) return;
+    const queued = state.call.pendingCandidates.splice(0);
+    await Promise.all(queued.map((candidate) => pc.addIceCandidate(candidate).catch(() => {})));
+  }
+
   async function acceptCall() {
     const incoming = state.call.incoming;
     if (!incoming) return;
+    if (incoming.groupId) {
+      await acceptGroupCall(incoming);
+      return;
+    }
     const pendingCandidates = [...state.call.pendingCandidates];
     const position = state.call.position;
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.video ? { facingMode: 'user' } : false });
-    const pc = createPeerConnection(incoming.from);
+    const callId = incoming.callId || state.call.callId || newCallId();
+    const pc = createPeerConnection(incoming.from, callId);
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
     state.call = {
       ...freshCallState(),
+      callId,
       peerId: incoming.from,
       pc,
       localStream,
@@ -13319,26 +13766,47 @@
     };
     updateCallDock();
     await pc.setRemoteDescription(incoming.offer);
-    await Promise.all(pendingCandidates.map((candidate) => pc.addIceCandidate(candidate).catch(() => {})));
+    state.call.pendingCandidates.push(...pendingCandidates);
+    await flushCallCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    sendSignal(incoming.from, { kind: 'answer', answer });
+    sendSignal(incoming.from, { kind: 'answer', answer, callId });
+  }
+
+  async function acceptGroupCall(incoming) {
+    const participantIds = Array.from(new Set([...(state.call.participantIds || []), incoming.from, state.me.id]));
+    const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.video ? { facingMode: 'user' } : false });
+    state.call = {
+      ...freshCallState(), callId: incoming.callId, groupId: incoming.groupId,
+      groupName: state.call.groupName || 'Group call', participantIds, localStream,
+      active: true, video: incoming.video, status: 'Connecting…'
+    };
+    updateCallDock();
+    await Promise.all(participantIds.filter((userId) => userId !== state.me.id).map(async (userId) => {
+      sendSignal(userId, { kind: 'group_join', callId: state.call.callId, groupId: state.call.groupId, participantIds });
+      if (String(state.me.id).localeCompare(String(userId)) < 0) await createGroupPeerConnection(userId, true);
+    }));
   }
 
   async function rejectCall() {
     const incoming = state.call.incoming;
-    if (incoming) sendSignal(incoming.from, { kind: 'reject' });
+    if (incoming) sendSignal(incoming.from, { kind: incoming.groupId ? 'group_reject' : 'reject', callId: incoming.callId, groupId: incoming.groupId });
     await endCall(false);
   }
 
   async function endCall(notify = true) {
     const peerId = state.call.peerId || state.call.incoming?.from;
-    if (notify && peerId) sendSignal(peerId, { kind: 'hangup' });
+    const callId = state.call.callId || state.call.incoming?.callId;
+    if (notify && peerId) sendSignal(peerId, { kind: 'hangup', callId });
+    if (notify && state.call.groupId) state.call.participantIds.filter((userId) => userId !== state.me?.id).forEach((userId) => sendSignal(userId, { kind: 'group_leave', callId, groupId: state.call.groupId }));
+    state.call.connections?.forEach?.((connection) => connection.pc?.close?.());
     if (state.call.pc) state.call.pc.close();
     if (state.call.localStream) state.call.localStream.getTracks().forEach((track) => track.stop());
     if (state.call.remoteStream) state.call.remoteStream.getTracks().forEach((track) => track.stop());
     clearInterval(callDurationTimer);
     callDurationTimer = null;
+    clearTimeout(callTimeoutTimer);
+    callTimeoutTimer = null;
     state.callDockDrag = null;
     state.call = freshCallState();
     updateCallDock();
@@ -13348,22 +13816,26 @@
     if (!state.call.active) return;
     state.call.muted = !state.call.muted;
     state.call.localStream?.getAudioTracks?.().forEach((track) => { track.enabled = !state.call.muted; });
-    updateCallDock();
+    syncCallUi('toggle-call-mute');
   }
 
   function toggleCallCamera() {
     if (!state.call.active || !state.call.video) return;
     state.call.cameraOff = !state.call.cameraOff;
     state.call.localStream?.getVideoTracks?.().forEach((track) => { track.enabled = !state.call.cameraOff; });
-    updateCallDock();
+    syncCallUi('toggle-call-camera');
   }
 
   function toggleCallSpeaker() {
     if (!state.call.active) return;
     state.call.speakerOn = !state.call.speakerOn;
-    const remote = document.getElementById('remote-video');
-    if (remote) remote.muted = !state.call.speakerOn;
-    updateCallDock();
+    const remotes = document.querySelectorAll('#remote-video, [data-call-peer-id]');
+    remotes.forEach((remote) => {
+      remote.muted = !state.call.speakerOn;
+      remote.volume = state.call.speakerOn ? 1 : 0;
+      if (state.call.speakerOn) remote.play?.().catch(() => {});
+    });
+    syncCallUi('toggle-call-speaker');
   }
 
   async function flipCallCamera() {
@@ -13375,12 +13847,14 @@
     });
     const nextTrack = replacement.getVideoTracks()[0];
     const previousTrack = state.call.localStream?.getVideoTracks?.()[0];
-    const sender = state.call.pc?.getSenders?.().find((item) => item.track?.kind === 'video');
-    if (!nextTrack || !sender) {
+    const senders = state.call.groupId
+      ? [...state.call.connections.values()].map((connection) => connection.pc?.getSenders?.().find((item) => item.track?.kind === 'video')).filter(Boolean)
+      : [state.call.pc?.getSenders?.().find((item) => item.track?.kind === 'video')].filter(Boolean);
+    if (!nextTrack || !senders.length) {
       replacement.getTracks().forEach((track) => track.stop());
       throw new Error('The camera could not be switched.');
     }
-    await sender.replaceTrack(nextTrack);
+    await Promise.all(senders.map((sender) => sender.replaceTrack(nextTrack)));
     if (previousTrack) {
       state.call.localStream.removeTrack(previousTrack);
       previousTrack.stop();
@@ -13388,7 +13862,8 @@
     state.call.localStream.addTrack(nextTrack);
     state.call.facingMode = nextFacingMode;
     state.call.cameraOff = false;
-    updateCallDock();
+    attachCallStreams();
+    syncCallUi('flip-call-camera');
   }
 
   function toggleCallMinimized() {
@@ -13440,6 +13915,45 @@
     upload.style.bottom = 'auto';
   }
 
+  function syncCallUi(animateAction = '') {
+    const call = state.call;
+    document.querySelectorAll('[data-call-status]').forEach((node) => { node.textContent = call.status || 'Call'; });
+    const speaker = document.querySelector('[data-action="toggle-call-speaker"]');
+    if (speaker) {
+      speaker.classList.toggle('off', !call.speakerOn);
+      speaker.setAttribute('aria-pressed', String(call.speakerOn));
+      speaker.setAttribute('aria-label', call.speakerOn ? 'Turn speaker off' : 'Turn speaker on');
+      speaker.innerHTML = `${icon(call.speakerOn ? 'volume' : 'mute')}<small>Speaker</small>`;
+    }
+    const microphone = document.querySelector('[data-action="toggle-call-mute"]');
+    if (microphone) {
+      microphone.classList.toggle('off', call.muted);
+      microphone.setAttribute('aria-pressed', String(call.muted));
+      microphone.setAttribute('aria-label', call.muted ? 'Unmute microphone' : 'Mute microphone');
+      microphone.innerHTML = `${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small>`;
+    }
+    const camera = document.querySelector('[data-action="toggle-call-camera"]');
+    if (camera) {
+      camera.classList.toggle('off', call.cameraOff);
+      camera.setAttribute('aria-pressed', String(call.cameraOff));
+      camera.setAttribute('aria-label', call.cameraOff ? 'Turn camera on' : 'Turn camera off');
+      camera.innerHTML = `${icon('video')}<small>${call.cameraOff ? 'Camera on' : 'Camera'}</small>`;
+    }
+    document.getElementById('local-video')?.classList.toggle('camera-off', call.cameraOff);
+    document.querySelectorAll('#remote-video, [data-call-peer-id]').forEach((remote) => {
+      remote.muted = !call.speakerOn;
+      remote.volume = call.speakerOn ? 1 : 0;
+    });
+    const animated = animateAction ? document.querySelector(`[data-action="${animateAction}"]`) : null;
+    if (animated) {
+      animated.classList.remove('control-pop');
+      requestAnimationFrame(() => animated.classList.add('control-pop'));
+      setTimeout(() => animated.classList.remove('control-pop'), 260);
+    }
+    attachCallStreams();
+    syncCallDurationTimer();
+  }
+
   function updateCallDock() {
     const slot = document.getElementById('call-dock-slot');
     if (slot) {
@@ -13458,11 +13972,20 @@
       local.srcObject = state.call.localStream;
       local.play?.().catch(() => {});
     }
-    if (remote && state.call.remoteStream && remote.srcObject !== state.call.remoteStream) {
-      remote.srcObject = state.call.remoteStream;
+    if (remote) {
+      if (state.call.remoteStream && remote.srcObject !== state.call.remoteStream) remote.srcObject = state.call.remoteStream;
       remote.muted = !state.call.speakerOn;
-      remote.play?.().catch(() => {});
+      remote.volume = state.call.speakerOn ? 1 : 0;
+      if (state.call.remoteStream && state.call.speakerOn) remote.play?.().catch(() => {});
     }
+    document.querySelectorAll('[data-call-peer-id]').forEach((video) => {
+      const stream = state.call.remoteStreams?.get?.(video.dataset.callPeerId);
+      if (stream && video.srcObject !== stream) video.srcObject = stream;
+      video.closest('.call-participant')?.classList.toggle('has-video-stream', Boolean(stream?.getVideoTracks?.().length));
+      video.muted = !state.call.speakerOn;
+      video.volume = state.call.speakerOn ? 1 : 0;
+      if (stream && state.call.speakerOn) video.play?.().catch(() => {});
+    });
   }
 
   let overlayCloseTimer = null;
@@ -13758,7 +14281,7 @@
   }
 
   async function openSettingsSection(section) {
-    const allowed = ['account', 'blocked', 'comments', 'reposts'];
+    const allowed = ['account', 'close_friends', 'blocked', 'comments', 'reposts'];
     if (!allowed.includes(section)) return;
     if (section === 'account') {
       const data = await api('/api/account');
@@ -13865,6 +14388,7 @@
     restorePersistentScroll();
     initializePostCarousels(next);
     if (state.tab === 'clips' || state.clipViewer) requestAnimationFrame(attachClipPlayback);
+    if (state.tab === 'home') requestAnimationFrame(() => attachStoryScrollHint(next));
     return true;
   }
 
@@ -14123,6 +14647,30 @@
         updateSidebar();
         requestAnimationFrame(attachClipPlayback);
       }
+      if (action === 'open-clip-audio') {
+        document.querySelectorAll('[data-clip-video]').forEach((video) => video.pause());
+        state.actionSheet = null;
+        state.clipAudioPage = { postId: target.dataset.postId };
+        updateActionSheetSlot();
+        updateSidebar();
+      }
+      if (action === 'close-clip-audio') {
+        state.clipAudioPage = null;
+        updateSidebar();
+        requestAnimationFrame(attachClipPlayback);
+      }
+      if (action === 'use-clip-audio' || action === 'remix-clip') {
+        state.actionSheet = null;
+        updateActionSheetSlot();
+        state.pendingClipCreation = { postId: target.dataset.postId, mode: action === 'remix-clip' ? 'remix' : 'audio' };
+        openPostMediaPicker();
+      }
+      if (action === 'open-audio-clip') {
+        const postId = target.dataset.postId;
+        state.clipAudioPage = null;
+        updateSidebar();
+        requestAnimationFrame(() => openPostClip(postId, 0, target));
+      }
       if (action === 'open-inbox-map') {
         state.inboxFeature = 'map';
         state.instantComposer = null;
@@ -14329,6 +14877,7 @@
       if (action === 'post-carousel-next') movePostCarousel(target.dataset.postId, 1);
       if (action === 'toggle-post-like') await togglePostAction(target.dataset.postId, 'like');
       if (action === 'toggle-post-save') await togglePostAction(target.dataset.postId, 'save');
+      if (action === 'set-post-interest') await setPostInterest(target.dataset.postId, target.dataset.preference);
       if (action === 'toggle-post-repost') openRepostThought(target.dataset.postId);
       if (action === 'save-repost-thought') await updateRepost(target.dataset.postId, 'save');
       if (action === 'remove-repost') await updateRepost(target.dataset.postId, 'remove');
@@ -14355,9 +14904,14 @@
           postId: target.dataset.postId,
           commentDraft: '',
           commentPosting: false,
+          commentSort: 'for_you',
           replyToCommentId: null,
           expandedCommentIds: []
         });
+      }
+      if (action === 'set-comment-sort' && state.actionSheet?.type === 'post-comments') {
+        state.actionSheet.commentSort = target.dataset.sort === 'newest' ? 'newest' : 'for_you';
+        updateActionSheetSlot();
       }
       if (action === 'add-post-comment-emoji') {
         addPostCommentEmoji(target.dataset.emoji || '', target);
@@ -14420,6 +14974,7 @@
       }
       if (action === 'open-profile-menu') openActionSheet({ type: 'profile-user', userId: target.dataset.userId });
       if (action === 'toggle-favorite-user') await toggleFavoriteUser(target.dataset.userId);
+      if (action === 'toggle-close-friend') await toggleCloseFriend(target.dataset.userId);
       if (action === 'open-note-composer') openNoteComposer();
       if (action === 'open-note-reply') {
         openActionSheet({ type: 'note-reply', noteId: target.dataset.noteId, replyDraft: '' });
@@ -15091,6 +15646,14 @@
       if (action === 'publish-story') {
         await publishStory();
       }
+      if (action === 'publish-story-close-friends') {
+        if (!(state.me?.closeFriendUserIds || []).length) {
+          state.settingsOpen = true;
+          state.settingsSection = 'close_friends';
+          updateProfileModalSlots();
+          pushToast({ key: 'close-friends-empty', kind: 'social', title: 'Choose Close Friends first', body: 'Add people, then share the story again.' });
+        } else await publishStory({ audience: 'close_friends' });
+      }
       if (action === 'publish-story-only') {
         await publishStory();
       }
@@ -15278,6 +15841,11 @@
       if (action === 'add-contact') {
         await addContact(target.dataset.username);
       }
+      if (action === 'set-inbox-view') {
+        state.inboxView = target.dataset.view === 'requests' ? 'requests' : 'primary';
+        updateSidebar();
+      }
+      if (action === 'open-suggested-chat') await openSuggestedChat(target.dataset.userId);
       if (action === 'view-own-profile') {
         openOwnProfileFromStoryComments();
       }
@@ -15641,6 +16209,8 @@
       if (action === 'video-call') {
         await startCall(true);
       }
+      if (action === 'group-audio-call') await startGroupCall(false);
+      if (action === 'group-video-call') await startGroupCall(true);
       if (action === 'accept-call') {
         await acceptCall();
       }
@@ -15659,6 +16229,8 @@
       if (action === 'toggle-call-speaker') {
         toggleCallSpeaker();
       }
+      if (action === 'add-call-people') openActionSheet({ type: 'call-add-people' });
+      if (action === 'invite-call-participant') inviteCallParticipant(target.dataset.userId);
       if (action === 'flip-call-camera') {
         await flipCallCamera();
       }
@@ -15774,6 +16346,11 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (event.target.matches('[data-close-friends-search]')) {
+      const query = event.target.value.trim().toLowerCase();
+      document.querySelectorAll('[data-close-friend-row]').forEach((row) => { row.hidden = Boolean(query && !String(row.dataset.search || '').includes(query)); });
+      return;
+    }
     if (event.target.id === 'repost-thought-input' && state.actionSheet?.type === 'repost-thought') {
       state.actionSheet.note = event.target.value.slice(0, 60);
       const count = document.querySelector('[data-repost-thought-count]');
@@ -17417,7 +17994,8 @@
         if (swipe.preview) swipe.preview.style.transform = 'translateX(0)';
         setTimeout(() => {
           clearTabSwipePreview(swipe);
-          switchMainTab(swipe.targetTab, { animate: false });
+          if (swipe.targetTab === 'create') openPostMediaPicker();
+          else switchMainTab(swipe.targetTab, { animate: false });
         }, 220);
       } else {
         surface.style.transform = 'translateX(0)';
