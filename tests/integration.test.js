@@ -550,6 +550,14 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(clientSource, /loadProfilePosts\(user, tab, \{ render: false \}\)/);
   assert.match(styleSource, /\.profile-media-section \{[\s\S]*?min-height: calc\(var\(--visual-height\) - 64px\);/);
   assert.doesNotMatch(sidebarSource, /searchProfileMediaTab|profileMediaTab/);
+  const openProfileSource = sourceSection(clientSource, 'async function openSearchProfile', 'function closeSearchProfileNavigation');
+  assert.ok(openProfileSource.indexOf('const postsRequest = api(') < openProfileSource.indexOf('await fetchPublicProfile(requestedUsername)'));
+  assert.ok(openProfileSource.indexOf('renderApp();') < openProfileSource.indexOf('await postsRequest'));
+  assert.match(clientSource, /const PROFILE_CACHE_TTL_MS = 45000/);
+  assert.match(clientSource, /function prefetchProfileFromTarget/);
+  assert.match(clientSource, /class="profile-post-grid profile-post-skeleton"/);
+  assert.match(styleSource, /\.page-loading-bar \{/);
+  assert.match(styleSource, /\.profile-post-skeleton > i \{[\s\S]*?aspect-ratio: 3 \/ 4;/);
 
   const postComposerSource = sourceSection(clientSource, 'function renderPostComposerMedia(', 'function renderNoteRail');
   assert.match(postComposerSource, /const stage = clamp\(Number\(composer\.stage \|\| 1\), 1, 3\)/);

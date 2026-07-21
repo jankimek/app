@@ -19661,6 +19661,52 @@ html.clip-view-transition::view-transition-new(root) {
 .profile-starter > div > button.complete { opacity: .7; }
 .profile-starter > div > button.complete > .ui-icon:first-child { background: #18a957; }
 
+/* Route and data feedback stays out of the app tree so full renders cannot reset it. */
+.page-loading-bar {
+  --page-load-progress: 0;
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 20000;
+  height: 3px;
+  overflow: hidden;
+  opacity: 0;
+  background: rgba(255, 255, 255, .04);
+  pointer-events: none;
+  transition: opacity 140ms ease;
+  contain: layout paint;
+}
+
+.page-loading-bar > span {
+  position: absolute;
+  inset: 0;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(90deg, var(--social-violet), var(--social-teal) 72%, #77efe3);
+  box-shadow: 0 0 12px rgba(79, 211, 199, .48);
+  transform: scaleX(var(--page-load-progress));
+  transform-origin: left center;
+  transition: transform 180ms ease-out;
+  will-change: transform;
+}
+
+.page-loading-bar.is-visible { opacity: 1; }
+.page-loading-bar.is-completing { opacity: 0; transition-delay: 90ms; }
+
+.profile-post-skeleton {
+  min-height: 0;
+  opacity: 1 !important;
+}
+
+.profile-post-skeleton > i {
+  display: block;
+  aspect-ratio: 3 / 4;
+  background: linear-gradient(110deg, #0c121b 20%, #172332 45%, #0c121b 70%);
+  background-size: 220% 100%;
+  animation: socialGridShimmer 1.15s linear infinite;
+}
+
+.profile-post-skeleton > i:nth-child(3n + 2) { animation-delay: 80ms; }
+.profile-post-skeleton > i:nth-child(3n) { animation-delay: 160ms; }
+
 @media (max-width: 620px) {
   .clip-audio-hero { grid-template-columns: 94px minmax(0,1fr); padding-inline: 14px; }
   .clip-audio-art { width: 94px; }
@@ -19671,5 +19717,6 @@ html.clip-view-transition::view-transition-new(root) {
   .requested-chat-row > span { grid-column: 2; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .call-control.control-pop,.requested-chats-page,.clip-audio-page,.post-dismissed,.profile-starter > div > button { animation: none !important; }
+  .call-control.control-pop,.requested-chats-page,.clip-audio-page,.post-dismissed,.profile-starter > div > button,.profile-post-skeleton > i { animation: none !important; }
+  .page-loading-bar,.page-loading-bar > span { transition-duration: .01ms !important; }
 }

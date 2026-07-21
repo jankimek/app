@@ -12,6 +12,16 @@
   postMediaInput.tabIndex = -1;
   document.body.appendChild(postMediaInput);
 
+  const pageLoadingBar = document.createElement('div');
+  const pageLoadingFill = document.createElement('span');
+  pageLoadingBar.className = 'page-loading-bar';
+  pageLoadingBar.setAttribute('role', 'progressbar');
+  pageLoadingBar.setAttribute('aria-label', 'Loading page');
+  pageLoadingBar.setAttribute('aria-hidden', 'true');
+  pageLoadingFill.setAttribute('aria-hidden', 'true');
+  pageLoadingBar.appendChild(pageLoadingFill);
+  document.body.appendChild(pageLoadingBar);
+
   let postMediaPickerMode = 'replace';
 
   function openPostMediaPicker() {
@@ -181,6 +191,7 @@
     profileMediaTab: 'posts',
     searchProfileMediaTab: 'posts',
     profilePosts: new Map(),
+    profilePostsLoading: new Set(),
     expandedPosts: new Set(),
     noteComposer: null,
     noteRecording: null,
@@ -366,7 +377,63 @@
     return (new FormData(form).get(name) || '').toString();
   }
 
+  let activePageLoads = 0;
+  let pageLoadingShowTimer = 0;
+  let pageLoadingHideTimer = 0;
+  let pageLoadingProgressTimer = 0;
+  let pageLoadingProgress = 0;
+
+  function showPageLoadingBar() {
+    if (!activePageLoads) return;
+    pageLoadingProgress = Math.max(pageLoadingProgress, 0.1);
+    pageLoadingBar.style.setProperty('--page-load-progress', pageLoadingProgress);
+    pageLoadingBar.classList.remove('is-completing');
+    pageLoadingBar.classList.add('is-visible');
+    pageLoadingBar.setAttribute('aria-hidden', 'false');
+    clearInterval(pageLoadingProgressTimer);
+    pageLoadingProgressTimer = window.setInterval(() => {
+      pageLoadingProgress = Math.min(0.9, pageLoadingProgress + Math.max(0.012, (0.9 - pageLoadingProgress) * 0.12));
+      pageLoadingBar.style.setProperty('--page-load-progress', pageLoadingProgress);
+    }, 180);
+  }
+
+  function beginPageLoad() {
+    activePageLoads += 1;
+    clearTimeout(pageLoadingHideTimer);
+    if (activePageLoads === 1) {
+      pageLoadingProgress = 0.08;
+      pageLoadingBar.style.setProperty('--page-load-progress', pageLoadingProgress);
+      pageLoadingBar.classList.remove('is-completing');
+      clearTimeout(pageLoadingShowTimer);
+      pageLoadingShowTimer = window.setTimeout(showPageLoadingBar, 90);
+    }
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      activePageLoads = Math.max(0, activePageLoads - 1);
+      if (activePageLoads) return;
+      clearTimeout(pageLoadingShowTimer);
+      clearInterval(pageLoadingProgressTimer);
+      if (!pageLoadingBar.classList.contains('is-visible')) {
+        pageLoadingBar.setAttribute('aria-hidden', 'true');
+        return;
+      }
+      pageLoadingProgress = 1;
+      pageLoadingBar.style.setProperty('--page-load-progress', pageLoadingProgress);
+      pageLoadingBar.classList.add('is-completing');
+      pageLoadingHideTimer = window.setTimeout(() => {
+        if (activePageLoads) return;
+        pageLoadingBar.classList.remove('is-visible', 'is-completing');
+        pageLoadingBar.setAttribute('aria-hidden', 'true');
+        pageLoadingProgress = 0;
+        pageLoadingBar.style.setProperty('--page-load-progress', pageLoadingProgress);
+      }, 220);
+    };
+  }
+
   async function api(path, options = {}) {
+    const finishPageLoad = options.loading === false ? null : beginPageLoad();
     const headers = options.headers || {};
     const init = {
       method: options.method || 'GET',
@@ -378,16 +445,20 @@
       init.headers = { 'Content-Type': 'application/json', ...headers };
       init.body = JSON.stringify(options.body);
     }
-    const res = await fetch(path, init);
-    const type = res.headers.get('content-type') || '';
-    const data = type.includes('application/json') ? await res.json() : await res.text();
-    if (!res.ok) {
-      const error = new Error(data.error || data || res.statusText);
-      error.data = data;
-      error.status = res.status;
-      throw error;
+    try {
+      const res = await fetch(path, init);
+      const type = res.headers.get('content-type') || '';
+      const data = type.includes('application/json') ? await res.json() : await res.text();
+      if (!res.ok) {
+        const error = new Error(data.error || data || res.statusText);
+        error.data = data;
+        error.status = res.status;
+        throw error;
+      }
+      return data;
+    } finally {
+      finishPageLoad?.();
     }
-    return data;
   }
 
   function formatTime(iso) {
@@ -1440,9 +1511,35 @@
     connectWs();
   }
 
-  async function fetchPublicProfile(username) {
-    const data = await api(`/api/users/${encodeURIComponent(username)}`);
-    return data.user;
+  const PROFILE_CACHE_TTL_MS = 45000;
+  const profileCache = new Map();
+  const profileRequests = new Map();
+
+  function profileCacheKey(username) {
+    return `${state.me?.id || 'anonymous'}:${String(username || '').trim().toLowerCase()}`;
+  }
+
+  function cachePublicProfile(user, requestedUsername = user?.username) {
+    if (!user?.username) return user;
+    const entry = { user, savedAt: Date.now() };
+    profileCache.set(profileCacheKey(requestedUsername), entry);
+    profileCache.set(profileCacheKey(user.username), entry);
+    while (profileCache.size > 120) profileCache.delete(profileCache.keys().next().value);
+    return user;
+  }
+
+  async function fetchPublicProfile(username, options = {}) {
+    const cacheKey = profileCacheKey(username);
+    const cached = profileCache.get(cacheKey);
+    if (!options.force && cached && Date.now() - cached.savedAt < PROFILE_CACHE_TTL_MS) return cached.user;
+    if (profileRequests.has(cacheKey)) return profileRequests.get(cacheKey);
+    const request = api(`/api/users/${encodeURIComponent(username)}`, { loading: options.loading })
+      .then((data) => {
+        return cachePublicProfile(data.user, username);
+      })
+      .finally(() => profileRequests.delete(cacheKey));
+    profileRequests.set(cacheKey, request);
+    return request;
   }
 
   async function loadPublicProfile(username) {
@@ -3979,8 +4076,7 @@
           <div class="search-profile-copy profile-details">
             ${user.bio ? `<p>${esc(user.bio)}</p>` : '<p class="profile-empty-bio">No bio yet.</p>'}
             ${user.website ? `<a href="${esc(user.website)}" target="_blank" rel="noopener">${esc(user.website)}</a>` : ''}
-            ${user.age !== undefined && user.age !== null ? `<small>${esc(user.age)} years old</small>` : ''}
-            ${user.gender ? `<small>${esc(user.gender)}</small>` : ''}
+            ${(user.age !== undefined && user.age !== null) || user.gender ? `<span class="profile-optional-meta">${user.age !== undefined && user.age !== null ? `${esc(user.age)} years old` : ''}${user.gender ? `${user.age !== undefined && user.age !== null ? ' · ' : ''}${esc(user.gender)}` : ''}</span>` : ''}
           </div>
         </section>
         <div class="search-profile-actions">${renderSearchProfileActions(user)}</div>
@@ -4064,7 +4160,10 @@
 
   function renderProfileMedia(user, own = false) {
     const tab = own ? state.profileMediaTab : state.searchProfileMediaTab;
+    const key = profilePostKey(user, tab);
     const posts = profilePostsFor(user, tab);
+    const isLoading = state.profilePostsLoading.has(key);
+    const hasLoaded = state.profilePosts.has(key);
     const labels = [
       ['posts', 'Photos and videos', 'grid'],
       ['saved', 'Saved posts', 'bookmark'],
@@ -4072,31 +4171,35 @@
       ['tagged', 'Tagged photos', 'tagged']
     ];
     return `
-      <section class="profile-media-section" data-profile-id="${esc(user.id)}" data-own="${own}">
+      <section class="profile-media-section ${isLoading ? 'is-loading' : ''}" data-profile-id="${esc(user.id)}" data-own="${own}" aria-busy="${isLoading}">
         <div class="profile-media-tabs" role="tablist">
           ${labels.map(([value, label, iconName]) => `<button class="${tab === value ? 'active' : ''}" data-action="set-profile-media-tab" data-tab="${value}" data-user-id="${esc(user.id)}" data-own="${own}" role="tab" aria-selected="${tab === value}" aria-label="${label}" ${!own && value === 'saved' ? 'title="Saved posts are private"' : ''}>${icon(iconName)}</button>`).join('')}
         </div>
-        ${!own && tab === 'saved'
+        ${isLoading && !hasLoaded
+          ? `<div class="profile-post-grid profile-post-skeleton" aria-hidden="true">${Array.from({ length: 9 }, () => '<i></i>').join('')}</div><span class="sr-only">Loading posts</span>`
+          : !own && tab === 'saved'
           ? `<div class="profile-media-empty">${icon('lock')}<strong>Saved posts are private</strong><small>Only ${esc(user.displayName)} can see this collection.</small></div>`
           : posts.length
             ? `<div class="profile-post-grid">${posts.map((post) => `<button data-action="open-profile-post" data-post-id="${esc(post.id)}">${renderPostMedia(post, { grid: true })}</button>`).join('')}</div>`
-            : `<div class="profile-media-empty">${icon(tab === 'saved' ? 'bookmark' : tab === 'reposts' ? 'repost' : tab === 'tagged' ? 'tagged' : 'grid')}<strong>No ${tab === 'posts' ? 'posts' : tab} yet</strong><small>${own && tab === 'posts' ? 'Photos and videos you share will appear here.' : 'Nothing to show in this tab.'}</small></div>`}
+            : `<div class="profile-media-empty">${icon(tab === 'saved' ? 'bookmark' : tab === 'reposts' ? 'repost' : tab === 'tagged' ? 'tagged' : 'grid')}<strong>No ${tab === 'posts' ? 'posts' : tab} yet</strong><small>${tab === 'posts' ? `Photos and videos ${own ? 'you' : 'they'} share will appear here.` : 'Nothing to show in this tab.'}</small></div>`}
       </section>
     `;
   }
 
   function updateProfileMediaSection(user, own = false) {
     const escapedId = window.CSS?.escape ? CSS.escape(String(user?.id || '')) : String(user?.id || '').replace(/"/g, '\\"');
-    const current = document.querySelector(`.profile-media-section[data-profile-id="${escapedId}"][data-own="${own}"]`);
-    if (!current) return false;
-    const scrollHost = current.closest('.side-content');
-    const scrollTop = scrollHost?.scrollTop ?? 0;
+    const sections = Array.from(document.querySelectorAll(`.profile-media-section[data-profile-id="${escapedId}"][data-own="${own}"]`));
+    if (!sections.length) return false;
     const template = document.createElement('template');
     template.innerHTML = renderProfileMedia(user, own).trim();
-    const next = template.content.firstElementChild;
-    if (!next) return false;
-    current.replaceWith(next);
-    if (scrollHost) scrollHost.scrollTop = scrollTop;
+    const source = template.content.firstElementChild;
+    if (!source) return false;
+    sections.forEach((current) => {
+      const scrollHost = current.closest('.side-content');
+      const scrollTop = scrollHost?.scrollTop ?? 0;
+      current.replaceWith(source.cloneNode(true));
+      if (scrollHost) scrollHost.scrollTop = scrollTop;
+    });
     return true;
   }
 
@@ -8434,11 +8537,17 @@
       state.profilePosts.set(profilePostKey(user, tab), []);
       return [];
     }
-    const data = await api(`/api/users/${encodeURIComponent(user.username)}/posts?tab=${encodeURIComponent(tab)}`);
-    const posts = data.posts || [];
-    state.profilePosts.set(profilePostKey(user, tab), posts);
-    if (options.render !== false) updateSidebar();
-    return posts;
+    const key = profilePostKey(user, tab);
+    state.profilePostsLoading.add(key);
+    try {
+      const data = await api(`/api/users/${encodeURIComponent(user.username)}/posts?tab=${encodeURIComponent(tab)}`);
+      const posts = data.posts || [];
+      state.profilePosts.set(key, posts);
+      return posts;
+    } finally {
+      state.profilePostsLoading.delete(key);
+      if (options.render !== false) updateSidebar();
+    }
   }
 
   async function loadSocialSurfaces(options = {}) {
@@ -10740,7 +10849,10 @@
     state.recommendations = state.recommendations.map(merge);
     state.recentProfiles = state.recentProfiles.map(merge);
     localStorage.setItem('recentProfiles', JSON.stringify(state.recentProfiles));
-    if (state.publicProfile?.id === updatedUser.id) state.publicProfile = merge(state.publicProfile);
+    if (state.publicProfile?.id === updatedUser.id) {
+      state.publicProfile = merge(state.publicProfile);
+      cachePublicProfile(state.publicProfile);
+    }
     if (state.activePeer?.id === updatedUser.id) state.activePeer = merge(state.activePeer);
   }
 
@@ -12724,8 +12836,24 @@
     renderApp();
   }
 
+  let profileOpenRequestId = 0;
+
+  function prefetchProfileFromTarget(target) {
+    const profileLink = target?.closest?.('[data-action="view-user-profile"][data-username]');
+    const username = profileLink?.dataset.username;
+    if (!username || username.toLowerCase() === state.me?.username?.toLowerCase()) return;
+    fetchPublicProfile(username, { loading: false }).catch(() => {});
+  }
+
   async function openSearchProfile(username, options = {}) {
-    const user = await fetchPublicProfile(username);
+    const requestedUsername = String(username || '').trim();
+    const requestId = ++profileOpenRequestId;
+    const mediaTab = 'posts';
+    const postsRequest = api(`/api/users/${encodeURIComponent(requestedUsername)}/posts?tab=${mediaTab}`)
+      .then((data) => ({ posts: data.posts || [], error: null }))
+      .catch((error) => ({ posts: null, error }));
+    const user = await fetchPublicProfile(requestedUsername);
+    if (requestId !== profileOpenRequestId) return;
     if (!user) throw new Error('User not found.');
     rememberViewedProfile(user);
     if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
@@ -12736,13 +12864,27 @@
     state.publicProfile = user;
     state.searchProfileOpen = true;
     state.searchProfileSocialView = null;
-    state.searchProfileMediaTab = 'posts';
+    state.searchProfileMediaTab = mediaTab;
     state.profileSocialView = null;
     state.chatProfileOpen = false;
     state.chatProfileSocialView = null;
     state.tabTransition = false;
-    await loadProfilePosts(user, state.searchProfileMediaTab, { render: false }).catch(() => []);
+    const mediaKey = profilePostKey(user, mediaTab);
+    if (!state.profilePosts.has(mediaKey)) state.profilePostsLoading.add(mediaKey);
     renderApp();
+    const result = await postsRequest;
+    state.profilePostsLoading.delete(mediaKey);
+    if (result.error) {
+      if (requestId === profileOpenRequestId) {
+        updateProfileMediaSection(user, false);
+        pushToast({ key: `profile-posts:${user.id}`, title: 'Posts unavailable', body: 'Could not load this profile’s posts. Try again in a moment.' });
+      }
+      return;
+    }
+    state.profilePosts.set(mediaKey, result.posts);
+    if (requestId === profileOpenRequestId && state.publicProfile?.id === user.id && state.searchProfileMediaTab === mediaTab) {
+      updateProfileMediaSection(user, false);
+    }
   }
 
   function closeSearchProfileNavigation() {
@@ -17010,6 +17152,7 @@
   });
 
   document.addEventListener('focusin', (event) => {
+    prefetchProfileFromTarget(event.target);
     if (event.target.closest('.story-viewer-actions')) clearStoryAdvance();
     if (event.target.matches('input, textarea, [contenteditable="true"]')) {
       scheduleViewportHeight();
@@ -18271,6 +18414,10 @@
     stopMusicCatalogPreview();
     stopCameraStream();
   });
+
+  document.addEventListener('pointerover', (event) => {
+    prefetchProfileFromTarget(event.target);
+  }, { passive: true });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
