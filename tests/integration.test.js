@@ -143,7 +143,8 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   const styleSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   const htmlSource = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
   const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  assert.match(htmlSource, /maximum-scale=1, user-scalable=no/);
+  assert.match(htmlSource, /width=device-width, initial-scale=1, viewport-fit=cover/);
+  assert.doesNotMatch(htmlSource, /maximum-scale=1|user-scalable=no/);
   assert.match(htmlSource, /styles\.css\?v=\d{8}-\d+/);
   assert.match(htmlSource, /app\.js\?v=\d{8}-\d+/);
   assert.match(styleSource, /html \{[\s\S]*?overscroll-behavior: none;[\s\S]*?touch-action: manipulation;/);
@@ -151,6 +152,12 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(styleSource, /\.chat-pane \{[\s\S]*?max-width: 100%;[\s\S]*?overflow: hidden;/);
   assert.match(styleSource, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;[\s\S]*?overflow-anchor: none;[\s\S]*?touch-action: pan-y;/);
   assert.match(styleSource, /@supports \(-webkit-touch-callout: none\)[\s\S]*?\.composer-input \{[\s\S]*?font-size: 16px;/);
+  assert.match(styleSource, /--border:\s*var\(--line\);[\s\S]*?--surface:\s*var\(--panel\);[\s\S]*?--surface-2:\s*var\(--panel-2\);/);
+  assert.match(styleSource, /\.auth-screen \{[\s\S]*?height: var\(--app-height\);[\s\S]*?overflow-y: auto;/);
+  assert.match(styleSource, /:where\(button, a, input, textarea, select, \[tabindex\]\):focus-visible/);
+  assert.match(clientSource, /options\.loading === true \? beginPageLoad\(\) : null/);
+  assert.match(clientSource, /let feedLoadRequestId = 0;[\s\S]*?requestId !== feedLoadRequestId/);
+  assert.match(clientSource, /function cancelPendingProfileOpen\(\)[\s\S]*?profileOpenRequestId \+= 1;/);
   assert.match(clientSource, /id="story-text-size"[^>]*data-stop-close/);
   assert.match(clientSource, /id="story-draw-size"[^>]*data-stop-close/);
   assert.match(clientSource, /class="story-size-control story-text-size-control"/);

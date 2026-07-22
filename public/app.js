@@ -433,7 +433,7 @@
   }
 
   async function api(path, options = {}) {
-    const finishPageLoad = options.loading === false ? null : beginPageLoad();
+    const finishPageLoad = options.loading === true ? beginPageLoad() : null;
     const headers = options.headers || {};
     const init = {
       method: options.method || 'GET',
@@ -1331,6 +1331,7 @@
 
   function switchMainTab(nextTab, options = {}) {
     if (!['home', 'chats', 'search', 'clips', 'profile'].includes(nextTab)) return;
+    cancelPendingProfileOpen();
     if (state.voiceRecording) finishVoiceRecording(false);
     if (state.postViewer) closePostViewer({ immediate: true, replaceHistory: true });
     if (nextTab === state.tab) {
@@ -1555,37 +1556,44 @@
       <main class="auth-screen">
         <section class="auth-box auth-box-single">
           <div class="auth-card">
-            <div class="auth-mark">${icon('messages')}</div>
+            <header class="auth-brand">
+              <div class="auth-mark">${icon('messages')}</div>
+              <div class="auth-brand-copy">
+                <span>NEW AROUND</span>
+                <h1>${state.authMode === 'login' ? 'Welcome back' : 'Find your people'}</h1>
+                <p>${state.authMode === 'login' ? 'Pick up where your conversations left off.' : 'Share moments, trade ideas, and stay close.'}</p>
+              </div>
+            </header>
             <div class="auth-tabs">
               <button type="button" class="${state.authMode === 'login' ? 'active' : ''}" data-action="auth-mode" data-mode="login">Log in</button>
               <button type="button" class="${state.authMode === 'register' ? 'active' : ''}" data-action="auth-mode" data-mode="register">Create</button>
             </div>
             <form class="form" data-form="auth">
               ${state.authMode === 'register' ? `
-                <label class="field">Username
+                <label class="field"><span>Username</span>
                   <input name="username" autocomplete="username" placeholder="emran_01" required>
                 </label>
-                <label class="field">Email <small>Optional</small>
+                <label class="field"><span>Email <small>Optional</small></span>
                   <input name="email" type="email" autocomplete="email" placeholder="you@example.com">
                 </label>
-                <label class="field">Phone <small>Optional</small>
+                <label class="field"><span>Phone <small>Optional</small></span>
                   <input name="phone" type="tel" autocomplete="tel" placeholder="+49 123 456789">
                 </label>
               ` : `
-                <label class="field">Email, phone, or username
+                <label class="field"><span>Email, phone, or username</span>
                   <input name="identifier" autocomplete="username" required>
                 </label>
               `}
-              <label class="field">Password
+              <label class="field"><span>Password</span>
                 <input name="password" type="password" autocomplete="${state.authMode === 'login' ? 'current-password' : 'new-password'}" required>
               </label>
               ${state.needsTwoFactor ? `
-                <label class="field">2FA code
+                <label class="field"><span>2FA code</span>
                   <input name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
                 </label>
               ` : ''}
               <button class="primary" type="submit">${state.authMode === 'login' ? 'Log in' : 'Create account'}</button>
-              <div class="error">${esc(error)}</div>
+              <div class="error" role="alert" aria-live="polite">${esc(error)}</div>
             </form>
           </div>
         </section>
@@ -8492,17 +8500,28 @@
     `;
   }
 
+  let feedLoadRequestId = 0;
+
   async function loadFeed(mode = state.feedMode, options = {}) {
-    state.feedMode = ['for_you', 'following', 'favorites'].includes(mode) ? mode : 'for_you';
-    localStorage.setItem('feedMode', state.feedMode);
+    const requestedMode = ['for_you', 'following', 'favorites'].includes(mode) ? mode : 'for_you';
+    const requestId = ++feedLoadRequestId;
     state.feedLoading = true;
     if (options.render !== false && state.tab === 'home') updateSidebar();
     try {
-      const data = await api(`/api/feed?mode=${encodeURIComponent(state.feedMode)}`);
+      const data = await api(`/api/feed?mode=${encodeURIComponent(requestedMode)}`);
+      if (requestId !== feedLoadRequestId) return [];
+      state.feedMode = requestedMode;
+      localStorage.setItem('feedMode', requestedMode);
       state.homeFeed = data.posts || [];
+      return state.homeFeed;
+    } catch (error) {
+      if (requestId === feedLoadRequestId) throw error;
+      return [];
     } finally {
-      state.feedLoading = false;
-      if (options.render !== false && state.tab === 'home') updateSidebar();
+      if (requestId === feedLoadRequestId) {
+        state.feedLoading = false;
+        if (options.render !== false && state.tab === 'home') updateSidebar();
+      }
     }
   }
 
@@ -10560,6 +10579,7 @@
   }
 
   async function openChat(userId, highlightMessageId = null, options = {}) {
+    cancelPendingProfileOpen();
     const peer = userById(userId);
     if (!peer) return;
     if (state.activePeer?.id === userId && !state.chatProfileOpen && !highlightMessageId && !state.chatLoading) return;
@@ -12739,6 +12759,7 @@
   }
 
   async function restoreNavigationView(view) {
+    cancelPendingProfileOpen();
     const returnScroll = state.profileReturnScroll;
     const profileUsername = view?.publicProfileUsername || null;
     const peer = view?.activePeerId ? userById(view.activePeerId) : null;
@@ -12817,6 +12838,7 @@
   }
 
   function openOwnProfileFromStoryComments() {
+    cancelPendingProfileOpen();
     clearStoryAdvance();
     clearTimeout(overlayCloseTimer);
     state.actionSheet = null;
@@ -12838,6 +12860,10 @@
 
   let profileOpenRequestId = 0;
 
+  function cancelPendingProfileOpen() {
+    profileOpenRequestId += 1;
+  }
+
   function prefetchProfileFromTarget(target) {
     const profileLink = target?.closest?.('[data-action="view-user-profile"][data-username]');
     const username = profileLink?.dataset.username;
@@ -12846,48 +12872,55 @@
   }
 
   async function openSearchProfile(username, options = {}) {
-    const requestedUsername = String(username || '').trim();
-    const requestId = ++profileOpenRequestId;
-    const mediaTab = 'posts';
-    const postsRequest = api(`/api/users/${encodeURIComponent(requestedUsername)}/posts?tab=${mediaTab}`)
-      .then((data) => ({ posts: data.posts || [], error: null }))
-      .catch((error) => ({ posts: null, error }));
-    const user = await fetchPublicProfile(requestedUsername);
-    if (requestId !== profileOpenRequestId) return;
-    if (!user) throw new Error('User not found.');
-    rememberViewedProfile(user);
-    if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
-    if (options.pushHistory !== false) beginDetailNavigation('profile', profilePath(user.username));
-    state.clipViewer = null;
-    state.lastTab = state.tab;
-    state.tab = 'search';
-    state.publicProfile = user;
-    state.searchProfileOpen = true;
-    state.searchProfileSocialView = null;
-    state.searchProfileMediaTab = mediaTab;
-    state.profileSocialView = null;
-    state.chatProfileOpen = false;
-    state.chatProfileSocialView = null;
-    state.tabTransition = false;
-    const mediaKey = profilePostKey(user, mediaTab);
-    if (!state.profilePosts.has(mediaKey)) state.profilePostsLoading.add(mediaKey);
-    renderApp();
-    const result = await postsRequest;
-    state.profilePostsLoading.delete(mediaKey);
-    if (result.error) {
-      if (requestId === profileOpenRequestId) {
-        updateProfileMediaSection(user, false);
-        pushToast({ key: `profile-posts:${user.id}`, title: 'Posts unavailable', body: 'Could not load this profile’s posts. Try again in a moment.' });
+    const finishPageLoad = beginPageLoad();
+    try {
+      const requestedUsername = String(username || '').trim();
+      const requestId = ++profileOpenRequestId;
+      const mediaTab = 'posts';
+      const postsRequest = api(`/api/users/${encodeURIComponent(requestedUsername)}/posts?tab=${mediaTab}`)
+        .then((data) => ({ posts: data.posts || [], error: null }))
+        .catch((error) => ({ posts: null, error }));
+      const user = await fetchPublicProfile(requestedUsername);
+      if (requestId !== profileOpenRequestId) return;
+      if (!user) throw new Error('User not found.');
+      rememberViewedProfile(user);
+      if (!state.searchProfileOpen) state.profileReturnScroll = captureMessagesScroll();
+      if (options.pushHistory !== false) beginDetailNavigation('profile', profilePath(user.username));
+      state.clipViewer = null;
+      state.lastTab = state.tab;
+      state.tab = 'search';
+      state.publicProfile = user;
+      state.searchProfileOpen = true;
+      state.searchProfileSocialView = null;
+      state.searchProfileMediaTab = mediaTab;
+      state.profileSocialView = null;
+      state.chatProfileOpen = false;
+      state.chatProfileSocialView = null;
+      state.tabTransition = false;
+      const mediaKey = profilePostKey(user, mediaTab);
+      if (!state.profilePosts.has(mediaKey)) state.profilePostsLoading.add(mediaKey);
+      finishPageLoad();
+      renderApp();
+      const result = await postsRequest;
+      state.profilePostsLoading.delete(mediaKey);
+      if (result.error) {
+        if (requestId === profileOpenRequestId) {
+          updateProfileMediaSection(user, false);
+          pushToast({ key: `profile-posts:${user.id}`, title: 'Posts unavailable', body: 'Could not load this profile’s posts. Try again in a moment.' });
+        }
+        return;
       }
-      return;
-    }
-    state.profilePosts.set(mediaKey, result.posts);
-    if (requestId === profileOpenRequestId && state.publicProfile?.id === user.id && state.searchProfileMediaTab === mediaTab) {
-      updateProfileMediaSection(user, false);
+      state.profilePosts.set(mediaKey, result.posts);
+      if (requestId === profileOpenRequestId && state.publicProfile?.id === user.id && state.searchProfileMediaTab === mediaTab) {
+        updateProfileMediaSection(user, false);
+      }
+    } finally {
+      finishPageLoad();
     }
   }
 
   function closeSearchProfileNavigation() {
+    cancelPendingProfileOpen();
     if (!state.searchProfileOpen) return;
     navigationBackOr(() => {
       state.searchProfileOpen = false;
@@ -14764,6 +14797,7 @@
         renderAuth();
       }
       if (action === 'logout') {
+        cancelPendingProfileOpen();
         await api('/api/auth/logout', { method: 'POST' });
         stopNotePlayback({ clear: true });
         pauseVoicePlayback({ clear: true });
