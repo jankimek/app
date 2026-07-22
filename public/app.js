@@ -164,6 +164,7 @@
     notifications: [],
     requests: [],
     homeFeed: [],
+    retainedPosts: new Map(),
     feedMode: localStorage.getItem('feedMode') || 'for_you',
     feedPendingMode: null,
     feedMenuOpen: false,
@@ -1553,6 +1554,7 @@
     state.groups = [];
     state.messages = [];
     state.homeFeed = [];
+    state.retainedPosts.clear();
     state.feedLoading = false;
     state.feedPendingMode = null;
     state.explorePosts = [];
@@ -1600,7 +1602,9 @@
       console.warn('Optional GIF hydration failed.', error);
     });
     const optionalHydration = Promise.allSettled([socialLoad, mediaLoad, gifLoad]).then(() => {
-      if (isSessionOwner(session) && currentAppShell()) updateSidebar();
+      if (!isSessionOwner(session) || !currentAppShell()) return;
+      if (state.tab === 'home' && reconcileHomeFeed()) syncLiveNavigationBadges();
+      else updateSidebar();
     });
     if (options.waitForOptional) await optionalHydration;
   }
@@ -2319,8 +2323,41 @@
     return renderProfilePanel();
   }
 
+  const FEED_MODES = ['for_you', 'following', 'favorites'];
+
+  function normalizeFeedMode(mode) {
+    return FEED_MODES.includes(mode) ? mode : 'for_you';
+  }
+
   function feedModeLabel(mode = state.feedMode) {
-    return mode === 'following' ? 'Followed' : mode === 'favorites' ? 'Favorites' : 'For you';
+    return mode === 'following' ? 'Following' : mode === 'favorites' ? 'Favorites' : 'For you';
+  }
+
+  function renderFeedPicker() {
+    const loading = Boolean(state.feedLoading && state.feedPendingMode);
+    const currentLabel = feedModeLabel(state.feedMode);
+    const loadingLabel = feedModeLabel(state.feedPendingMode || state.feedMode);
+    return `
+      <div class="home-title">
+        <span class="home-brand">New Around</span>
+        <div class="feed-picker-wrap">
+          <button class="feed-picker ${loading ? 'is-loading' : ''}" type="button" data-action="toggle-feed-menu" aria-haspopup="menu" aria-controls="feed-picker-menu" aria-expanded="${state.feedMenuOpen}" aria-busy="${loading}" aria-label="${esc(`Choose feed: ${currentLabel}`)}">
+            <span class="feed-picker-label">${esc(currentLabel)}</span>
+            <span class="feed-picker-indicator" aria-hidden="true">
+              <span class="feed-picker-spinner" ${loading ? '' : 'hidden'}></span>
+              <span class="feed-picker-chevron" ${loading ? 'hidden' : ''}>${icon('chevron')}</span>
+            </span>
+          </button>
+          <div class="feed-picker-menu" id="feed-picker-menu" role="menu" aria-label="Choose feed" ${state.feedMenuOpen ? '' : 'hidden'}>
+            ${FEED_MODES.map((mode) => {
+              const active = state.feedMode === mode;
+              return `<button class="${active ? 'active' : ''}" type="button" role="menuitemradio" aria-checked="${active}" data-action="set-feed-mode" data-mode="${mode}"><span>${esc(feedModeLabel(mode))}</span><span class="feed-picker-check" ${active ? '' : 'hidden'}>${icon('check')}</span></button>`;
+            }).join('')}
+          </div>
+        </div>
+        <span class="sr-only feed-picker-status" role="status" aria-live="polite">${loading ? esc(`Loading ${loadingLabel}`) : ''}</span>
+      </div>
+    `;
   }
 
   function homeStoryUsers() {
@@ -2587,7 +2624,7 @@
   function stopHomeFeedPlayback() {
     homeFeedPlaybackObserver?.disconnect();
     homeFeedPlaybackObserver = null;
-    document.querySelectorAll('.post-video-preview').forEach((video) => {
+    (currentAppShell() || document).querySelectorAll('.post-video-preview').forEach((video) => {
       video.pause();
       syncHomeVideoUi(video);
     });
@@ -2605,7 +2642,8 @@
   }
 
   function playMostVisibleHomeVideo() {
-    const root = document.querySelector('.side-content[data-tab="home"]');
+    const shell = currentAppShell();
+    const root = shell?.querySelector('.side-content[data-tab="home"]');
     const videos = Array.from(root?.querySelectorAll('.post-video-preview[data-feed-video]') || []);
     if (!root || !videos.length || state.tab !== 'home' || document.visibilityState === 'hidden') {
       videos.forEach((video) => video.pause());
@@ -2641,10 +2679,11 @@
   function attachHomeFeedPlayback() {
     homeFeedPlaybackObserver?.disconnect();
     homeFeedPlaybackObserver = null;
-    const root = document.querySelector('.side-content[data-tab="home"]');
+    const shell = currentAppShell();
+    const root = shell?.querySelector('.side-content[data-tab="home"]');
     const videos = Array.from(root?.querySelectorAll('.post-video-preview[data-feed-video]') || []);
     if (!root || !videos.length || state.tab !== 'home' || state.clipViewer) {
-      document.querySelectorAll('.post-video-preview').forEach((video) => video.pause());
+      (shell || document).querySelectorAll('.post-video-preview').forEach((video) => video.pause());
       return;
     }
     videos.forEach((video) => {
@@ -2668,7 +2707,7 @@
   }
 
   function attachHomePullRefresh() {
-    const root = document.querySelector('.side-content[data-tab="home"]');
+    const root = currentAppShell()?.querySelector('.side-content[data-tab="home"]');
     const page = root?.querySelector('.home-page');
     const indicator = root?.querySelector('.home-refresh-indicator');
     if (!root || !page || !indicator || root._homePullBound) return;
@@ -2684,7 +2723,7 @@
       distance = 0;
     };
     root.addEventListener('touchstart', (event) => {
-      if (root.scrollTop > 0 || state.homeRefreshStatus || event.touches.length !== 1) return;
+      if (root.scrollTop > 0 || state.homeRefreshStatus || state.feedLoading || event.touches.length !== 1) return;
       startX = event.touches[0].clientX;
       startY = event.touches[0].clientY;
       distance = 0;
@@ -2711,7 +2750,8 @@
       page.style.transform = '';
       if (distance >= 68) refreshHomeFromPull().catch((error) => {
         state.homeRefreshStatus = '';
-        updateSidebar();
+        syncHomeFeedChrome();
+        syncHomeRefreshIndicator();
         pushToast({ key: `refresh-${Date.now()}`, kind: 'social', title: 'Could not refresh', body: error.message });
       });
       else resetPull();
@@ -2721,21 +2761,30 @@
   }
 
   async function refreshHomeFromPull() {
+    if (state.feedLoading) {
+      syncHomeRefreshIndicator();
+      return;
+    }
     state.homeRefreshStatus = 'refreshing';
-    updateSidebar();
+    syncHomeRefreshIndicator();
     await Promise.all([
       loadFeed(state.feedMode, { render: false }),
       loadNotes().catch(() => {}),
       loadExplore().catch(() => {})
     ]);
+    reconcileHomeFeed();
     state.homeRefreshStatus = 'caught-up';
-    updateSidebar();
+    syncHomeRefreshIndicator();
     setTimeout(() => {
       if (state.homeRefreshStatus !== 'caught-up') return;
       state.homeRefreshStatus = '';
-      const indicator = document.querySelector('.home-refresh-indicator');
+      const indicator = currentAppShell()?.querySelector('.home-refresh-indicator');
       indicator?.classList.add('is-leaving');
-      setTimeout(() => indicator?.remove(), 220);
+      setTimeout(() => {
+        if (!indicator?.isConnected || state.homeRefreshStatus) return;
+        indicator.classList.remove('is-leaving');
+        syncHomeRefreshIndicator();
+      }, 220);
     }, 1500);
   }
 
@@ -2765,6 +2814,65 @@
     `;
   }
 
+  function postMetaModel(post) {
+    const author = postAuthor(post);
+    const postDate = `${post.location ? `${post.location} · ` : ''}${shortTime(post.createdAt)}`;
+    const audioLabel = post.music ? `${post.music.title || 'Original audio'}${post.music.artist ? ` · ${post.music.artist}` : ''}` : '';
+    const followedAuthor = author?.id === state.me?.id || Boolean(author?.isFollowing || (state.me?.following || []).some((user) => user.id === author?.id));
+    const suggestedLabel = state.feedMode === 'for_you' && !followedAuthor ? 'Suggested for you' : '';
+    return {
+      audioLabel,
+      items: [suggestedLabel, audioLabel, postDate].filter(Boolean)
+    };
+  }
+
+  function renderPostMeta(post) {
+    const meta = postMetaModel(post);
+    return `<small class="post-meta-cycle ${meta.items.length > 1 ? `is-cycling meta-${meta.items.length}` : ''}">${meta.items.map((label) => `<span>${label === meta.audioLabel ? icon('music') : ''}${esc(label)}</span>`).join('')}</small>`;
+  }
+
+  function syncFeedPostMeta(card, post) {
+    const current = card?.querySelector('.post-meta-cycle');
+    if (!current) return;
+    const template = document.createElement('template');
+    template.innerHTML = renderPostMeta(post).trim();
+    const next = template.content.firstElementChild;
+    if (next && current.outerHTML !== next.outerHTML) current.replaceWith(next);
+  }
+
+  function syncFeedPostCard(card, post) {
+    if (!card || !post) return;
+    syncFeedPostMeta(card, post);
+    const author = postAuthor(post);
+    const toggles = [
+      [card.querySelector('[data-action="toggle-post-like"]'), Boolean(post.likedByMe), 'Unlike', 'Like'],
+      [card.querySelector('[data-action="toggle-post-save"]'), Boolean(post.savedByMe), 'Unsave', 'Save'],
+      [card.querySelector('[data-action="toggle-post-repost"]'), Boolean(post.repostedByMe), 'Undo repost', 'Repost']
+    ];
+    toggles.forEach(([button, active, activeLabel, inactiveLabel]) => {
+      if (!button) return;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+      button.setAttribute('aria-label', active ? activeLabel : inactiveLabel);
+    });
+
+    const likeCount = card.querySelector('[data-post-like-count]');
+    const commentCount = card.querySelector('[data-post-comment-count]');
+    const repostCount = card.querySelector('[data-post-repost-count]');
+    const showLikeCount = !post.hideLikeCounts || author?.id === state.me?.id;
+    if (likeCount) likeCount.textContent = showLikeCount ? `${Number(post.likeCount || 0).toLocaleString()} likes` : 'Like count hidden';
+    if (commentCount) commentCount.textContent = `${Number(post.commentCount ?? post.comments?.length ?? 0)} comments`;
+    if (repostCount) repostCount.textContent = `${Number(post.repostCount || 0)} reposts`;
+
+    const comments = card.querySelector('.post-comments');
+    if (comments) {
+      const template = document.createElement('template');
+      template.innerHTML = renderPostComments(post).trim();
+      const nextComments = template.content.firstElementChild;
+      if (nextComments && comments.innerHTML !== nextComments.innerHTML) comments.innerHTML = nextComments.innerHTML;
+    }
+  }
+
   function renderPostCard(post, feedIndex = 0) {
     const author = postAuthor(post);
     if (!author) return '';
@@ -2777,17 +2885,12 @@
     const saved = Boolean(post.savedByMe);
     const showLikeCount = !post.hideLikeCounts || author.id === state.me?.id;
     const reposted = Boolean(post.repostedByMe);
-    const postDate = `${post.location ? `${post.location} · ` : ''}${shortTime(post.createdAt)}`;
-    const audioLabel = post.music ? `${post.music.title || 'Original audio'}${post.music.artist ? ` · ${post.music.artist}` : ''}` : '';
-    const followedAuthor = author.id === state.me?.id || Boolean(author.isFollowing || (state.me?.following || []).some((user) => user.id === author.id));
-    const suggestedLabel = state.feedMode === 'for_you' && !followedAuthor ? 'Suggested for you' : '';
-    const metaItems = [suggestedLabel, audioLabel, postDate].filter(Boolean);
     return `
       <article class="feed-post ${overlayIdentity ? 'overlay-video-identity' : ''}" data-post-id="${esc(post.id)}">
         <header class="post-head">
           <a href="${esc(accountProfileHref(author))}" data-action="view-user-profile" data-username="${esc(author.username)}">
             ${avatarHtml(author)}
-            <span><strong>${esc(author.username)}</strong><small class="post-meta-cycle ${metaItems.length > 1 ? `is-cycling meta-${metaItems.length}` : ''}">${metaItems.map((label) => `<span>${label === audioLabel ? icon('music') : ''}${esc(label)}</span>`).join('')}</small></span>
+            <span><strong>${esc(author.username)}</strong>${renderPostMeta(post)}</span>
           </a>
           <button data-action="${author.id === state.me?.id ? 'post-owner-menu' : 'post-options'}" data-post-id="${esc(post.id)}" aria-label="Post options">${icon('more')}</button>
         </header>
@@ -2813,26 +2916,26 @@
     `;
   }
 
+  function feedEmptyCopy(mode = state.feedMode) {
+    return mode === 'favorites'
+      ? 'Favorite an account from their profile to build this feed.'
+      : mode === 'following'
+        ? 'Follow people to see their latest posts here.'
+        : 'Share the first post or follow more accounts.';
+  }
+
+  function renderFeedEmptyState(mode = state.feedMode) {
+    return `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${esc(feedEmptyCopy(mode))}</small><button class="primary" data-action="open-post-create">Create post</button></div>`;
+  }
+
   function renderHomePanel() {
     const feed = state.homeFeed || [];
     const suggestions = visibleRecommendations().slice(0, 5);
-    const emptyCopy = state.feedMode === 'favorites'
-      ? 'Favorite an account from their profile to build this feed.'
-      : state.feedMode === 'following'
-        ? 'Follow people to see their latest posts here.'
-        : 'Share the first post or follow more accounts.';
     return `
       <section class="home-page">
         <div class="home-refresh-indicator ${esc(state.homeRefreshStatus)}" aria-live="polite"><span>${state.homeRefreshStatus === 'caught-up' ? icon('check') : icon('refresh')}</span><strong>${state.homeRefreshStatus === 'caught-up' ? "You're all caught up" : state.homeRefreshStatus === 'refreshing' ? 'Checking for new posts' : 'Pull to refresh'}</strong></div>
         <header class="home-topbar">
-          <div class="feed-picker-wrap">
-            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}" aria-label="Choose feed: ${esc(feedModeLabel(state.feedPendingMode || state.feedMode))}"><span class="feed-picker-copy"><span class="home-brand">New Around</span><small>${esc(state.feedLoading && state.feedPendingMode ? `Loading ${feedModeLabel(state.feedPendingMode)}` : feedModeLabel())}</small></span>${icon('chevron')}</button>
-            ${state.feedMenuOpen ? `
-              <div class="feed-picker-menu">
-                ${['for_you', 'following', 'favorites'].map((mode) => `<button class="${state.feedMode === mode ? 'active' : ''}" data-action="set-feed-mode" data-mode="${mode}">${esc(feedModeLabel(mode))}${state.feedMode === mode ? icon('check') : ''}</button>`).join('')}
-              </div>
-            ` : ''}
-          </div>
+          ${renderFeedPicker()}
           <div class="home-head-actions">
             <button class="icon-btn" data-action="open-post-create" aria-label="Create post">${icon('plus')}</button>
             <button class="icon-btn notification-btn" data-action="open-notifications" aria-label="Notifications">${icon('bell')}${state.pendingRequestCount ? '<span class="red-dot"></span>' : ''}</button>
@@ -2844,12 +2947,11 @@
             ${renderHomeStories()}
             ${renderNotificationPermissionPrompt()}
             <section class="home-feed" aria-live="polite" aria-busy="${state.feedLoading}">
-              ${state.feedLoading && feed.length ? `<div class="feed-refresh-status" role="status"><span class="feed-refresh-spinner" aria-hidden="true"></span>Updating ${esc(feedModeLabel(state.feedPendingMode || state.feedMode))}</div>` : ''}
               ${feed.length
                 ? feed.map((post, index) => renderPostCard(post, index)).join('')
                 : state.feedLoading
                   ? renderFeedSkeleton()
-                  : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${esc(emptyCopy)}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
+                  : renderFeedEmptyState()}
             </section>
           </main>
           <aside class="home-suggestions" aria-label="Suggested accounts">
@@ -2865,6 +2967,151 @@
         </div>
       </section>
     `;
+  }
+
+  function syncHomeFeedChrome(root = currentAppShell() || document) {
+    const picker = root.querySelector?.('.feed-picker');
+    if (!picker) return false;
+    const loading = Boolean(state.feedLoading && state.feedPendingMode);
+    const currentLabel = feedModeLabel(state.feedMode);
+    const loadingLabel = feedModeLabel(state.feedPendingMode || state.feedMode);
+    picker.classList.toggle('is-loading', loading);
+    picker.setAttribute('aria-expanded', String(state.feedMenuOpen));
+    picker.setAttribute('aria-busy', String(loading));
+    picker.setAttribute('aria-label', `Choose feed: ${currentLabel}`);
+    const label = picker.querySelector('.feed-picker-label');
+    if (label) label.textContent = currentLabel;
+    const spinner = picker.querySelector('.feed-picker-spinner');
+    const chevron = picker.querySelector('.feed-picker-chevron');
+    if (spinner) spinner.hidden = !loading;
+    if (chevron) chevron.hidden = loading;
+
+    const menu = root.querySelector?.('.feed-picker-menu');
+    if (menu) {
+      menu.hidden = !state.feedMenuOpen;
+      menu.querySelectorAll('[data-action="set-feed-mode"]').forEach((button) => {
+        const mode = normalizeFeedMode(button.dataset.mode);
+        const active = mode === state.feedMode;
+        button.classList.toggle('active', active);
+        button.classList.toggle('is-pending', loading && mode === state.feedPendingMode);
+        button.setAttribute('aria-checked', String(active));
+        const check = button.querySelector('.feed-picker-check');
+        if (check) check.hidden = !active;
+      });
+    }
+
+    const status = root.querySelector?.('.feed-picker-status');
+    const statusText = loading ? `Loading ${loadingLabel}` : '';
+    if (status && status.textContent !== statusText) status.textContent = statusText;
+    root.querySelector?.('.home-feed')?.setAttribute('aria-busy', String(state.feedLoading));
+    return true;
+  }
+
+  function syncHomeRefreshIndicator(root = currentAppShell() || document) {
+    const indicator = root.querySelector?.('.home-refresh-indicator');
+    if (!indicator) return false;
+    const status = state.homeRefreshStatus;
+    indicator.classList.remove('is-ready');
+    indicator.style.removeProperty('--pull-progress');
+    if (status) indicator.classList.remove('is-leaving');
+    indicator.classList.toggle('refreshing', status === 'refreshing');
+    indicator.classList.toggle('caught-up', status === 'caught-up');
+    const symbol = indicator.querySelector('span');
+    const label = indicator.querySelector('strong');
+    if (symbol) symbol.innerHTML = status === 'caught-up' ? icon('check') : icon('refresh');
+    if (label) label.textContent = status === 'caught-up'
+      ? "You're all caught up"
+      : status === 'refreshing'
+        ? 'Checking for new posts'
+        : 'Pull to refresh';
+    return true;
+  }
+
+  function createFeedPostElement(post, feedIndex) {
+    const template = document.createElement('template');
+    template.innerHTML = renderPostCard(post, feedIndex).trim();
+    return template.content.firstElementChild || null;
+  }
+
+  function reconcileHomeFeed() {
+    const scrollRoot = currentAppShell()?.querySelector('.side-content[data-tab="home"]');
+    const feed = scrollRoot?.querySelector('.home-feed');
+    if (!feed || !scrollRoot) return false;
+    syncHomeFeedChrome(scrollRoot);
+
+    const previousScrollKey = scrollRoot.dataset.scrollMemory;
+    if (previousScrollKey) {
+      state.scrollMemory[previousScrollKey] = { top: scrollRoot.scrollTop, left: scrollRoot.scrollLeft };
+    }
+
+    const posts = (state.homeFeed || []).filter((post) => post?.id && postAuthor(post));
+    const desiredIds = new Set(posts.map((post) => String(post.id)));
+    const existingCards = Array.from(feed.querySelectorAll(':scope > .feed-post[data-post-id]'));
+    const existingById = new Map(existingCards.map((card) => [String(card.dataset.postId), card]));
+    const feedRect = scrollRoot.getBoundingClientRect();
+    const anchor = existingCards.find((card) => {
+      if (!desiredIds.has(String(card.dataset.postId))) return false;
+      const rect = card.getBoundingClientRect();
+      return rect.bottom > feedRect.top && rect.top < feedRect.bottom;
+    });
+    const anchorTop = anchor?.getBoundingClientRect().top;
+    const scrollTop = scrollRoot.scrollTop;
+
+    if (!posts.length) {
+      existingCards.forEach((card) => card.remove());
+      const expectedClass = state.feedLoading ? 'feed-skeleton' : 'feed-empty';
+      if (!feed.querySelector(`:scope > .${expectedClass}`) || feed.children.length !== 1) {
+        feed.innerHTML = state.feedLoading ? renderFeedSkeleton() : renderFeedEmptyState();
+      }
+    } else {
+      Array.from(feed.children).forEach((child) => {
+        if (!child.matches('.feed-post[data-post-id]')) child.remove();
+      });
+      const orderedCards = [];
+      const newCards = [];
+      posts.forEach((post, index) => {
+        const id = String(post.id);
+        const existing = existingById.get(id);
+        const card = existing || createFeedPostElement(post, index);
+        if (!card) return;
+        if (existing) syncFeedPostCard(card, post);
+        else {
+          card.classList.add('feed-post-entering');
+          newCards.push(card);
+        }
+        orderedCards.push(card);
+      });
+
+      let reference = feed.firstElementChild;
+      orderedCards.forEach((card) => {
+        if (card === reference) {
+          reference = reference.nextElementSibling;
+          return;
+        }
+        if (card.parentNode === feed && typeof feed.moveBefore === 'function') feed.moveBefore(card, reference);
+        else feed.insertBefore(card, reference);
+      });
+      const retainedCards = new Set(orderedCards);
+      existingCards.forEach((card) => {
+        if (!retainedCards.has(card)) card.remove();
+      });
+      newCards.forEach((card) => {
+        initializePostCarousels(card);
+        afterVisualMotion(card, 'animationend', 240, () => card.classList.remove('feed-post-entering'));
+      });
+    }
+
+    if (anchor?.isConnected && Number.isFinite(anchorTop)) {
+      scrollRoot.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    } else {
+      scrollRoot.scrollTop = scrollTop;
+    }
+    const nextScrollKey = `tab:home:${state.feedMode}`;
+    scrollRoot.dataset.scrollMemory = nextScrollKey;
+    state.scrollMemory[nextScrollKey] = { top: scrollRoot.scrollTop, left: scrollRoot.scrollLeft };
+    feed.dataset.feedMode = state.feedMode;
+    requestAnimationFrame(attachHomeFeedPlayback);
+    return true;
   }
 
   function clipPosts() {
@@ -8723,17 +8970,19 @@
   async function loadFeed(mode = state.feedMode, options = {}) {
     const session = options.session || captureSessionOwner();
     if (!isSessionOwner(session)) return [];
-    const requestedMode = ['for_you', 'following', 'favorites'].includes(mode) ? mode : 'for_you';
+    const requestedMode = normalizeFeedMode(mode);
     const requestId = ++feedLoadRequestId;
     state.feedLoading = true;
     state.feedPendingMode = requestedMode;
-    if (options.render !== false && state.tab === 'home') updateSidebar();
+    if (options.render !== false && state.tab === 'home') syncHomeFeedChrome();
     try {
       const data = await api(`/api/feed?mode=${encodeURIComponent(requestedMode)}`);
       if (requestId !== feedLoadRequestId || !isSessionOwner(session)) return [];
       state.feedMode = requestedMode;
       localStorage.setItem('feedMode', requestedMode);
+      retainActiveSurfacePosts(state.homeFeed);
       state.homeFeed = data.posts || [];
+      retainActiveSurfacePosts(state.homeFeed);
       return state.homeFeed;
     } catch (error) {
       if (requestId === feedLoadRequestId && isSessionOwner(session)) throw error;
@@ -8742,7 +8991,9 @@
       if (requestId === feedLoadRequestId && isSessionOwner(session)) {
         state.feedLoading = false;
         state.feedPendingMode = null;
-        if (options.render !== false && state.tab === 'home') updateSidebar();
+        if (options.render !== false && state.tab === 'home') {
+          if (!reconcileHomeFeed()) updateSidebar();
+        }
       }
     }
   }
@@ -8828,6 +9079,29 @@
     if (options.render && isSessionOwner(session)) updateSidebar();
   }
 
+  function activeSurfacePostIds() {
+    return new Set([
+      state.actionSheet?.postId,
+      state.postViewer?.postId,
+      state.clipViewer?.postId,
+      state.mediaViewer?.deepLinkPostId
+    ].filter(Boolean));
+  }
+
+  function retainActiveSurfacePosts(posts = []) {
+    const activeIds = activeSurfacePostIds();
+    (posts || []).forEach((post) => {
+      if (!post?.id || !activeIds.has(post.id)) return;
+      state.retainedPosts.delete(post.id);
+      state.retainedPosts.set(post.id, post);
+    });
+    while (state.retainedPosts.size > 16) {
+      const disposableId = Array.from(state.retainedPosts.keys()).find((postId) => !activeIds.has(postId));
+      if (!disposableId) break;
+      state.retainedPosts.delete(disposableId);
+    }
+  }
+
   function allKnownPosts() {
     return [
       ...state.homeFeed,
@@ -8835,7 +9109,8 @@
       ...state.clips,
       ...state.messages.map((message) => message.sharedPost),
       ...Array.from(state.profilePosts.values()).flat(),
-      ...state.accountActivity.reposts.map((item) => item.post || item)
+      ...state.accountActivity.reposts.map((item) => item.post || item),
+      ...state.retainedPosts.values()
     ].filter(Boolean);
   }
 
@@ -8856,6 +9131,9 @@
     state.chats = state.chats.map((chat) => ({ ...chat, lastMessage: replaceSharedMessage(chat.lastMessage) }));
     state.groups = state.groups.map((group) => ({ ...group, lastMessage: replaceSharedMessage(group.lastMessage) }));
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, replace(posts));
+    if (state.retainedPosts.has(updatedPost.id)) {
+      state.retainedPosts.set(updatedPost.id, { ...state.retainedPosts.get(updatedPost.id), ...updatedPost });
+    }
   }
 
   function syncPostEngagement(post, changedAction = '') {
@@ -9748,6 +10026,7 @@
     state.homeFeed = state.homeFeed.filter((post) => post.id !== postId);
     state.explorePosts = state.explorePosts.filter((post) => post.id !== postId);
     state.clips = state.clips.filter((post) => post.id !== postId);
+    state.retainedPosts.delete(postId);
     for (const [key, posts] of state.profilePosts.entries()) state.profilePosts.set(key, posts.filter((post) => post.id !== postId));
     const escapedId = window.CSS?.escape ? CSS.escape(String(postId)) : String(postId).replace(/"/g, '\\"');
     document.querySelectorAll(`[data-post-id="${escapedId}"]`).forEach((element) => {
@@ -15182,6 +15461,10 @@
       event.stopPropagation();
       return;
     }
+    if (state.feedMenuOpen && !event.target.closest('.feed-picker-wrap')) {
+      state.feedMenuOpen = false;
+      syncHomeFeedChrome();
+    }
     const clipViewport = event.target.closest('.clip-viewport');
     if (clipViewport && !event.target.closest('button,a,[data-action]')) {
       clearTimeout(clipTapTimer);
@@ -15271,13 +15554,16 @@
       }
       if (action === 'toggle-feed-menu') {
         state.feedMenuOpen = !state.feedMenuOpen;
-        updateSidebar();
+        syncHomeFeedChrome();
       }
       if (action === 'set-feed-mode') {
+        const requestedMode = normalizeFeedMode(target.dataset.mode);
+        const alreadyLoading = state.feedLoading && state.feedPendingMode === requestedMode;
+        const alreadyActive = !state.feedLoading && state.feedMode === requestedMode;
         state.feedMenuOpen = false;
-        const feedLoad = loadFeed(target.dataset.mode, { render: true });
-        requestAnimationFrame(() => document.querySelector('.feed-picker')?.focus?.({ preventScroll: true }));
-        await feedLoad;
+        syncHomeFeedChrome();
+        requestAnimationFrame(() => currentAppShell()?.querySelector('.feed-picker')?.focus?.({ preventScroll: true }));
+        if (!alreadyLoading && !alreadyActive) await loadFeed(requestedMode, { render: true });
       }
       if (action === 'set-clip-mode') {
         state.clipMode = target.dataset.mode === 'friends' ? 'friends' : 'for_you';
@@ -17466,6 +17752,13 @@
   });
 
   document.addEventListener('keydown', async (event) => {
+    if (event.key === 'Escape' && state.feedMenuOpen) {
+      event.preventDefault();
+      state.feedMenuOpen = false;
+      syncHomeFeedChrome();
+      currentAppShell()?.querySelector('.feed-picker')?.focus({ preventScroll: true });
+      return;
+    }
     if (event.target.id === 'note-reply-input' && event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       const send = document.querySelector('[data-action="send-note-reply"]');

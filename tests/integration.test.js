@@ -477,9 +477,10 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(homeStorySource, /followed\.length \? followed : fallback/);
   assert.match(homeStorySource, /aria-label="Stories"/);
   assert.match(homeStorySource, /story \? 'view-story' : 'open-story-create'/);
+  const feedPickerSource = sourceSection(clientSource, 'const FEED_MODES', 'function homeStoryUsers');
+  assert.match(feedPickerSource, /data-action="toggle-feed-menu"/);
+  for (const mode of ['for_you', 'following', 'favorites']) assert.match(feedPickerSource, new RegExp(`['"]${mode}['"]`));
   const homePanelSource = sourceSection(clientSource, 'function renderHomePanel', 'function composerFilterStyle');
-  assert.match(homePanelSource, /data-action="toggle-feed-menu"/);
-  for (const mode of ['for_you', 'following', 'favorites']) assert.match(homePanelSource, new RegExp(`['"]${mode}['"]`));
   assert.match(homePanelSource, /renderHomeStories\(\)/);
   assert.match(homePanelSource, /data-action="open-post-create"/);
   assert.match(homePanelSource, /data-action="open-notifications"/);
