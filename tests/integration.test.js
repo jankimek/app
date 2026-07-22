@@ -685,11 +685,18 @@ test('mobile viewport and story editing controls stay inside their gesture bound
   assert.match(serverSource, /Array\.from\(textValue\)\.length > 60/);
   assert.match(serverSource, /audioDuration > 30/);
 
-  const callDockSource = sourceSection(clientSource, 'function renderCallDock', 'async function loadFeed');
+  const callDockSource = sourceSection(clientSource, 'function renderInstagramCall', 'let feedLoadRequestId');
   assert.match(callDockSource, /data-call-dock/);
   assert.match(callDockSource, /data-call-drag-handle/);
   assert.match(callDockSource, /data-action="toggle-call-minimized"/);
   assert.match(callDockSource, /data-action="toggle-call-mute"/);
+  assert.match(callDockSource, /data-action="resume-call-audio"/);
+  assert.match(callDockSource, /class="call-continuity/);
+  assert.match(htmlSource, /id="call-audio-stage" class="call-audio-stage"/);
+  assert.match(clientSource, /function syncCallAudioOutputs/);
+  assert.match(clientSource, /sender\.replaceTrack\(nextTrack\)/);
+  assert.match(clientSource, /kind: group \? 'group_restart_offer' : 'restart_offer'/);
+  assert.match(styleSource, /\.video-call\.call-screen\.minimized \{/);
   assert.match(clientSource, /function renderUploadDock/);
   assert.match(clientSource, /createUploadJob\('post'/);
   assert.match(clientSource, /createUploadJob\('story'/);

@@ -308,6 +308,11 @@
   let navigationMaintenanceIdle = 0;
   let callDurationTimer = null;
   let callTimeoutTimer = null;
+  let callRecoveryTimer = null;
+  let callConnectionRecoveryTimer = null;
+  let callRestartTimeoutTimer = null;
+  let callAudioPlaybackAttempt = 0;
+  let callSetupId = 0;
   let storyRailHintTimer = null;
   let postViewerAfterClose = null;
   let postViewerReturnFocus = null;
@@ -351,7 +356,16 @@
       facingMode: 'user',
       startedAt: null,
       position: null,
-      pendingCandidates: []
+      pendingCandidates: [],
+      captureInterrupted: false,
+      audioRecoveryNeeded: false,
+      audioPlaybackBlocked: false,
+      recoveringAudio: false,
+      connectionRecoveryNeeded: false,
+      connectionRecovering: false,
+      backgroundedAt: null,
+      uiMounted: false,
+      ending: false
     };
   }
 
@@ -8815,63 +8829,6 @@
     callDurationTimer = setInterval(syncCallDuration, 1000);
   }
 
-  function renderCallDock() {
-    const call = state.call;
-    if (!call.active && !call.incoming) return '';
-    const peer = userById(call.peerId || call.incoming?.from);
-    const peerName = peer?.displayName || peer?.username || 'Someone';
-    const dockStyle = call.position
-      ? `left:${Math.round(call.position.x)}px;top:${Math.round(call.position.y)}px;right:auto;bottom:auto;`
-      : '';
-    const peerAvatar = peer?.avatar?.url
-      ? `<img src="${esc(peer.avatar.url)}" alt="">`
-      : `<span>${esc(initials(peer || { username: peerName }))}</span>`;
-    if (call.incoming) {
-      return `
-        <section class="call-dock incoming" data-call-dock style="${esc(dockStyle)}" aria-label="Incoming call from ${esc(peerName)}">
-          <div class="call-drag-head" data-call-drag-handle>
-            <span class="call-peer-avatar">${peerAvatar}</span>
-            <span class="call-dock-copy"><strong>${esc(peerName)}</strong><small>Incoming ${call.incoming.video ? 'video' : 'voice'} call</small></span>
-            <span class="call-drag-grip" aria-hidden="true"></span>
-          </div>
-          <div class="call-incoming-actions">
-            <button class="call-control reject" data-action="reject-call" aria-label="Decline call">${icon('x')}<small>Decline</small></button>
-            <button class="call-control accept" data-action="accept-call" aria-label="Accept call">${icon(call.incoming.video ? 'video' : 'phone')}<small>Accept</small></button>
-          </div>
-        </section>
-      `;
-    }
-    return `
-      <section class="call-dock active-call ${call.video ? 'video-call' : 'voice-call'} ${call.minimized ? 'minimized' : ''}" data-call-dock style="${esc(dockStyle)}" aria-label="Call with ${esc(peerName)}">
-        ${call.minimized ? `
-          <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
-          <button class="call-mini-main" data-action="toggle-call-minimized" aria-label="Expand call with ${esc(peerName)}">
-            <span class="call-peer-avatar">${peerAvatar}</span>
-            <span><strong>${esc(peerName)}</strong><small data-call-duration>${esc(callDurationLabel(call.startedAt))}</small></span>
-          </button>
-          <button class="call-mini-hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}</button>
-        ` : `
-          <div class="call-stage">
-            <video id="remote-video" class="call-remote-media" autoplay playsinline></video>
-            <div class="call-voice-backdrop"><span class="call-peer-avatar large">${peerAvatar}</span><i></i><i></i></div>
-            <div class="call-stage-shade"></div>
-            <div class="call-drag-head" data-call-drag-handle>
-              <span class="call-dock-copy"><strong>${esc(peerName)}</strong><small>${esc(call.status || 'Call')} · <span data-call-duration>${esc(callDurationLabel(call.startedAt))}</span></small></span>
-              <span class="call-drag-grip" aria-hidden="true"></span>
-              <button class="call-minimize" data-action="toggle-call-minimized" aria-label="Minimize call">${icon('chevron')}</button>
-            </div>
-            ${call.video ? `<video id="local-video" class="call-local-media ${call.cameraOff ? 'camera-off' : ''}" autoplay muted playsinline></video>` : ''}
-          </div>
-          <div class="call-controls">
-            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
-            ${call.video ? `<button class="call-control ${call.cameraOff ? 'off' : ''}" data-action="toggle-call-camera" aria-label="${call.cameraOff ? 'Turn camera on' : 'Turn camera off'}" aria-pressed="${call.cameraOff}">${icon('video')}<small>Camera</small></button>` : ''}
-            <button class="call-control hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}<small>End</small></button>
-          </div>
-        `}
-      </section>
-    `;
-  }
-
   function renderCallRemoteStage(call) {
     if (!call.groupId) return '<video id="remote-video" class="call-remote-media" autoplay playsinline></video>';
     const remoteIds = (call.participantIds || []).filter((userId) => userId !== state.me?.id);
@@ -8881,28 +8838,77 @@
     }).join('')}</div>`;
   }
 
+  function isSafariCallEnvironment() {
+    const userAgent = navigator.userAgent || '';
+    const appleMobile = /iPad|iPhone|iPod/.test(userAgent);
+    const safari = /Safari/.test(userAgent) && !/Chrome|CriOS|Chromium|Edg|OPR|Firefox|FxiOS/.test(userAgent);
+    return appleMobile || safari;
+  }
+
+  function callContinuityView(call = state.call) {
+    if (call.connectionRecovering) return {
+      tone: 'working', title: 'Reconnecting the call',
+      detail: 'Restoring the connection after Safari was interrupted.', action: false
+    };
+    if (call.connectionRecoveryNeeded) return {
+      tone: 'warning', title: 'Call needs a quick reconnect',
+      detail: 'Tap reconnect to restore the live connection.', action: true
+    };
+    if (call.recoveringAudio) return {
+      tone: 'working', title: 'Restoring your microphone',
+      detail: 'The other person can still stay on the call.', action: false
+    };
+    if (call.audioRecoveryNeeded || call.captureInterrupted) return {
+      tone: 'warning', title: 'Microphone was paused',
+      detail: 'Tap reconnect so everyone can hear you again.', action: true
+    };
+    if (call.audioPlaybackBlocked) return {
+      tone: 'warning', title: 'Call audio is paused',
+      detail: 'Tap reconnect to hear the call again.', action: true
+    };
+    return {
+      tone: 'ready', title: 'Background audio prepared',
+      detail: isSafariCallEnvironment()
+        ? 'Keep Safari open when switching apps; interruptions recover here.'
+        : 'This call stays attached while the tab is in the background.',
+      action: false
+    };
+  }
+
+  function renderCallWaveform() {
+    return '<span class="call-waveform" aria-hidden="true"><i></i><i></i><i></i><i></i></span>';
+  }
+
   function renderInstagramCall() {
     const call = state.call;
     if (!call.active && !call.incoming) return '';
     const group = call.groupId ? state.groups.find((item) => item.id === call.groupId) : null;
     const peer = userById(call.peerId || call.incoming?.from);
     const peerName = call.groupName || group?.name || peer?.displayName || peer?.username || 'Someone';
+    const isEntering = !call.uiMounted;
+    call.uiMounted = true;
     const dockStyle = call.minimized && call.position
       ? `left:${Math.round(call.position.x)}px;top:${Math.round(call.position.y)}px;right:auto;bottom:auto;`
       : '';
-    const peerAvatar = peer?.avatar?.url
-      ? `<img src="${esc(peer.avatar.url)}" alt="">`
+    const avatarUrl = group?.avatar?.url || peer?.avatar?.url || '';
+    const peerAvatar = avatarUrl
+      ? `<img src="${esc(avatarUrl)}" alt="">`
       : `<span>${esc(initials(peer || { username: peerName }))}</span>`;
-    const ambient = peer?.avatar?.url ? `style="background-image:url('${esc(peer.avatar.url)}')"` : '';
+    const ambient = avatarUrl ? `style="background-image:url('${esc(avatarUrl)}')"` : '';
     if (call.incoming) {
       return `
-        <section class="call-screen incoming-call" data-call-dock aria-label="Incoming call from ${esc(peerName)}">
+        <section class="call-screen incoming-call ${isEntering ? 'is-entering' : ''}" data-call-dock role="dialog" aria-modal="true" aria-live="polite" aria-label="Incoming call from ${esc(peerName)}">
           <div class="call-ambient" ${ambient}></div>
-          <header class="call-screen-head"><span><small>${call.incoming.groupId ? 'Group call' : 'New Around'}</small><strong>${call.incoming.video ? 'Video chat' : 'Audio call'}</strong></span><button data-action="reject-call" aria-label="Close incoming call">${icon('x')}</button></header>
+          <div class="call-atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
+          <header class="call-screen-head incoming-head">
+            <span class="call-brand-chip">${icon('lock')}<span><strong>NEW AROUND</strong><small>Private ${call.incoming.video ? 'video' : 'audio'} call</small></span></span>
+            <button data-action="reject-call" aria-label="Close incoming call">${icon('x')}</button>
+          </header>
           <main class="incoming-call-copy">
-            <span class="call-peer-avatar hero">${peerAvatar}</span>
+            <span class="call-caller-orbit"><i></i><i></i><span class="call-peer-avatar hero">${peerAvatar}</span></span>
+            <span class="call-eyebrow"><i></i> Incoming ${call.incoming.video ? 'video' : 'audio'} call</span>
             <h1>${esc(peerName)}</h1>
-            <p>Incoming ${call.incoming.groupId ? 'group ' : ''}${call.incoming.video ? 'video chat' : 'audio call'}…</p>
+            <p>${call.incoming.groupId ? 'Group conversation' : 'Tap accept to join the conversation'}</p>
           </main>
           <footer class="call-incoming-actions">
             <button class="call-control reject" data-action="reject-call" aria-label="Decline call">${icon('phone')}<small>Decline</small></button>
@@ -8911,30 +8917,43 @@
         </section>
       `;
     }
+    const continuity = callContinuityView(call);
+    const miniStatus = continuity.tone === 'ready' ? (call.status || 'Connected') : continuity.title;
     return `
-      <section class="call-screen active-call ${call.video ? 'video-call' : 'voice-call'} ${call.minimized ? 'minimized' : ''}" data-call-dock style="${esc(dockStyle)}" aria-label="Call with ${esc(peerName)}">
+      <section class="call-screen active-call ${call.video ? 'video-call' : 'voice-call'} ${call.minimized ? 'minimized' : ''} ${isEntering ? 'is-entering' : ''}" data-call-dock role="dialog" ${call.minimized ? '' : 'aria-modal="true"'} aria-live="polite" style="${esc(dockStyle)}" aria-label="Call with ${esc(peerName)}">
         ${call.minimized ? `
           ${renderCallRemoteStage(call)}
           <div class="call-mini-drag" data-call-drag-handle>
             <button class="call-mini-main" data-action="toggle-call-minimized" aria-label="Expand call with ${esc(peerName)}">
-              <span class="call-peer-avatar">${peerAvatar}</span>
-              <span><strong>${esc(peerName)}</strong><small><span data-call-status>${esc(call.status || 'Connected')}</span> · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span>
+              <span class="call-mini-avatar"><span class="call-peer-avatar">${peerAvatar}</span><i class="call-live-dot ${esc(continuity.tone)}"></i></span>
+              <span class="call-mini-copy"><strong>${esc(peerName)}</strong><small>${renderCallWaveform()}<span data-call-mini-status>${esc(miniStatus)}</span><b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span>
             </button>
+            <button class="call-mini-action ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'micOff' : 'mic')}</button>
             <button class="call-mini-hangup" data-action="hangup-call" aria-label="End call">${icon('phone')}</button>
           </div>
         ` : `
           <div class="call-stage">
             ${renderCallRemoteStage(call)}
             <div class="call-ambient" ${ambient}></div>
-            <div class="call-voice-backdrop"><span class="call-peer-avatar hero">${peerAvatar}</span><i></i><i></i></div>
+            <div class="call-atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div class="call-voice-backdrop"><span class="call-caller-orbit"><i></i><i></i><span class="call-peer-avatar hero">${peerAvatar}</span></span>${renderCallWaveform()}</div>
             <div class="call-stage-shade"></div>
-            <header class="call-screen-head"><button class="call-minimize" data-action="toggle-call-minimized" aria-label="Minimize call">${icon('chevron')}</button><span><strong>${esc(peerName)}</strong><small><span data-call-status>${esc(call.status || 'Call')}</span> · <b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span><i></i></header>
-            <div class="active-call-copy"><h1>${esc(peerName)}</h1><p data-call-status>${esc(call.status || 'Calling…')}</p></div>
+            <header class="call-screen-head active-head">
+              <button class="call-minimize" data-action="toggle-call-minimized" aria-label="Minimize call">${icon('chevron')}</button>
+              <span class="call-head-identity"><strong>${esc(peerName)}</strong><small><span data-call-status>${esc(call.status || 'Call')}</span><i></i><b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></small></span>
+              <span class="call-private-chip">${icon('lock')}<small>Private</small></span>
+            </header>
+            <div class="active-call-copy"><span class="call-eyebrow"><i></i> Live ${call.video ? 'video' : 'audio'}</span><h1>${esc(peerName)}</h1><p><span data-call-status>${esc(call.status || 'Calling…')}</span><i></i><b data-call-duration>${esc(callDurationLabel(call.startedAt))}</b></p></div>
             ${call.video ? `<video id="local-video" class="call-local-media ${call.cameraOff ? 'camera-off' : ''}" autoplay muted playsinline></video>` : ''}
           </div>
+          <aside class="call-continuity ${esc(continuity.tone)}" data-call-continuity>
+            <span class="call-continuity-icon">${icon(continuity.tone === 'ready' ? 'lock' : 'refresh')}</span>
+            <span><strong data-call-continuity-title>${esc(continuity.title)}</strong><small data-call-continuity-detail>${esc(continuity.detail)}</small></span>
+            <button data-action="resume-call-audio" data-call-continuity-action ${continuity.action ? '' : 'hidden'}>Reconnect</button>
+          </aside>
           <div class="call-controls">
-            <button class="call-control ${call.speakerOn ? '' : 'off'}" data-action="toggle-call-speaker" aria-label="${call.speakerOn ? 'Turn speaker off' : 'Turn speaker on'}" aria-pressed="${call.speakerOn}">${icon(call.speakerOn ? 'volume' : 'mute')}<small>Speaker</small></button>
-            <button class="call-control ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
+            <button class="call-control ${call.speakerOn ? '' : 'off'}" data-action="toggle-call-speaker" aria-label="${call.speakerOn ? 'Mute call audio' : 'Unmute call audio'}" aria-pressed="${call.speakerOn}">${icon(call.speakerOn ? 'volume' : 'mute')}<small>Sound</small></button>
+            <button class="call-control call-control-primary ${call.muted ? 'off' : ''}" data-action="toggle-call-mute" aria-label="${call.muted ? 'Unmute microphone' : 'Mute microphone'}" aria-pressed="${call.muted}">${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small></button>
             ${call.video ? `<button class="call-control ${call.cameraOff ? 'off' : ''}" data-action="toggle-call-camera" aria-label="${call.cameraOff ? 'Turn camera on' : 'Turn camera off'}" aria-pressed="${call.cameraOff}">${icon('video')}<small>Camera</small></button>` : ''}
             ${call.video ? `<button class="call-control" data-action="flip-call-camera" aria-label="Switch camera">${icon('refresh')}<small>Flip</small></button>` : ''}
             <button class="call-control" data-action="add-call-people" aria-label="Add people to call">${icon('plus')}<small>Add</small></button>
@@ -10346,7 +10365,7 @@
     pauseNotePlayback();
     stopMusicCatalogPreview();
     stopSearchAudioPreview();
-    document.querySelectorAll('audio').forEach((audio) => audio.pause?.());
+    document.querySelectorAll('audio:not([data-call-audio-peer])').forEach((audio) => audio.pause?.());
     document.querySelectorAll('.clip-video, .clip-music').forEach((media) => media.pause?.());
     if (!sameMessage) {
       voiceAudioPlayer.pause();
@@ -10476,7 +10495,7 @@
     pauseVoicePlayback();
     stopMusicCatalogPreview();
     stopSearchAudioPreview();
-    document.querySelectorAll('audio').forEach((audio) => audio.pause?.());
+    document.querySelectorAll('audio:not([data-call-audio-peer])').forEach((audio) => audio.pause?.());
     document.querySelectorAll('.clip-video, .clip-music').forEach((media) => media.pause?.());
     clearTimeout(notePlaybackLoadTimer);
     const requestedStart = Math.max(0, Number(note.audioStart || note.music?.start || 0));
@@ -13688,6 +13707,11 @@
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${scheme}://${location.host}/ws`);
     state.ws = ws;
+    ws.addEventListener('open', () => {
+      if (state.ws !== ws || !state.call.active) return;
+      syncCallAudioOutputs();
+      if (state.call.connectionRecoveryNeeded || callHasBrokenConnections()) scheduleCallConnectionRecovery(180);
+    });
     ws.addEventListener('message', async (event) => {
       let payload;
       try {
@@ -14228,9 +14252,368 @@
   }
 
   function sendSignal(to, payload) {
-    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
     const callId = payload?.callId || state.call.callId || state.call.incoming?.callId || null;
     state.ws.send(JSON.stringify({ type: 'signal', to, payload: { ...payload, callId } }));
+    return true;
+  }
+
+  function callAudioEntries(call = state.call) {
+    if (!call.active) return [];
+    if (call.groupId) {
+      return [...(call.remoteStreams || new Map()).entries()]
+        .filter(([, stream]) => stream?.getAudioTracks?.().length);
+    }
+    return call.remoteStream?.getAudioTracks?.().length
+      ? [[String(call.peerId || 'direct'), call.remoteStream]]
+      : [];
+  }
+
+  function clearCallAudioOutputs() {
+    callAudioPlaybackAttempt += 1;
+    const stage = document.getElementById('call-audio-stage');
+    if (!stage) return;
+    stage.querySelectorAll('audio').forEach((audio) => {
+      audio.pause?.();
+      audio.srcObject = null;
+      audio.remove();
+    });
+  }
+
+  function syncCallContinuityUi() {
+    if (!state.call.active) return;
+    const view = callContinuityView(state.call);
+    const panel = document.querySelector('[data-call-continuity]');
+    if (panel) {
+      panel.classList.remove('ready', 'working', 'warning');
+      panel.classList.add(view.tone);
+      const title = panel.querySelector('[data-call-continuity-title]');
+      const detail = panel.querySelector('[data-call-continuity-detail]');
+      const action = panel.querySelector('[data-call-continuity-action]');
+      const iconSlot = panel.querySelector('.call-continuity-icon');
+      if (title) title.textContent = view.title;
+      if (detail) detail.textContent = view.detail;
+      if (action) action.hidden = !view.action;
+      if (iconSlot) iconSlot.innerHTML = icon(view.tone === 'ready' ? 'lock' : 'refresh');
+    }
+    document.querySelectorAll('.call-live-dot').forEach((dot) => {
+      dot.classList.remove('ready', 'working', 'warning');
+      dot.classList.add(view.tone);
+    });
+    document.querySelectorAll('[data-call-mini-status]').forEach((node) => {
+      node.textContent = view.tone === 'ready' ? (state.call.status || 'Connected') : view.title;
+    });
+  }
+
+  function syncCallAudioOutputs(options = {}) {
+    const stage = document.getElementById('call-audio-stage');
+    if (!stage) return;
+    const callId = state.call.callId;
+    const entries = callAudioEntries();
+    const wantedKeys = new Set(entries.map(([key]) => String(key)));
+    stage.querySelectorAll('audio[data-call-audio-peer]').forEach((audio) => {
+      if (wantedKeys.has(audio.dataset.callAudioPeer)) return;
+      audio.pause?.();
+      audio.srcObject = null;
+      audio.remove();
+    });
+    const playback = [];
+    entries.forEach(([rawKey, stream]) => {
+      const key = String(rawKey);
+      let audio = [...stage.querySelectorAll('audio[data-call-audio-peer]')]
+        .find((item) => item.dataset.callAudioPeer === key);
+      if (!audio) {
+        audio = document.createElement('audio');
+        audio.dataset.callAudioPeer = key;
+        audio.autoplay = true;
+        audio.playsInline = true;
+        audio.preload = 'auto';
+        audio.setAttribute('playsinline', '');
+        stage.append(audio);
+      }
+      if (audio.srcObject !== stream) audio.srcObject = stream;
+      audio.muted = !state.call.speakerOn;
+      audio.volume = state.call.speakerOn ? 1 : 0;
+      const result = audio.play?.();
+      if (result?.then) playback.push(result);
+    });
+    if (!playback.length) return;
+    const attempt = ++callAudioPlaybackAttempt;
+    Promise.allSettled(playback).then((results) => {
+      if (attempt !== callAudioPlaybackAttempt || state.call.callId !== callId || !state.call.active) return;
+      const blocked = state.call.speakerOn && results.some((result) => result.status === 'rejected');
+      if (state.call.audioPlaybackBlocked === blocked) return;
+      state.call.audioPlaybackBlocked = blocked;
+      syncCallContinuityUi();
+      if (options.userInitiated && blocked) state.call.audioRecoveryNeeded = true;
+    });
+  }
+
+  function callDisplayIdentity(call = state.call) {
+    const group = call.groupId ? state.groups.find((item) => item.id === call.groupId) : null;
+    const peer = userById(call.peerId || call.incoming?.from);
+    return {
+      name: call.groupName || group?.name || peer?.displayName || peer?.username || 'New Around call',
+      avatar: group?.avatar?.url || peer?.avatar?.url || ''
+    };
+  }
+
+  function syncCallMediaSession() {
+    const mediaSession = navigator.mediaSession;
+    if (!mediaSession) return;
+    if (!state.call.active) {
+      ['hangup', 'togglemicrophone', 'togglecamera'].forEach((action) => {
+        try { mediaSession.setActionHandler(action, null); } catch { /* Unsupported action. */ }
+      });
+      try { mediaSession.metadata = null; } catch { /* Metadata is optional. */ }
+      try { mediaSession.playbackState = 'none'; } catch { /* Playback state is optional. */ }
+      return;
+    }
+    const identity = callDisplayIdentity();
+    if (typeof MediaMetadata === 'function') {
+      try {
+        mediaSession.metadata = new MediaMetadata({
+          title: identity.name,
+          artist: state.call.video ? 'New Around video call' : 'New Around audio call',
+          album: 'Ongoing private call',
+          artwork: identity.avatar ? [{ src: new URL(identity.avatar, location.href).href }] : []
+        });
+      } catch { /* A call does not depend on lock-screen metadata. */ }
+    }
+    try { mediaSession.playbackState = 'playing'; } catch { /* Playback state is optional. */ }
+    const handlers = {
+      hangup: () => { endCall(true).catch(() => {}); },
+      togglemicrophone: () => toggleCallMute(),
+      togglecamera: () => toggleCallCamera()
+    };
+    Object.entries(handlers).forEach(([action, handler]) => {
+      try { mediaSession.setActionHandler(action, handler); } catch { /* Unsupported action. */ }
+    });
+  }
+
+  function syncCallMediaCaptureControls() {
+    const mediaSession = navigator.mediaSession;
+    if (!mediaSession || !state.call.active) return;
+    try {
+      mediaSession.setMicrophoneActive?.(!state.call.muted)?.catch?.(() => {});
+    } catch { /* Safari may require a user gesture to unmute capture. */ }
+    try {
+      mediaSession.setCameraActive?.(state.call.video && !state.call.cameraOff)?.catch?.(() => {});
+    } catch { /* Safari may require a user gesture to activate the camera. */ }
+  }
+
+  function currentCallAudioTrack() {
+    return state.call.localStream?.getAudioTracks?.()[0] || null;
+  }
+
+  function bindCallTrackLifecycle(stream, callId = state.call.callId) {
+    const track = stream?.getAudioTracks?.()[0];
+    if (!track) return;
+    track.addEventListener('mute', () => {
+      if (!state.call.active || state.call.callId !== callId || state.call.ending || currentCallAudioTrack() !== track) return;
+      if (state.call.muted) return;
+      state.call.captureInterrupted = true;
+      if (!document.hidden && !state.call.muted) state.call.audioRecoveryNeeded = true;
+      syncCallContinuityUi();
+      if (!document.hidden) scheduleCallAudioRecovery(900);
+    });
+    track.addEventListener('unmute', () => {
+      if (!state.call.active || state.call.callId !== callId || currentCallAudioTrack() !== track) return;
+      if (state.call.muted) return;
+      state.call.captureInterrupted = false;
+      state.call.audioRecoveryNeeded = false;
+      syncCallContinuityUi();
+    });
+    track.addEventListener('ended', () => {
+      if (!state.call.active || state.call.callId !== callId || state.call.ending || currentCallAudioTrack() !== track) return;
+      state.call.captureInterrupted = true;
+      state.call.audioRecoveryNeeded = true;
+      syncCallContinuityUi();
+      if (!document.hidden) scheduleCallAudioRecovery(250);
+    });
+  }
+
+  function callAudioSenders() {
+    const connections = state.call.groupId
+      ? [...state.call.connections.values()].map((connection) => connection.pc).filter(Boolean)
+      : [state.call.pc].filter(Boolean);
+    return connections.map((pc) => pc.getSenders?.().find((sender) => sender.track?.kind === 'audio')).filter(Boolean);
+  }
+
+  async function recoverCallAudio(options = {}) {
+    if (!state.call.active || state.call.recoveringAudio) return false;
+    if (document.hidden && !options.userInitiated) return false;
+    const callId = state.call.callId;
+    state.call.recoveringAudio = true;
+    state.call.audioRecoveryNeeded = false;
+    syncCallContinuityUi();
+    let replacement = null;
+    try {
+      replacement = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+      if (!state.call.active || state.call.callId !== callId) {
+        replacement.getTracks().forEach((track) => track.stop());
+        return false;
+      }
+      const nextTrack = replacement.getAudioTracks()[0];
+      if (!nextTrack) throw new Error('No microphone track was returned.');
+      nextTrack.enabled = !state.call.muted;
+      const senders = callAudioSenders();
+      const results = await Promise.allSettled(senders.map((sender) => sender.replaceTrack(nextTrack)));
+      if (senders.length && results.every((result) => result.status === 'rejected')) throw new Error('The microphone could not reconnect.');
+      if (results.some((result) => result.status === 'rejected')) state.call.connectionRecoveryNeeded = true;
+      const previousTracks = state.call.localStream?.getAudioTracks?.() || [];
+      if (!state.call.localStream) state.call.localStream = new MediaStream();
+      previousTracks.forEach((track) => {
+        state.call.localStream.removeTrack(track);
+        track.stop();
+      });
+      state.call.localStream.addTrack(nextTrack);
+      state.call.captureInterrupted = false;
+      state.call.audioRecoveryNeeded = false;
+      state.call.recoveringAudio = false;
+      bindCallTrackLifecycle(state.call.localStream, callId);
+      attachCallStreams();
+      syncCallUi();
+      return true;
+    } catch {
+      replacement?.getTracks?.().forEach((track) => track.stop());
+      if (state.call.callId === callId && state.call.active) {
+        state.call.recoveringAudio = false;
+        state.call.captureInterrupted = true;
+        state.call.audioRecoveryNeeded = true;
+        syncCallContinuityUi();
+      }
+      return false;
+    }
+  }
+
+  function scheduleCallAudioRecovery(delay = 700) {
+    clearTimeout(callRecoveryTimer);
+    callRecoveryTimer = null;
+    if (!state.call.active) return;
+    const callId = state.call.callId;
+    callRecoveryTimer = setTimeout(() => {
+      callRecoveryTimer = null;
+      if (!state.call.active || state.call.callId !== callId || document.hidden) return;
+      if (state.call.muted) return;
+      const track = currentCallAudioTrack();
+      if (!track || track.readyState === 'ended') {
+        recoverCallAudio().catch(() => {});
+      } else if (track.muted) {
+        state.call.captureInterrupted = true;
+        state.call.audioRecoveryNeeded = true;
+        syncCallContinuityUi();
+      }
+    }, delay);
+  }
+
+  function callPeerConnections() {
+    if (state.call.groupId) {
+      return [...state.call.connections.entries()].map(([peerId, connection]) => ({ peerId, pc: connection.pc, group: true }));
+    }
+    return state.call.pc && state.call.peerId
+      ? [{ peerId: state.call.peerId, pc: state.call.pc, group: false }]
+      : [];
+  }
+
+  function callHasBrokenConnections() {
+    return callPeerConnections().some(({ pc }) => ['disconnected', 'failed'].includes(pc?.connectionState));
+  }
+
+  function scheduleCallConnectionRecovery(delay = 900) {
+    clearTimeout(callConnectionRecoveryTimer);
+    callConnectionRecoveryTimer = null;
+    if (!state.call.active) return;
+    const callId = state.call.callId;
+    state.call.connectionRecoveryNeeded = true;
+    syncCallContinuityUi();
+    if (document.hidden) return;
+    callConnectionRecoveryTimer = setTimeout(() => {
+      callConnectionRecoveryTimer = null;
+      if (!state.call.active || state.call.callId !== callId || document.hidden) return;
+      restartCallConnections().catch(() => {});
+    }, delay);
+  }
+
+  async function restartCallConnections() {
+    if (!state.call.active || state.call.connectionRecovering || document.hidden) return false;
+    const callId = state.call.callId;
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      state.call.connectionRecoveryNeeded = true;
+      connectWs();
+      syncCallContinuityUi();
+      return false;
+    }
+    const broken = callPeerConnections().filter(({ pc }) => pc && ['disconnected', 'failed'].includes(pc.connectionState));
+    const targets = broken.filter(({ pc }) => pc.signalingState === 'stable');
+    if (!broken.length) {
+      state.call.connectionRecoveryNeeded = false;
+      syncCallContinuityUi();
+      return true;
+    }
+    if (!targets.length) {
+      state.call.connectionRecoveryNeeded = true;
+      syncCallContinuityUi();
+      return false;
+    }
+    state.call.connectionRecovering = true;
+    state.call.connectionRecoveryNeeded = false;
+    state.call.status = 'Reconnecting…';
+    syncCallUi();
+    const results = await Promise.allSettled(targets.map(async ({ peerId, pc, group }) => {
+      try {
+        pc.restartIce?.();
+        const offer = await pc.createOffer({ iceRestart: true });
+        if (!state.call.active || state.call.callId !== callId) throw new Error('Call changed.');
+        await pc.setLocalDescription(offer);
+        const sent = sendSignal(peerId, {
+          kind: group ? 'group_restart_offer' : 'restart_offer',
+          offer, callId, groupId: state.call.groupId || undefined
+        });
+        if (!sent) throw new Error('Signaling is reconnecting.');
+      } catch (error) {
+        if (pc.signalingState === 'have-local-offer') await pc.setLocalDescription({ type: 'rollback' }).catch(() => {});
+        throw error;
+      }
+    }));
+    if (!state.call.active || state.call.callId !== callId) return false;
+    if (results.some((result) => result.status === 'rejected')) {
+      state.call.connectionRecovering = false;
+      state.call.connectionRecoveryNeeded = true;
+      syncCallContinuityUi();
+      return false;
+    }
+    clearTimeout(callRestartTimeoutTimer);
+    callRestartTimeoutTimer = setTimeout(() => {
+      if (!state.call.active || state.call.callId !== callId || !callHasBrokenConnections()) return;
+      callPeerConnections().forEach(({ pc }) => {
+        if (pc?.signalingState === 'have-local-offer') pc.setLocalDescription({ type: 'rollback' }).catch(() => {});
+      });
+      state.call.connectionRecovering = false;
+      state.call.connectionRecoveryNeeded = true;
+      syncCallContinuityUi();
+      if (state.ws?.readyState === WebSocket.OPEN) state.ws.close();
+      connectWs();
+    }, 9000);
+    return true;
+  }
+
+  async function resumeCallSession(options = {}) {
+    if (!state.call.active) return;
+    const track = currentCallAudioTrack();
+    const needsNewTrack = (!state.call.muted || options.userInitiated) && (!track || track.readyState === 'ended');
+    const userCanRestoreMutedTrack = Boolean(options.userInitiated)
+      && (track?.muted || state.call.audioRecoveryNeeded || state.call.captureInterrupted);
+    if (needsNewTrack || userCanRestoreMutedTrack) {
+      await recoverCallAudio({ userInitiated: Boolean(options.userInitiated) });
+    }
+    syncCallAudioOutputs({ userInitiated: Boolean(options.userInitiated) });
+    if (state.call.connectionRecoveryNeeded || callHasBrokenConnections()) await restartCallConnections();
+    attachCallStreams();
+    syncCallMediaSession();
   }
 
   function createPeerConnection(peerId, callId) {
@@ -14258,13 +14641,20 @@
       if (pc.connectionState === 'connected') {
         state.call.status = 'Connected';
         state.call.startedAt ||= Date.now();
+        if (!callHasBrokenConnections()) {
+          state.call.connectionRecovering = false;
+          state.call.connectionRecoveryNeeded = false;
+          clearTimeout(callRestartTimeoutTimer);
+        }
       } else if (pc.connectionState === 'connecting') state.call.status = 'Connecting…';
-      else if (pc.connectionState === 'disconnected') state.call.status = 'Reconnecting…';
-      else if (pc.connectionState === 'failed') state.call.status = 'Connection lost';
+      else if (pc.connectionState === 'disconnected') {
+        state.call.status = 'Reconnecting…';
+        scheduleCallConnectionRecovery(1400);
+      } else if (pc.connectionState === 'failed') {
+        state.call.status = 'Connection interrupted';
+        scheduleCallConnectionRecovery(250);
+      }
       syncCallUi();
-      if (pc.connectionState === 'failed') setTimeout(() => {
-        if (state.call.pc === pc && pc.connectionState === 'failed') endCall(false);
-      }, 1800);
     };
     return pc;
   }
@@ -14300,9 +14690,24 @@
       if (pc.connectionState === 'connected') {
         state.call.status = 'Connected';
         state.call.startedAt ||= Date.now();
+        if (!callHasBrokenConnections()) {
+          state.call.connectionRecovering = false;
+          state.call.connectionRecoveryNeeded = false;
+          clearTimeout(callRestartTimeoutTimer);
+        }
         syncCallUi();
       }
-      if (['failed', 'closed'].includes(pc.connectionState)) removeGroupCallParticipant(peerId, false);
+      if (pc.connectionState === 'disconnected') {
+        state.call.status = 'Reconnecting…';
+        scheduleCallConnectionRecovery(1400);
+        syncCallUi();
+      }
+      if (pc.connectionState === 'failed') {
+        state.call.status = 'Connection interrupted';
+        scheduleCallConnectionRecovery(250);
+        syncCallUi();
+      }
+      if (pc.connectionState === 'closed') removeGroupCallParticipant(peerId, false);
     };
     if (offerNow) {
       const offer = await pc.createOffer();
@@ -14317,10 +14722,16 @@
     const group = state.activeGroup;
     if (!group || !navigator.mediaDevices?.getUserMedia) return;
     await endCall(false);
+    const setupId = ++callSetupId;
     const callId = newCallId();
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { facingMode: 'user' } : false });
+    if (setupId !== callSetupId) {
+      localStream.getTracks().forEach((track) => track.stop());
+      return;
+    }
     const participantIds = Array.from(new Set([state.me.id, ...(group.members || []).map((user) => user.id)]));
     state.call = { ...freshCallState(), callId, groupId: group.id, groupName: group.name, localStream, active: true, video, status: 'Calling…', participantIds };
+    bindCallTrackLifecycle(localStream, callId);
     updateCallDock();
     (group.members || []).filter((user) => user.id !== state.me.id).forEach((user) => sendSignal(user.id, {
       kind: 'group_invite', callId, groupId: group.id, groupName: group.name, video, participantIds
@@ -14408,9 +14819,37 @@
       sendSignal(from, { kind: 'group_answer', answer, callId, groupId: payload.groupId });
       return true;
     }
+    if (payload.kind === 'group_restart_offer' && state.call.active && state.call.groupId === payload.groupId) {
+      const connection = await createGroupPeerConnection(from, false);
+      if (connection.pc.signalingState === 'have-local-offer') {
+        await connection.pc.setLocalDescription({ type: 'rollback' }).catch(() => {});
+      }
+      if (connection.pc.signalingState !== 'stable') {
+        state.call.connectionRecoveryNeeded = true;
+        syncCallContinuityUi();
+        return true;
+      }
+      await connection.pc.setRemoteDescription(payload.offer);
+      await Promise.all(connection.pending.splice(0).map((candidate) => connection.pc.addIceCandidate(candidate).catch(() => {})));
+      const answer = await connection.pc.createAnswer();
+      await connection.pc.setLocalDescription(answer);
+      sendSignal(from, { kind: 'group_restart_answer', answer, callId, groupId: payload.groupId });
+      state.call.connectionRecovering = true;
+      state.call.connectionRecoveryNeeded = false;
+      syncCallContinuityUi();
+      return true;
+    }
     if (payload.kind === 'group_answer') {
       const connection = state.call.connections.get(from);
       if (connection?.pc) {
+        await connection.pc.setRemoteDescription(payload.answer);
+        await Promise.all(connection.pending.splice(0).map((candidate) => connection.pc.addIceCandidate(candidate).catch(() => {})));
+      }
+      return true;
+    }
+    if (payload.kind === 'group_restart_answer') {
+      const connection = state.call.connections.get(from);
+      if (connection?.pc && connection.pc.signalingState === 'have-local-offer') {
         await connection.pc.setRemoteDescription(payload.answer);
         await Promise.all(connection.pending.splice(0).map((candidate) => connection.pc.addIceCandidate(candidate).catch(() => {})));
       }
@@ -14441,13 +14880,19 @@
       return;
     }
     await endCall(false);
+    const setupId = ++callSetupId;
     const peerId = state.activePeer.id;
     const callId = newCallId();
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { facingMode: 'user' } : false });
+    if (setupId !== callSetupId) {
+      localStream.getTracks().forEach((track) => track.stop());
+      return;
+    }
     state.call = { ...freshCallState(), callId, peerId, localStream, active: true, video, status: 'Calling…' };
     const pc = createPeerConnection(peerId, callId);
     state.call.pc = pc;
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    bindCallTrackLifecycle(localStream, callId);
     updateCallDock();
     const offer = await pc.createOffer();
     if (state.call.callId !== callId) return;
@@ -14482,6 +14927,32 @@
     }
     const currentCallId = state.call.callId || state.call.incoming?.callId;
     if (currentCallId && callId !== currentCallId) return;
+    if (payload.kind === 'restart_offer' && state.call.active && state.call.pc && state.call.peerId === from) {
+      if (state.call.pc.signalingState === 'have-local-offer') {
+        await state.call.pc.setLocalDescription({ type: 'rollback' }).catch(() => {});
+      }
+      if (state.call.pc.signalingState !== 'stable') {
+        state.call.connectionRecoveryNeeded = true;
+        syncCallContinuityUi();
+        return;
+      }
+      await state.call.pc.setRemoteDescription(payload.offer);
+      await flushCallCandidates();
+      const answer = await state.call.pc.createAnswer();
+      await state.call.pc.setLocalDescription(answer);
+      sendSignal(from, { kind: 'restart_answer', answer, callId });
+      state.call.connectionRecovering = true;
+      state.call.connectionRecoveryNeeded = false;
+      syncCallContinuityUi();
+      return;
+    }
+    if (payload.kind === 'restart_answer' && state.call.pc && state.call.peerId === from) {
+      if (state.call.pc.signalingState === 'have-local-offer') {
+        await state.call.pc.setRemoteDescription(payload.answer);
+        await flushCallCandidates();
+      }
+      return;
+    }
     if (payload.kind === 'answer' && state.call.pc && state.call.peerId === from) {
       await state.call.pc.setRemoteDescription(payload.answer);
       await flushCallCandidates();
@@ -14533,7 +15004,12 @@
     }
     const pendingCandidates = [...state.call.pendingCandidates];
     const position = state.call.position;
+    const setupId = ++callSetupId;
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.video ? { facingMode: 'user' } : false });
+    if (setupId !== callSetupId || state.call.incoming !== incoming) {
+      localStream.getTracks().forEach((track) => track.stop());
+      return;
+    }
     const callId = incoming.callId || state.call.callId || newCallId();
     const pc = createPeerConnection(incoming.from, callId);
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
@@ -14548,6 +15024,7 @@
       status: 'Connecting…',
       position
     };
+    bindCallTrackLifecycle(localStream, callId);
     updateCallDock();
     await pc.setRemoteDescription(incoming.offer);
     state.call.pendingCandidates.push(...pendingCandidates);
@@ -14559,12 +15036,18 @@
 
   async function acceptGroupCall(incoming) {
     const participantIds = Array.from(new Set([...(state.call.participantIds || []), incoming.from, state.me.id]));
+    const setupId = ++callSetupId;
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.video ? { facingMode: 'user' } : false });
+    if (setupId !== callSetupId || state.call.incoming !== incoming) {
+      localStream.getTracks().forEach((track) => track.stop());
+      return;
+    }
     state.call = {
       ...freshCallState(), callId: incoming.callId, groupId: incoming.groupId,
       groupName: state.call.groupName || 'Group call', participantIds, localStream,
       active: true, video: incoming.video, status: 'Connecting…'
     };
+    bindCallTrackLifecycle(localStream, incoming.callId);
     updateCallDock();
     await Promise.all(participantIds.filter((userId) => userId !== state.me.id).map(async (userId) => {
       sendSignal(userId, { kind: 'group_join', callId: state.call.callId, groupId: state.call.groupId, participantIds });
@@ -14579,20 +15062,34 @@
   }
 
   async function endCall(notify = true) {
-    const peerId = state.call.peerId || state.call.incoming?.from;
-    const callId = state.call.callId || state.call.incoming?.callId;
+    callSetupId += 1;
+    const closingCall = state.call;
+    closingCall.ending = true;
+    const peerId = closingCall.peerId || closingCall.incoming?.from;
+    const callId = closingCall.callId || closingCall.incoming?.callId;
     if (notify && peerId) sendSignal(peerId, { kind: 'hangup', callId });
-    if (notify && state.call.groupId) state.call.participantIds.filter((userId) => userId !== state.me?.id).forEach((userId) => sendSignal(userId, { kind: 'group_leave', callId, groupId: state.call.groupId }));
-    state.call.connections?.forEach?.((connection) => connection.pc?.close?.());
-    if (state.call.pc) state.call.pc.close();
-    if (state.call.localStream) state.call.localStream.getTracks().forEach((track) => track.stop());
-    if (state.call.remoteStream) state.call.remoteStream.getTracks().forEach((track) => track.stop());
+    if (notify && closingCall.groupId) closingCall.participantIds.filter((userId) => userId !== state.me?.id).forEach((userId) => sendSignal(userId, { kind: 'group_leave', callId, groupId: closingCall.groupId }));
     clearInterval(callDurationTimer);
     callDurationTimer = null;
     clearTimeout(callTimeoutTimer);
     callTimeoutTimer = null;
+    clearTimeout(callRecoveryTimer);
+    callRecoveryTimer = null;
+    clearTimeout(callConnectionRecoveryTimer);
+    callConnectionRecoveryTimer = null;
+    clearTimeout(callRestartTimeoutTimer);
+    callRestartTimeoutTimer = null;
     state.callDockDrag = null;
     state.call = freshCallState();
+    closingCall.connections?.forEach?.((connection) => {
+      connection.pc?.close?.();
+      connection.remoteStream?.getTracks?.().forEach((track) => track.stop());
+    });
+    closingCall.pc?.close?.();
+    closingCall.localStream?.getTracks?.().forEach((track) => track.stop());
+    closingCall.remoteStream?.getTracks?.().forEach((track) => track.stop());
+    clearCallAudioOutputs();
+    syncCallMediaSession();
     updateCallDock();
   }
 
@@ -14600,7 +15097,12 @@
     if (!state.call.active) return;
     state.call.muted = !state.call.muted;
     state.call.localStream?.getAudioTracks?.().forEach((track) => { track.enabled = !state.call.muted; });
+    if (!state.call.muted && currentCallAudioTrack()?.muted) {
+      state.call.captureInterrupted = true;
+      state.call.audioRecoveryNeeded = true;
+    }
     syncCallUi('toggle-call-mute');
+    syncCallMediaCaptureControls();
   }
 
   function toggleCallCamera() {
@@ -14608,17 +15110,13 @@
     state.call.cameraOff = !state.call.cameraOff;
     state.call.localStream?.getVideoTracks?.().forEach((track) => { track.enabled = !state.call.cameraOff; });
     syncCallUi('toggle-call-camera');
+    syncCallMediaCaptureControls();
   }
 
   function toggleCallSpeaker() {
     if (!state.call.active) return;
     state.call.speakerOn = !state.call.speakerOn;
-    const remotes = document.querySelectorAll('#remote-video, [data-call-peer-id]');
-    remotes.forEach((remote) => {
-      remote.muted = !state.call.speakerOn;
-      remote.volume = state.call.speakerOn ? 1 : 0;
-      if (state.call.speakerOn) remote.play?.().catch(() => {});
-    });
+    syncCallAudioOutputs({ userInitiated: true });
     syncCallUi('toggle-call-speaker');
   }
 
@@ -14653,6 +15151,7 @@
   function toggleCallMinimized() {
     if (!state.call.active) return;
     state.call.minimized = !state.call.minimized;
+    state.call.uiMounted = false;
     updateCallDock();
     requestAnimationFrame(clampCallDockToViewport);
   }
@@ -14702,31 +15201,30 @@
   function syncCallUi(animateAction = '') {
     const call = state.call;
     document.querySelectorAll('[data-call-status]').forEach((node) => { node.textContent = call.status || 'Call'; });
-    const speaker = document.querySelector('[data-action="toggle-call-speaker"]');
-    if (speaker) {
+    document.querySelectorAll('[data-action="toggle-call-speaker"]').forEach((speaker) => {
       speaker.classList.toggle('off', !call.speakerOn);
       speaker.setAttribute('aria-pressed', String(call.speakerOn));
-      speaker.setAttribute('aria-label', call.speakerOn ? 'Turn speaker off' : 'Turn speaker on');
-      speaker.innerHTML = `${icon(call.speakerOn ? 'volume' : 'mute')}<small>Speaker</small>`;
-    }
-    const microphone = document.querySelector('[data-action="toggle-call-mute"]');
-    if (microphone) {
+      speaker.setAttribute('aria-label', call.speakerOn ? 'Mute call audio' : 'Unmute call audio');
+      speaker.innerHTML = `${icon(call.speakerOn ? 'volume' : 'mute')}<small>Sound</small>`;
+    });
+    document.querySelectorAll('[data-action="toggle-call-mute"]').forEach((microphone) => {
       microphone.classList.toggle('off', call.muted);
       microphone.setAttribute('aria-pressed', String(call.muted));
       microphone.setAttribute('aria-label', call.muted ? 'Unmute microphone' : 'Mute microphone');
-      microphone.innerHTML = `${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small>`;
-    }
-    const camera = document.querySelector('[data-action="toggle-call-camera"]');
-    if (camera) {
+      microphone.innerHTML = microphone.classList.contains('call-mini-action')
+        ? icon(call.muted ? 'micOff' : 'mic')
+        : `${icon(call.muted ? 'micOff' : 'mic')}<small>${call.muted ? 'Unmute' : 'Mute'}</small>`;
+    });
+    document.querySelectorAll('[data-action="toggle-call-camera"]').forEach((camera) => {
       camera.classList.toggle('off', call.cameraOff);
       camera.setAttribute('aria-pressed', String(call.cameraOff));
       camera.setAttribute('aria-label', call.cameraOff ? 'Turn camera on' : 'Turn camera off');
       camera.innerHTML = `${icon('video')}<small>${call.cameraOff ? 'Camera on' : 'Camera'}</small>`;
-    }
+    });
     document.getElementById('local-video')?.classList.toggle('camera-off', call.cameraOff);
     document.querySelectorAll('#remote-video, [data-call-peer-id]').forEach((remote) => {
-      remote.muted = !call.speakerOn;
-      remote.volume = call.speakerOn ? 1 : 0;
+      remote.muted = true;
+      remote.volume = 0;
     });
     const animated = animateAction ? document.querySelector(`[data-action="${animateAction}"]`) : null;
     if (animated) {
@@ -14735,6 +15233,9 @@
       setTimeout(() => animated.classList.remove('control-pop'), 260);
     }
     attachCallStreams();
+    syncCallAudioOutputs();
+    syncCallContinuityUi();
+    syncCallMediaSession();
     syncCallDurationTimer();
   }
 
@@ -14743,6 +15244,8 @@
     if (slot) {
       slot.innerHTML = renderInstagramCall();
       attachCallStreams();
+      syncCallAudioOutputs();
+      syncCallMediaSession();
       syncPostViewerAccessibility();
       syncCallDurationTimer();
       requestAnimationFrame(() => { clampCallDockToViewport(); positionUploadDock(); });
@@ -14758,18 +15261,19 @@
     }
     if (remote) {
       if (state.call.remoteStream && remote.srcObject !== state.call.remoteStream) remote.srcObject = state.call.remoteStream;
-      remote.muted = !state.call.speakerOn;
-      remote.volume = state.call.speakerOn ? 1 : 0;
-      if (state.call.remoteStream && state.call.speakerOn) remote.play?.().catch(() => {});
+      remote.muted = true;
+      remote.volume = 0;
+      if (state.call.remoteStream) remote.play?.().catch(() => {});
     }
     document.querySelectorAll('[data-call-peer-id]').forEach((video) => {
       const stream = state.call.remoteStreams?.get?.(video.dataset.callPeerId);
       if (stream && video.srcObject !== stream) video.srcObject = stream;
       video.closest('.call-participant')?.classList.toggle('has-video-stream', Boolean(stream?.getVideoTracks?.().length));
-      video.muted = !state.call.speakerOn;
-      video.volume = state.call.speakerOn ? 1 : 0;
-      if (stream && state.call.speakerOn) video.play?.().catch(() => {});
+      video.muted = true;
+      video.volume = 0;
+      if (stream) video.play?.().catch(() => {});
     });
+    syncCallAudioOutputs();
   }
 
   let overlayCloseTimer = null;
@@ -15515,6 +16019,7 @@
       }
       if (action === 'logout') {
         cancelPendingProfileOpen();
+        await endCall(true);
         await api('/api/auth/logout', { method: 'POST' });
         state.authEpoch += 1;
         resetAuthenticatedSurfaceState();
@@ -17167,6 +17672,9 @@
       }
       if (action === 'toggle-call-speaker') {
         toggleCallSpeaker();
+      }
+      if (action === 'resume-call-audio') {
+        await resumeCallSession({ userInitiated: true });
       }
       if (action === 'add-call-people') openActionSheet({ type: 'call-add-people' });
       if (action === 'invite-call-participant') inviteCallParticipant(target.dataset.userId);
@@ -19201,6 +19709,11 @@
 
   window.addEventListener('pagehide', () => {
     if (state.postComposer) closePostComposer();
+    if (state.call.active) {
+      state.call.backgroundedAt = Date.now();
+      syncCallAudioOutputs();
+      syncCallMediaSession();
+    }
     pauseNotePlayback();
     pauseVoicePlayback();
     stopHomeFeedPlayback();
@@ -19214,6 +19727,11 @@
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
+      if (state.call.active) {
+        state.call.backgroundedAt = Date.now();
+        syncCallAudioOutputs();
+        syncCallMediaSession();
+      }
       stopHomeFeedPlayback();
       pauseNotePlayback();
       pauseVoicePlayback();
@@ -19223,7 +19741,39 @@
     requestAnimationFrame(() => {
       attachHomeFeedPlayback();
       attachClipPlayback();
+      if (state.call.active) {
+        state.call.backgroundedAt = null;
+        attachCallStreams();
+        syncCallAudioOutputs();
+        connectWs();
+        scheduleCallAudioRecovery(1200);
+        if (state.call.connectionRecoveryNeeded || callHasBrokenConnections()) scheduleCallConnectionRecovery(350);
+      }
     });
+  });
+
+  window.addEventListener('pageshow', () => {
+    if (!state.call.active) return;
+    state.call.backgroundedAt = null;
+    connectWs();
+    attachCallStreams();
+    syncCallAudioOutputs();
+    scheduleCallAudioRecovery(1200);
+    if (state.call.connectionRecoveryNeeded || callHasBrokenConnections()) scheduleCallConnectionRecovery(350);
+  });
+
+  window.addEventListener('online', () => {
+    connectWs();
+    if (!state.call.active) return;
+    syncCallAudioOutputs();
+    scheduleCallConnectionRecovery(250);
+  });
+
+  window.addEventListener('offline', () => {
+    if (!state.call.active) return;
+    state.call.connectionRecoveryNeeded = true;
+    state.call.status = 'Waiting for network…';
+    syncCallUi();
   });
 
   init().catch((error) => {
