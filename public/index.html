@@ -5,10 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#000000">
     <title>New Around</title>
-    <link rel="stylesheet" href="/styles.css?v=20260722-1">
+    <link rel="stylesheet" href="/styles.css?v=20260722-2">
   </head>
   <body>
-    <div id="app"></div>
-    <script src="/app.js?v=20260722-1" defer></script>
+    <div id="app">
+      <main class="app-boot" role="status" aria-live="polite" aria-busy="true">
+        <section class="app-boot-card">
+          <span class="app-boot-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18.5 3.5 21v-5.2A8.2 8.2 0 0 1 2 11c0-5 4.5-9 10-9s10 4 10 9-4.5 9-10 9a11 11 0 0 1-5-.1Z"/><path d="M7.5 10.8h.01M12 10.8h.01M16.5 10.8h.01"/></svg>
+          </span>
+          <span class="app-boot-brand">NEW AROUND</span>
+          <strong>Loading your space</strong>
+          <span class="app-boot-progress" aria-hidden="true"><i></i><i></i><i></i></span>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js?v=20260722-2" defer></script>
   </body>
 </html>

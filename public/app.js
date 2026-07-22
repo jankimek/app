@@ -106,6 +106,8 @@
 
   const state = {
     authMode: 'login',
+    authSubmitting: false,
+    authEpoch: 0,
     needsTwoFactor: false,
     me: null,
     twoFactorEnabled: false,
@@ -163,6 +165,7 @@
     requests: [],
     homeFeed: [],
     feedMode: localStorage.getItem('feedMode') || 'for_you',
+    feedPendingMode: null,
     feedMenuOpen: false,
     feedLoading: false,
     homeRefreshStatus: '',
@@ -207,7 +210,6 @@
     actionSheet: null,
     messageFocus: null,
     messageFocusClosing: false,
-    messageFocusNeedsRefresh: false,
     messageFocusNeedsRefresh: false,
     lastMessageTap: null,
     storyPublishing: false,
@@ -673,10 +675,18 @@
     content?.classList.remove('animate-tab', 'from-left', 'from-right');
   }
 
+  let sidebarRefreshQueued = false;
+
   function settleTabTransitionAnimation(root = currentAppShell()) {
     const content = root?.querySelector?.('.tab-content.animate-tab');
     if (!content) return;
-    afterVisualMotion(content, 'animationend', 250, () => clearTabTransitionAnimation(content));
+    afterVisualMotion(content, 'animationend', 250, () => {
+      clearTabTransitionAnimation(content);
+      if (!sidebarRefreshQueued) return;
+      if (!content.isConnected || root !== currentAppShell()) return;
+      sidebarRefreshQueued = false;
+      updateSidebar({ force: true });
+    });
   }
 
   function navigationPreviewTarget(preview) {
@@ -1264,6 +1274,39 @@
     return state.activeGroup?.id || state.activePeer?.id || null;
   }
 
+  function captureSessionOwner() {
+    return { epoch: state.authEpoch, userId: state.me?.id || null };
+  }
+
+  function isSessionOwner(owner) {
+    return Boolean(owner && owner.epoch === state.authEpoch && owner.userId === (state.me?.id || null));
+  }
+
+  function captureActiveConversationTarget() {
+    const kind = state.activeGroup ? 'group' : state.activePeer ? 'peer' : null;
+    const id = state.activeGroup?.id || state.activePeer?.id || null;
+    if (!kind || !id) return null;
+    return {
+      kind,
+      id,
+      key: conversationCacheKey(kind, id),
+      token: state.chatOpenToken,
+      session: captureSessionOwner(),
+      messagesUrl: kind === 'group'
+        ? `/api/groups/${encodeURIComponent(id)}/messages`
+        : `/api/chats/${encodeURIComponent(id)}/messages`
+    };
+  }
+
+  function isConversationTargetActive(target, options = {}) {
+    if (!target) return false;
+    if (!isSessionOwner(target.session)) return false;
+    const sameConversation = target.kind === 'group'
+      ? state.activeGroup?.id === target.id
+      : state.activePeer?.id === target.id;
+    return Boolean(sameConversation && (!options.matchToken || target.token === state.chatOpenToken));
+  }
+
   function conversationCacheKey(kind, id) {
     return id ? `${kind}:${id}` : null;
   }
@@ -1357,7 +1400,17 @@
       }
       return;
     }
-    if (state.tab === 'search' && nextTab !== 'search') stopSearchAudioPreview();
+    if (state.tab === 'search' && nextTab !== 'search') {
+      clearTimeout(searchTimer);
+      userSearchId += 1;
+      state.userSearching = false;
+      stopSearchAudioPreview();
+    }
+    if (state.tab === 'chats' && nextTab !== 'chats') {
+      clearTimeout(conversationTimer);
+      conversationSearchId += 1;
+      state.conversationSearching = false;
+    }
     const leavingPublicProfile = state.searchProfileOpen;
     const profileReturnScroll = state.profileReturnScroll;
     state.lastTab = state.tab;
@@ -1446,6 +1499,24 @@
     return message.kind || 'message';
   }
 
+  function mergeMessageIntoConversation(target, message) {
+    if (!target || !message || !isSessionOwner(target.session)) return;
+    const cached = state.conversationCache.get(target.key) || {};
+    const source = isConversationTargetActive(target) ? state.messages : (cached.messages || []);
+    const messages = [...source];
+    const index = messages.findIndex((item) => item.id === message.id);
+    if (index >= 0) messages[index] = message;
+    else messages.push(message);
+    messages.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    if (isConversationTargetActive(target)) state.messages = messages;
+    rememberConversation(target.key, {
+      messages,
+      appearance: cached.appearance || state.chatAppearance || defaultChatAppearance(),
+      hasMore: cached.hasMore ?? state.hasOlderMessages,
+      scroll: cached.scroll || state.conversationScroll.get(target.key) || null
+    });
+  }
+
   function renderReplyPreviewContent(message, compact = false) {
     if (!message) return '';
     const attachment = message.attachment;
@@ -1461,8 +1532,83 @@
     return `<span class="reply-preview-text">${esc(describeMessage(message)).slice(0, compact ? 90 : 160)}</span>`;
   }
 
+  function renderBootScreen(message = 'Loading your space', options = {}) {
+    app.innerHTML = `
+      <main class="app-boot ${options.error ? 'has-error' : ''}" role="${options.error ? 'alert' : 'status'}" aria-live="polite" aria-busy="${options.error ? 'false' : 'true'}">
+        <section class="app-boot-card">
+          <span class="app-boot-mark">${icon('messages')}</span>
+          <span class="app-boot-brand">NEW AROUND</span>
+          <strong>${esc(message)}</strong>
+          ${options.error
+            ? '<button class="primary app-boot-retry" data-action="retry-app-load">Try again</button>'
+            : '<span class="app-boot-progress" aria-hidden="true"><i></i><i></i><i></i></span>'}
+        </section>
+      </main>
+    `;
+  }
+
+  function resetAuthenticatedSurfaceState() {
+    state.contacts = [];
+    state.chats = [];
+    state.groups = [];
+    state.messages = [];
+    state.homeFeed = [];
+    state.feedLoading = false;
+    state.feedPendingMode = null;
+    state.explorePosts = [];
+    state.exploreLoading = false;
+    state.clips = [];
+    state.notes = [];
+    state.searchResults = [];
+    state.searchData = { accounts: [], posts: [], reels: [], audio: [], tags: [], places: [] };
+    state.searchHistory = [];
+    state.recommendations = [];
+    state.notifications = [];
+    state.requests = [];
+    state.pendingRequestCount = 0;
+    state.unreadByPeer = {};
+    state.instants = { piles: [], sent: [] };
+    state.profilePosts.clear();
+    state.profilePostsLoading.clear();
+    state.gifPool = [];
+    state.pendingGifs = [];
+    state.gifLoading = false;
+    state.chatGifResults = [];
+    state.chatGifLoading = false;
+    state.searchAudioLoading = false;
+    state.conversationCache.clear();
+    state.conversationScroll.clear();
+  }
+
+  async function hydrateAuthenticatedSurfaces(options = {}) {
+    const session = options.session || captureSessionOwner();
+    const socialLoad = loadSocialSurfaces({ session }).catch((error) => {
+      console.warn('Optional social hydration failed.', error);
+    });
+    const mediaLoad = loadMediaConfig({ session }).catch((error) => {
+      console.warn('Optional media configuration failed.', error);
+    });
+    await loadContactsAndChats({ session });
+    if (!isSessionOwner(session)) return;
+
+    if (options.renderEarly !== false) {
+      renderApp({ enter: options.enter !== false });
+      connectWs();
+    }
+
+    const gifLoad = loadGifPool('', { session }).catch((error) => {
+      console.warn('Optional GIF hydration failed.', error);
+    });
+    const optionalHydration = Promise.allSettled([socialLoad, mediaLoad, gifLoad]).then(() => {
+      if (isSessionOwner(session) && currentAppShell()) updateSidebar();
+    });
+    if (options.waitForOptional) await optionalHydration;
+  }
+
   async function init() {
-    await loadStickers();
+    state.authEpoch += 1;
+    if (!app.querySelector('.app-boot')) renderBootScreen();
+    loadStickers();
     loadStickerSets();
     const publicName = publicUsernameFromPath();
     const sharedPostId = sharedPostIdFromLocation();
@@ -1471,8 +1617,9 @@
       state.me = me.user;
       state.twoFactorEnabled = me.twoFactorEnabled;
       state.pendingRequestCount = me.pendingRequestCount || 0;
-    } catch {
-      state.me = null;
+    } catch (error) {
+      if (error.status === 401) state.me = null;
+      else throw error;
     }
 
     if (!state.me && publicName) {
@@ -1484,14 +1631,12 @@
     }
 
     if (!state.me) {
-      renderAuth();
+      renderAuth('', { enter: true });
       return;
     }
 
-    await loadContactsAndChats();
-    await loadMediaConfig();
-    await loadSocialSurfaces();
-    await loadGifPool();
+    const deepLinked = Boolean(publicName || sharedPostId);
+    await hydrateAuthenticatedSurfaces({ renderEarly: !deepLinked, enter: true });
     if (publicName) {
       state.tab = 'search';
       await loadPublicProfile(publicName);
@@ -1499,7 +1644,10 @@
       if (state.publicProfile) await loadProfilePosts(state.publicProfile, state.searchProfileMediaTab, { render: false }).catch(() => []);
     }
     if (sharedPostId) await loadSharedLinkPost(sharedPostId);
-    renderApp();
+    if (deepLinked) {
+      renderApp({ enter: true });
+      connectWs();
+    }
     history.replaceState({
       appManaged: true,
       route: publicName ? 'profile' : 'app',
@@ -1509,34 +1657,36 @@
       navGeneration: state.navigationGeneration,
       view: captureNavigationView()
     }, '', location.href);
-    connectWs();
   }
 
   const PROFILE_CACHE_TTL_MS = 45000;
   const profileCache = new Map();
   const profileRequests = new Map();
 
-  function profileCacheKey(username) {
-    return `${state.me?.id || 'anonymous'}:${String(username || '').trim().toLowerCase()}`;
+  function profileCacheKey(username, ownerId = state.me?.id || 'anonymous') {
+    return `${ownerId || 'anonymous'}:${String(username || '').trim().toLowerCase()}`;
   }
 
-  function cachePublicProfile(user, requestedUsername = user?.username) {
+  function cachePublicProfile(user, requestedUsername = user?.username, ownerId = state.me?.id || 'anonymous') {
     if (!user?.username) return user;
     const entry = { user, savedAt: Date.now() };
-    profileCache.set(profileCacheKey(requestedUsername), entry);
-    profileCache.set(profileCacheKey(user.username), entry);
+    profileCache.set(profileCacheKey(requestedUsername, ownerId), entry);
+    profileCache.set(profileCacheKey(user.username, ownerId), entry);
     while (profileCache.size > 120) profileCache.delete(profileCache.keys().next().value);
     return user;
   }
 
   async function fetchPublicProfile(username, options = {}) {
-    const cacheKey = profileCacheKey(username);
+    const session = captureSessionOwner();
+    const ownerId = session.userId || 'anonymous';
+    const cacheKey = profileCacheKey(username, ownerId);
     const cached = profileCache.get(cacheKey);
     if (!options.force && cached && Date.now() - cached.savedAt < PROFILE_CACHE_TTL_MS) return cached.user;
     if (profileRequests.has(cacheKey)) return profileRequests.get(cacheKey);
     const request = api(`/api/users/${encodeURIComponent(username)}`, { loading: options.loading })
       .then((data) => {
-        return cachePublicProfile(data.user, username);
+        if (!isSessionOwner(session)) return null;
+        return cachePublicProfile(data.user, username, ownerId);
       })
       .finally(() => profileRequests.delete(cacheKey));
     profileRequests.set(cacheKey, request);
@@ -1551,9 +1701,9 @@
     }
   }
 
-  function renderAuth(error = '') {
+  function renderAuth(error = '', options = {}) {
     app.innerHTML = `
-      <main class="auth-screen">
+      <main class="auth-screen ${options.enter ? 'auth-entering' : ''} ${options.switching ? 'auth-switching' : ''}">
         <section class="auth-box auth-box-single">
           <div class="auth-card">
             <header class="auth-brand">
@@ -1565,8 +1715,8 @@
               </div>
             </header>
             <div class="auth-tabs">
-              <button type="button" class="${state.authMode === 'login' ? 'active' : ''}" data-action="auth-mode" data-mode="login">Log in</button>
-              <button type="button" class="${state.authMode === 'register' ? 'active' : ''}" data-action="auth-mode" data-mode="register">Create</button>
+              <button type="button" class="${state.authMode === 'login' ? 'active' : ''}" data-action="auth-mode" data-mode="login" ${state.authSubmitting ? 'disabled' : ''}>Log in</button>
+              <button type="button" class="${state.authMode === 'register' ? 'active' : ''}" data-action="auth-mode" data-mode="register" ${state.authSubmitting ? 'disabled' : ''}>Create</button>
             </div>
             <form class="form" data-form="auth">
               ${state.authMode === 'register' ? `
@@ -1599,6 +1749,38 @@
         </section>
       </main>
     `;
+    const card = app.querySelector('.auth-card');
+    const screen = card?.closest('.auth-screen');
+    if (options.enter) {
+      afterVisualMotion(card, 'animationend', 320, () => screen?.classList.remove('auth-entering'));
+    }
+    return card;
+  }
+
+  function switchAuthMode(nextMode) {
+    if (state.authSubmitting) return;
+    const previousCard = app.querySelector('.auth-card');
+    const previousRect = previousCard?.getBoundingClientRect();
+    state.authMode = nextMode === 'register' ? 'register' : 'login';
+    state.needsTwoFactor = false;
+    const card = renderAuth();
+    const screen = card?.closest('.auth-screen');
+    if (!card || !screen || !previousRect || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      screen?.classList.remove('auth-switching');
+      return;
+    }
+    const nextRect = card.getBoundingClientRect();
+    const shift = clamp(
+      previousRect.top - nextRect.top,
+      -90,
+      90
+    );
+    card.style.setProperty('--auth-switch-shift', `${shift}px`);
+    screen.classList.add('auth-switching');
+    afterVisualMotion(card, 'animationend', 260, () => {
+      card.style.removeProperty('--auth-switch-shift');
+      screen.classList.remove('auth-switching');
+    });
   }
 
   function renderPublicScreen() {
@@ -1857,6 +2039,7 @@
   function renderApp(options = {}) {
     clearActiveMessagePress();
     if (state.messageFocus) closeMessageFocus({ immediate: true, skipRefresh: true });
+    const focusSnapshot = captureReplacementFocus(currentAppShell());
     capturePersistentScroll();
     const scrollSnapshot = Object.prototype.hasOwnProperty.call(options, 'scrollSnapshot')
       ? options.scrollSnapshot
@@ -1869,7 +2052,7 @@
     forwardLiveShell?.remove();
     app.innerHTML = `
       ${forwardEntry?.previewHtml && !forwardLiveShell ? `<div class="route-page-preview route-preview-forward" aria-hidden="true">${forwardEntry.previewHtml}</div>` : ''}
-      <div class="app-shell ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasVisibleConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.clipViewer ? 'clip-viewer-root social-root' : ''} ${state.tab === 'home' && !hasVisibleConversation() && !state.clipViewer ? 'home-root' : ''} ${state.tab !== 'chats' && !hasVisibleConversation() && !state.searchProfileOpen && !state.clipViewer ? 'social-root' : ''}">
+      <div class="app-shell ${options.enter ? 'app-entering' : ''} ${forwardEntry ? 'route-page-current route-page-entering' : ''} ${hasVisibleConversation() ? 'chat-open' : ''} ${state.searchProfileOpen ? 'profile-route-open' : ''} ${state.clipViewer ? 'clip-viewer-root social-root' : ''} ${state.tab === 'home' && !hasVisibleConversation() && !state.clipViewer ? 'home-root' : ''} ${state.tab !== 'chats' && !hasVisibleConversation() && !state.searchProfileOpen && !state.clipViewer ? 'social-root' : ''}">
         ${renderSidebar()}
         ${renderChatPane()}
       </div>
@@ -1901,8 +2084,10 @@
       <input id="note-audio-input" type="file" accept="audio/*" hidden>
       <input id="group-avatar-input" type="file" accept="image/*" hidden>
     `;
+    sidebarRefreshQueued = false;
     syncActionSheetAccessibility();
     syncPostViewerAccessibility();
+    syncSettingsAccessibility();
     syncCurrentNavigationHistory();
     if (forwardEntry && forwardLiveShell) {
       const preview = document.createElement('div');
@@ -1915,6 +2100,10 @@
     }
     state.tabTransition = false;
     settleTabTransitionAnimation(currentAppShell());
+    if (options.enter) {
+      const enteringShell = currentAppShell();
+      afterVisualMotion(enteringShell, 'animationend', 320, () => enteringShell?.classList.remove('app-entering'));
+    }
     const forwardPreview = app.querySelector(':scope > .route-preview-forward');
     if (forwardPreview) forwardPreview.navigationEntry = forwardEntry;
     if (forwardPreview && forwardLiveShell) forwardPreview.usesLiveShell = true;
@@ -1922,6 +2111,7 @@
     resizeComposerInput();
     applyRenderScroll(scrollMode, scrollSnapshot);
     restorePersistentScroll();
+    restoreReplacementFocus(currentAppShell(), focusSnapshot);
     if (forwardPreview?.usesLiveShell) restoreLiveScrollAfterMove(forwardLiveScroll);
     else if (forwardEntry) restorePreviewScroll(forwardPreview, forwardEntry);
     setTimeout(() => {
@@ -1938,25 +2128,23 @@
       attachCameraStream();
       attachStoryEditorVideo();
       attachStoryViewerVideo();
-      initializePostCarousels();
+      hydrateSidebar(currentAppShell()?.querySelector('.sidebar') || document);
       attachPostViewerPlayback();
-      attachHomeFeedPlayback();
-      attachHomePullRefresh();
-      attachStoryScrollHint();
-      attachClipPlayback();
       hydrateVoiceWaveforms();
       syncVoicePlayerUi();
       state.chatReturnAnimation = false;
       state.chatOpening = false;
     }, 0);
     if (forwardEntry) {
-      setTimeout(() => {
+      const forwardSurface = forwardPreview || currentAppShell();
+      const forwardFallback = document.documentElement.classList.contains('clip-view-transition') ? 380 : 330;
+      afterVisualMotion(forwardSurface, 'animationend', forwardFallback, () => {
         if (state.routeForward !== forwardEntry) return;
         state.routeForward = null;
         stashNavigationPreview(app.querySelector(':scope > .route-preview-forward'));
         currentAppShell()?.querySelector('.chat-pane.chat-opening')?.classList.remove('chat-opening');
         currentAppShell()?.classList.remove('route-page-current', 'route-page-entering');
-      }, 310);
+      });
     }
   }
 
@@ -1984,9 +2172,13 @@
   }
 
   function updateProfileModalSlots() {
+    const settingsSlot = document.getElementById('settings-slot');
+    const settingsFocus = captureReplacementFocus(settingsSlot);
     updateSlot('profile-edit-slot', renderProfileEditModal());
     updateSlot('settings-slot', renderSettingsModal());
     updateSlot('avatar-crop-slot', renderAvatarCropper());
+    restoreReplacementFocus(document.getElementById('settings-slot'), settingsFocus);
+    syncSettingsAccessibility();
   }
 
   function updateCameraCaptureSlot() {
@@ -2624,12 +2816,17 @@
   function renderHomePanel() {
     const feed = state.homeFeed || [];
     const suggestions = visibleRecommendations().slice(0, 5);
+    const emptyCopy = state.feedMode === 'favorites'
+      ? 'Favorite an account from their profile to build this feed.'
+      : state.feedMode === 'following'
+        ? 'Follow people to see their latest posts here.'
+        : 'Share the first post or follow more accounts.';
     return `
       <section class="home-page">
         <div class="home-refresh-indicator ${esc(state.homeRefreshStatus)}" aria-live="polite"><span>${state.homeRefreshStatus === 'caught-up' ? icon('check') : icon('refresh')}</span><strong>${state.homeRefreshStatus === 'caught-up' ? "You're all caught up" : state.homeRefreshStatus === 'refreshing' ? 'Checking for new posts' : 'Pull to refresh'}</strong></div>
         <header class="home-topbar">
           <div class="feed-picker-wrap">
-            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}" aria-label="Choose feed"><span class="home-brand">New Around</span>${icon('chevron')}</button>
+            <button class="feed-picker" data-action="toggle-feed-menu" aria-expanded="${state.feedMenuOpen}" aria-label="Choose feed: ${esc(feedModeLabel(state.feedPendingMode || state.feedMode))}"><span class="feed-picker-copy"><span class="home-brand">New Around</span><small>${esc(state.feedLoading && state.feedPendingMode ? `Loading ${feedModeLabel(state.feedPendingMode)}` : feedModeLabel())}</small></span>${icon('chevron')}</button>
             ${state.feedMenuOpen ? `
               <div class="feed-picker-menu">
                 ${['for_you', 'following', 'favorites'].map((mode) => `<button class="${state.feedMode === mode ? 'active' : ''}" data-action="set-feed-mode" data-mode="${mode}">${esc(feedModeLabel(mode))}${state.feedMode === mode ? icon('check') : ''}</button>`).join('')}
@@ -2646,12 +2843,13 @@
           <main class="home-primary">
             ${renderHomeStories()}
             ${renderNotificationPermissionPrompt()}
-            <section class="home-feed" aria-live="polite">
-              ${state.feedLoading
-                ? '<div class="feed-loading"><i></i><i></i><i></i></div>'
-                : feed.length
-                  ? feed.map((post, index) => renderPostCard(post, index)).join('')
-                  : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${state.feedMode === 'favorites' ? 'Favorite an account from their profile to build this feed.' : 'Share the first post or follow more accounts.'}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
+            <section class="home-feed" aria-live="polite" aria-busy="${state.feedLoading}">
+              ${state.feedLoading && feed.length ? `<div class="feed-refresh-status" role="status"><span class="feed-refresh-spinner" aria-hidden="true"></span>Updating ${esc(feedModeLabel(state.feedPendingMode || state.feedMode))}</div>` : ''}
+              ${feed.length
+                ? feed.map((post, index) => renderPostCard(post, index)).join('')
+                : state.feedLoading
+                  ? renderFeedSkeleton()
+                  : `<div class="empty-state feed-empty">${icon('home')}<strong>No posts here yet</strong><small>${esc(emptyCopy)}</small><button class="primary" data-action="open-post-create">Create post</button></div>`}
             </section>
           </main>
           <aside class="home-suggestions" aria-label="Suggested accounts">
@@ -8136,7 +8334,7 @@
     if (!state.settingsOpen) return '';
     if (state.settingsSection !== 'main') return `
       <div class="settings-drawer-overlay ${state.settingsOpening ? 'opening' : ''} ${state.settingsClosing ? 'closing' : ''}" data-action="close-settings">
-        <aside class="settings-drawer" role="dialog" aria-modal="true" aria-label="${esc(settingsSectionTitle(state.settingsSection))}" data-stop-close>
+        <aside class="settings-drawer ${state.settingsOpening ? 'opening' : ''} ${state.settingsClosing ? 'closing' : ''}" role="dialog" aria-modal="true" aria-label="${esc(settingsSectionTitle(state.settingsSection))}" data-stop-close>
           <header class="settings-drawer-head">
             <button class="icon-btn" data-action="settings-back" aria-label="Back">${icon('back')}</button>
             <h2>${esc(settingsSectionTitle(state.settingsSection))}</h2>
@@ -8501,84 +8699,133 @@
   }
 
   let feedLoadRequestId = 0;
+  let exploreLoadRequestId = 0;
+  let clipsLoadRequestId = 0;
+  let notesLoadRequestId = 0;
+  const profilePostLoadRequestIds = new Map();
+
+  function renderFeedSkeleton() {
+    return `
+      <div class="feed-skeleton" role="status">
+        <span class="sr-only">Loading posts</span>
+        ${Array.from({ length: 2 }, (_, index) => `
+          <article class="feed-skeleton-card" style="--skeleton-index:${index}">
+            <header><i class="feed-skeleton-avatar"></i><span><i></i><i></i></span></header>
+            <div class="feed-skeleton-media"></div>
+            <footer><span><i></i><i></i><i></i></span><i></i></footer>
+            <div class="feed-skeleton-copy"><i></i><i></i><i></i></div>
+          </article>
+        `).join('')}
+      </div>
+    `;
+  }
 
   async function loadFeed(mode = state.feedMode, options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return [];
     const requestedMode = ['for_you', 'following', 'favorites'].includes(mode) ? mode : 'for_you';
     const requestId = ++feedLoadRequestId;
     state.feedLoading = true;
+    state.feedPendingMode = requestedMode;
     if (options.render !== false && state.tab === 'home') updateSidebar();
     try {
       const data = await api(`/api/feed?mode=${encodeURIComponent(requestedMode)}`);
-      if (requestId !== feedLoadRequestId) return [];
+      if (requestId !== feedLoadRequestId || !isSessionOwner(session)) return [];
       state.feedMode = requestedMode;
       localStorage.setItem('feedMode', requestedMode);
       state.homeFeed = data.posts || [];
       return state.homeFeed;
     } catch (error) {
-      if (requestId === feedLoadRequestId) throw error;
+      if (requestId === feedLoadRequestId && isSessionOwner(session)) throw error;
       return [];
     } finally {
-      if (requestId === feedLoadRequestId) {
+      if (requestId === feedLoadRequestId && isSessionOwner(session)) {
         state.feedLoading = false;
+        state.feedPendingMode = null;
         if (options.render !== false && state.tab === 'home') updateSidebar();
       }
     }
   }
 
   async function loadExplore(options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return [];
+    const requestId = ++exploreLoadRequestId;
     state.exploreLoading = true;
     try {
       const data = await api('/api/explore');
+      if (requestId !== exploreLoadRequestId || !isSessionOwner(session)) return [];
       state.explorePosts = data.posts || [];
+      return state.explorePosts;
     } finally {
-      state.exploreLoading = false;
-      if (options.render && state.tab === 'search') updateSidebar();
+      if (requestId === exploreLoadRequestId && isSessionOwner(session)) {
+        state.exploreLoading = false;
+        if (options.render && state.tab === 'search') updateSidebar();
+      }
     }
   }
 
   async function loadClips(options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return [];
+    const requestId = ++clipsLoadRequestId;
     const data = await api('/api/clips?limit=60');
+    if (requestId !== clipsLoadRequestId || !isSessionOwner(session)) return [];
     state.clips = data.posts || [];
     if (options.render && state.tab === 'clips') updateSidebar();
     return state.clips;
   }
 
   async function loadNotes(options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return [];
+    const requestId = ++notesLoadRequestId;
     const data = await api('/api/notes');
+    if (requestId !== notesLoadRequestId || !isSessionOwner(session)) return [];
     state.notes = data.notes || [];
     if (state.notePlayback.noteId && !state.notes.some((note) => note.id === state.notePlayback.noteId)) stopNotePlayback({ clear: true });
     if (options.render && ['chats', 'profile'].includes(state.tab)) updateSidebar();
   }
 
   async function loadProfilePosts(user, tab = 'posts', options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return [];
     if (!user?.username) return [];
     if (tab === 'saved' && user.id !== state.me?.id) {
       state.profilePosts.set(profilePostKey(user, tab), []);
       return [];
     }
     const key = profilePostKey(user, tab);
+    const requestId = (profilePostLoadRequestIds.get(key) || 0) + 1;
+    profilePostLoadRequestIds.set(key, requestId);
     state.profilePostsLoading.add(key);
     try {
       const data = await api(`/api/users/${encodeURIComponent(user.username)}/posts?tab=${encodeURIComponent(tab)}`);
+      if (profilePostLoadRequestIds.get(key) !== requestId || !isSessionOwner(session)) return [];
       const posts = data.posts || [];
       state.profilePosts.set(key, posts);
       return posts;
     } finally {
-      state.profilePostsLoading.delete(key);
-      if (options.render !== false) updateSidebar();
+      if (profilePostLoadRequestIds.get(key) === requestId) {
+        profilePostLoadRequestIds.delete(key);
+        state.profilePostsLoading.delete(key);
+        if (options.render !== false && isSessionOwner(session)) updateSidebar();
+      }
     }
   }
 
   async function loadSocialSurfaces(options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return;
     await Promise.all([
-      loadFeed(state.feedMode, { render: false }).catch(() => { state.homeFeed = []; state.feedLoading = false; }),
-      loadExplore().catch(() => { state.explorePosts = []; state.exploreLoading = false; }),
-      loadClips().catch(() => { state.clips = []; }),
-      loadNotes().catch(() => { state.notes = []; }),
-      loadSearchHistory().catch(() => { state.searchHistory = []; }),
-      loadProfilePosts(state.me, state.profileMediaTab, { render: false }).catch(() => [])
+      loadFeed(state.feedMode, { render: false, session }).catch(() => { if (isSessionOwner(session)) { state.homeFeed = []; state.feedLoading = false; } }),
+      loadExplore({ session }).catch(() => { if (isSessionOwner(session)) { state.explorePosts = []; state.exploreLoading = false; } }),
+      loadClips({ session }).catch(() => { if (isSessionOwner(session)) state.clips = []; }),
+      loadNotes({ session }).catch(() => { if (isSessionOwner(session)) state.notes = []; }),
+      loadSearchHistory({ session }).catch(() => { if (isSessionOwner(session)) state.searchHistory = []; }),
+      loadProfilePosts(state.me, state.profileMediaTab, { render: false, session }).catch(() => [])
     ]);
-    if (options.render) updateSidebar();
+    if (options.render && isSessionOwner(session)) updateSidebar();
   }
 
   function allKnownPosts() {
@@ -10042,7 +10289,9 @@
     }).catch(() => setButton(false));
   }
 
-  async function loadContactsAndChats() {
+  async function loadContactsAndChats(options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return false;
     const [me, contacts, chats, groups, notifications, recommendations, instants] = await Promise.all([
       api('/api/me'),
       api('/api/contacts'),
@@ -10052,6 +10301,7 @@
       api('/api/users/recommendations').catch(() => ({ users: [] })),
       api('/api/instants').catch(() => ({ piles: [], sent: [] }))
     ]);
+    if (!isSessionOwner(session)) return false;
     state.me = me.user;
     state.twoFactorEnabled = me.twoFactorEnabled;
     state.isModerator = Boolean(me.isModerator);
@@ -10067,6 +10317,7 @@
       state.activePeer = userById(state.activePeer.id) || state.activePeer;
     }
     if (state.activeGroup) state.activeGroup = state.groups.find((group) => group.id === state.activeGroup.id) || state.activeGroup;
+    return true;
   }
 
   async function loadInstants(options = {}) {
@@ -10197,15 +10448,18 @@
     return updateSlot('inbox-feature-slot', renderInboxFeature());
   }
 
-  async function loadMediaConfig() {
+  async function loadMediaConfig(options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return state.mediaConfig;
     try {
       const config = await api('/api/media/config');
+      if (!isSessionOwner(session)) return state.mediaConfig;
       state.mediaConfig = {
         giphy: { enabled: false, rating: 'r', ...(config.giphy || {}) },
         music: { provider: 'iTunes', ...(config.music || {}) }
       };
     } catch {
-      state.mediaConfig = { giphy: { enabled: false, rating: 'r' }, music: { provider: 'iTunes' } };
+      if (isSessionOwner(session)) state.mediaConfig = { giphy: { enabled: false, rating: 'r' }, music: { provider: 'iTunes' } };
     }
     return state.mediaConfig;
   }
@@ -10450,17 +10704,24 @@
     }
   }
 
-  async function loadGifPool(query = '') {
+  let gifPoolRequestId = 0;
+
+  async function loadGifPool(query = '', options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return [];
+    const requestId = ++gifPoolRequestId;
     state.gifLoading = true;
     try {
       const [approved, pending] = await Promise.all([
         api(`/api/gifs${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ''}`),
         state.isModerator ? api('/api/gifs?status=pending') : Promise.resolve({ gifs: [] })
       ]);
+      if (requestId !== gifPoolRequestId || !isSessionOwner(session)) return [];
       state.gifPool = approved.gifs || [];
       state.pendingGifs = pending.gifs || [];
+      return state.gifPool;
     } finally {
-      state.gifLoading = false;
+      if (requestId === gifPoolRequestId && isSessionOwner(session)) state.gifLoading = false;
     }
   }
 
@@ -10580,6 +10841,10 @@
 
   async function openChat(userId, highlightMessageId = null, options = {}) {
     cancelPendingProfileOpen();
+    const session = captureSessionOwner();
+    clearTimeout(conversationTimer);
+    conversationSearchId += 1;
+    state.conversationSearching = false;
     const peer = userById(userId);
     if (!peer) return;
     if (state.activePeer?.id === userId && !state.chatProfileOpen && !highlightMessageId && !state.chatLoading) return;
@@ -10635,6 +10900,7 @@
         hasMore: Boolean(data.hasMore),
         scroll: savedScroll
       };
+      if (!isSessionOwner(session)) return;
       rememberConversation(cacheKey, cacheValue);
       if (openToken !== state.chatOpenToken || state.activePeer?.id !== userId) return;
       state.messages = cacheValue.messages;
@@ -10648,7 +10914,7 @@
         settle: scrollMode === 'bottom' && !cached
       });
     } catch (error) {
-      if (openToken === state.chatOpenToken && state.activePeer?.id === userId) {
+      if (isSessionOwner(session) && openToken === state.chatOpenToken && state.activePeer?.id === userId) {
         state.chatLoading = false;
         updateMessagesList({ scroll: 'preserve' });
       }
@@ -10657,6 +10923,10 @@
   }
 
   async function openGroup(groupId, highlightMessageId = null, options = {}) {
+    const session = captureSessionOwner();
+    clearTimeout(conversationTimer);
+    conversationSearchId += 1;
+    state.conversationSearching = false;
     const group = state.groups.find((item) => item.id === groupId);
     if (!group) return;
     if (state.activeGroup?.id === groupId && !state.chatProfileOpen && !highlightMessageId && !state.chatLoading) return;
@@ -10705,6 +10975,7 @@
         hasMore: Boolean(data.hasMore),
         scroll: savedScroll
       };
+      if (!isSessionOwner(session)) return;
       rememberConversation(cacheKey, cacheValue);
       if (openToken !== state.chatOpenToken || state.activeGroup?.id !== groupId) return;
       state.activeGroup = data.group || group;
@@ -10719,7 +10990,7 @@
         settle: scrollMode === 'bottom' && !cached
       });
     } catch (error) {
-      if (openToken === state.chatOpenToken && state.activeGroup?.id === groupId) {
+      if (isSessionOwner(session) && openToken === state.chatOpenToken && state.activeGroup?.id === groupId) {
         state.chatLoading = false;
         updateMessagesList({ scroll: 'preserve' });
       }
@@ -10757,30 +11028,51 @@
 
   async function loadOlderMessages() {
     if (!hasActiveConversation() || state.loadingOlderMessages || !state.hasOlderMessages || !state.messages.length) return;
+    const target = captureActiveConversationTarget();
+    if (!target) return;
     const messagesEl = document.getElementById('messages');
     const previousHeight = messagesEl?.scrollHeight || 0;
     const previousTop = messagesEl?.scrollTop || 0;
+    const initialMessages = [...state.messages];
+    const before = encodeURIComponent(state.messages[0].createdAt);
     state.loadingOlderMessages = true;
     updateMessagesList({ scroll: 'preserve' });
     try {
-      const before = encodeURIComponent(state.messages[0].createdAt);
-      const data = await api(activeMessagesUrl(`?limit=200&before=${before}`));
-      const existing = new Set(state.messages.map((message) => message.id));
+      const data = await api(`${target.messagesUrl}?limit=200&before=${before}`);
+      if (!isSessionOwner(target.session)) return;
+      const cached = state.conversationCache.get(target.key) || {};
+      const currentMessages = isConversationTargetActive(target, { matchToken: true })
+        ? state.messages
+        : (cached.messages || initialMessages);
+      const existing = new Set(currentMessages.map((message) => message.id));
       const older = (data.messages || []).filter((message) => !existing.has(message.id));
-      state.messages = [...older, ...state.messages].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-      state.hasOlderMessages = Boolean(data.hasMore);
-      rememberActiveConversation();
+      const messages = [...older, ...currentMessages].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      const hasMore = Boolean(data.hasMore);
+      rememberConversation(target.key, {
+        messages,
+        appearance: cached.appearance || state.chatAppearance || defaultChatAppearance(),
+        hasMore,
+        scroll: cached.scroll || state.conversationScroll.get(target.key) || null
+      });
+      if (isConversationTargetActive(target, { matchToken: true })) {
+        state.messages = messages;
+        state.hasOlderMessages = hasMore;
+      }
     } finally {
+      if (!isConversationTargetActive(target, { matchToken: true })) return;
       state.loadingOlderMessages = false;
       updateMessagesList({ scroll: 'preserve' });
       requestAnimationFrame(() => {
         const updated = document.getElementById('messages');
-        if (updated) updated.scrollTop = updated.scrollHeight - previousHeight + previousTop;
+        if (updated === messagesEl && messagesEl?.isConnected) {
+          updated.scrollTop = updated.scrollHeight - previousHeight + previousTop;
+        }
       });
     }
   }
 
   async function refreshChatsOnly() {
+    const session = captureSessionOwner();
     try {
       const [chats, groups, notifications, recommendations, instants] = await Promise.all([
         api('/api/chats'),
@@ -10789,6 +11081,7 @@
         api('/api/users/recommendations').catch(() => ({ users: state.recommendations })),
         api('/api/instants').catch(() => state.instants)
       ]);
+      if (!isSessionOwner(session)) return false;
       state.chats = chats.chats;
       state.groups = groups.groups || [];
       if (state.activeGroup) state.activeGroup = state.groups.find((group) => group.id === state.activeGroup.id) || state.activeGroup;
@@ -10797,8 +11090,10 @@
       state.notifications = notifications.notifications || [];
       state.recommendations = recommendations.users || [];
       state.instants = { piles: instants.piles || [], sent: instants.sent || [] };
+      return true;
     } catch {
       // Keep the current list visible if a refresh fails.
+      return false;
     }
   }
 
@@ -12389,11 +12684,15 @@
   }
 
   async function sendMessage(payload) {
-    if (!hasActiveConversation()) return;
+    const target = payload.conversationTarget || captureActiveConversationTarget();
+    if (!target) return;
+    const replyToId = Object.prototype.hasOwnProperty.call(payload, 'replyToId')
+      ? payload.replyToId
+      : state.replyTo?.id || null;
     const body = {
       kind: payload.kind,
       text: payload.text || '',
-      replyTo: state.replyTo?.id || null,
+      replyTo: replyToId,
       file: payload.file || null,
       stickerId: payload.stickerId || null,
       gifId: payload.gifId || null,
@@ -12405,16 +12704,18 @@
       } : null,
       scheduledFor: payload.scheduledFor || null
     };
-    state.replyTo = null;
-    const data = await api(activeMessagesUrl(), {
+    if (isConversationTargetActive(target, { matchToken: true })) state.replyTo = null;
+    const data = await api(target.messagesUrl, {
       method: 'POST',
       body
     });
-    upsertMessage(data.message);
-    updateMessagesList({ scroll: 'bottom' });
-    updateChatFooter({ focus: true });
+    mergeMessageIntoConversation(target, data.message);
+    if (isConversationTargetActive(target, { matchToken: true })) {
+      updateMessagesList({ scroll: 'bottom' });
+      updateChatFooter({ focus: true });
+    }
     await refreshChatsOnly();
-    updateSidebar();
+    if (state.tab === 'chats') updateSidebar();
     return data.message;
   }
 
@@ -12426,17 +12727,26 @@
 
   async function sendFile(file, forcedKind = null, stickerId = null) {
     if (!file || !hasActiveConversation()) return;
+    const target = captureActiveConversationTarget();
+    if (!target) return;
     const key = activeConversationKey();
-    const dataUrl = await fileToDataUrl(file);
     const input = document.getElementById('composer-text');
-    const caption = (input?.value ?? state.composerDrafts[key] ?? '').trim();
-    if (input) input.value = '';
-    delete state.composerDrafts[key];
+    const inputValue = input?.value ?? state.composerDrafts[key] ?? '';
+    const caption = inputValue.trim();
+    const replyToId = state.replyTo?.id || null;
+    const dataUrl = await fileToDataUrl(file);
+    if (isConversationTargetActive(target, { matchToken: true })) {
+      const currentInput = document.getElementById('composer-text');
+      if (currentInput?.value === inputValue) currentInput.value = '';
+      if ((state.composerDrafts[key] ?? '') === inputValue) delete state.composerDrafts[key];
+    }
     const kind = forcedKind || classifyFile(file);
     return sendMessage({
       kind,
       text: caption,
       stickerId,
+      replyToId,
+      conversationTarget: target,
       file: {
         name: file.name || `${kind}.bin`,
         type: file.type || 'application/octet-stream',
@@ -12590,10 +12900,14 @@
   }
 
   let userSearchId = 0;
+  let searchAudioRequestId = 0;
   let searchAudioPreviewAudio = null;
 
-  async function loadSearchHistory() {
+  async function loadSearchHistory(options = {}) {
+    const session = options.session || captureSessionOwner();
+    if (!isSessionOwner(session)) return [];
     const data = await api('/api/me/search-history');
+    if (!isSessionOwner(session)) return [];
     state.searchHistory = data.searches || [];
     return state.searchHistory;
   }
@@ -12703,8 +13017,9 @@
 
   async function loadSearchAudio() {
     const query = state.userQuery.trim();
-    if (query.length < 2 || state.searchAudioLoading) return;
+    if (query.length < 2) return;
     const searchId = userSearchId;
+    const audioRequestId = ++searchAudioRequestId;
     state.searchAudioLoading = true;
     renderSidebarState();
     try {
@@ -12712,7 +13027,9 @@
       if (searchId !== userSearchId || query !== state.userQuery.trim()) return;
       state.searchData.audio = data.tracks || [];
     } finally {
+      if (audioRequestId !== searchAudioRequestId) return;
       state.searchAudioLoading = false;
+      if (searchId !== userSearchId || query !== state.userQuery.trim()) return;
       renderSidebarState();
       setTimeout(focusUserSearch, 0);
     }
@@ -12756,6 +13073,9 @@
     state.userSearching = false;
     renderSidebarState();
     setTimeout(focusUserSearch, 0);
+    if (state.searchCategory === 'audio') loadSearchAudio().catch((error) => {
+      if (searchId === userSearchId && state.tab === 'search') alert(error.message);
+    });
   }
 
   async function restoreNavigationView(view) {
@@ -13137,7 +13457,7 @@
         showIncomingMessageNotification(event.message, event.groupId || event.message.groupId || null);
       }
       await refreshChatsOnly();
-      updateSidebar();
+      refreshSidebarForLiveData(['chats']);
     }
     if (event.type === 'message:read' && event.chatId === activeChatId()) {
       const ids = new Set(event.messageIds || []);
@@ -13164,7 +13484,7 @@
         updateMessagesList({ scroll: 'preserve' });
       }
       await refreshChatsOnly();
-      updateSidebar();
+      refreshSidebarForLiveData(['chats']);
     }
     if (event.type === 'message:updated') {
       if (event.chatId === activeChatId() && event.message) {
@@ -13178,13 +13498,13 @@
       rememberActiveConversation();
       updateMessagesList({ scroll: 'preserve' });
       await refreshChatsOnly();
-      updateSidebar();
+      refreshSidebarForLiveData(['chats']);
     }
     if (event.type === 'notification:new') {
       state.pendingRequestCount = event.pendingRequestCount ?? state.pendingRequestCount;
       showSocialNotification(event);
       await refreshChatsOnly();
-      updateSidebar();
+      refreshSidebarForLiveData(['chats', 'notifications']);
     }
     if (event.type === 'relationship:updated') {
       const activePeerId = state.activePeer?.id || null;
@@ -14181,7 +14501,9 @@
   let messageFocusReturnFocus = null;
   let messageFocusWasOpen = false;
   let activeMessagePress = null;
-  let settingsCloseTimer = null;
+  let settingsReturnFocus = null;
+  let settingsWasOpen = false;
+  let settingsMotionId = 0;
   let storyAdvanceTimer = null;
   const MESSAGE_LONG_PRESS_MS = 500;
   const MESSAGE_PRESS_CANCEL_DISTANCE = 10;
@@ -14279,6 +14601,28 @@
       if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
     }
     messageFocusWasOpen = open;
+  }
+
+  function syncSettingsAccessibility() {
+    const slot = document.getElementById('settings-slot');
+    const drawer = slot?.querySelector('.settings-drawer');
+    const open = Boolean(state.settingsOpen && drawer);
+    if (open || settingsWasOpen) {
+      Array.from(app.children).forEach((child) => {
+        if (child !== slot) child.inert = open;
+      });
+      if (open) currentAppShell()?.setAttribute('aria-hidden', 'true');
+      else currentAppShell()?.removeAttribute('aria-hidden');
+    }
+    if (open && (!settingsWasOpen || !drawer.contains(document.activeElement))) {
+      requestAnimationFrame(() => drawer.querySelector('button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])')?.focus?.({ preventScroll: true }));
+    }
+    if (!open && settingsWasOpen) {
+      const returnTarget = settingsReturnFocus;
+      settingsReturnFocus = null;
+      if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus?.({ preventScroll: true }));
+    }
+    settingsWasOpen = open;
   }
 
   function openActionSheet(sheet) {
@@ -14415,6 +14759,7 @@
 
   function closeOverlays() {
     if (!state.actionSheet) return;
+    const closeDuration = navigationMotionDuration(['story-comments', 'post-comments'].includes(state.actionSheet.type) ? 250 : 190);
     state.commentSheetDrag = null;
     clearTimeout(overlayCloseTimer);
     state.overlayClosing = true;
@@ -14426,35 +14771,44 @@
       if (state.postViewer) updatePostViewerSlot();
       if (state.storyViewer) scheduleStoryAdvance(storyById(state.storyViewer.storyId));
       if (state.clipViewer || state.tab === 'clips') requestAnimationFrame(attachClipPlayback);
-    }, 190);
+    }, closeDuration);
   }
 
   function openSettingsDrawer() {
-    clearTimeout(settingsCloseTimer);
+    settingsMotionId += 1;
+    settingsReturnFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
     state.settingsSection = 'main';
     state.settingsOpen = true;
     state.settingsOpening = true;
     state.settingsClosing = false;
     updateProfileModalSlots();
-    requestAnimationFrame(() => {
-      document.querySelector('.settings-drawer-overlay')?.classList.remove('opening');
-      document.querySelector('.settings-drawer')?.classList.remove('opening');
+    const drawer = document.querySelector('#settings-slot .settings-drawer');
+    const overlay = drawer?.closest('.settings-drawer-overlay');
+    const motionId = settingsMotionId;
+    afterVisualMotion(drawer, 'animationend', 320, () => {
+      if (motionId !== settingsMotionId) return;
       state.settingsOpening = false;
+      if (drawer?.isConnected) {
+        overlay?.classList.remove('opening');
+        drawer.classList.remove('opening');
+      }
     });
   }
 
   function closeSettingsDrawer() {
     if (!state.settingsOpen || state.settingsClosing) return;
-    clearTimeout(settingsCloseTimer);
+    const motionId = ++settingsMotionId;
     state.settingsOpening = false;
     state.settingsClosing = true;
     updateProfileModalSlots();
-    settingsCloseTimer = setTimeout(() => {
+    const drawer = document.querySelector('#settings-slot .settings-drawer');
+    afterVisualMotion(drawer, 'animationend', 260, () => {
+      if (motionId !== settingsMotionId) return;
       state.settingsOpen = false;
       state.settingsClosing = false;
       state.settingsSection = 'main';
       updateProfileModalSlots();
-    }, 240);
+    });
   }
 
   function scrollMessagesToBottom() {
@@ -14561,24 +14915,89 @@
     return true;
   }
 
-  function updateSidebar() {
+  function hydrateSidebar(root = document) {
+    initializePostCarousels(root);
+    requestAnimationFrame(() => {
+      if (state.tab === 'clips' || state.clipViewer) attachClipPlayback();
+      if (state.tab !== 'home') return;
+      attachHomeFeedPlayback();
+      attachHomePullRefresh();
+      attachStoryScrollHint(root);
+    });
+  }
+
+  function syncLiveNavigationBadges() {
+    const toggleDot = (button, visible) => {
+      const dot = button?.querySelector(':scope > .red-dot');
+      if (visible && !dot) button?.insertAdjacentHTML('beforeend', '<span class="red-dot"></span>');
+      else if (!visible) dot?.remove();
+    };
+    document.querySelectorAll('[data-action="tab"][data-tab="chats"]').forEach((button) => toggleDot(button, hasUnreadMessages()));
+    document.querySelectorAll('[data-action="open-notifications"], [data-action="tab"][data-tab="notifications"]').forEach((button) => toggleDot(button, Boolean(state.pendingRequestCount)));
+  }
+
+  function refreshSidebarForLiveData(tabs = ['chats']) {
+    if (tabs.includes(state.tab)) updateSidebar();
+    else syncLiveNavigationBadges();
+  }
+
+  function captureReplacementFocus(root) {
+    const active = document.activeElement;
+    if (!root?.contains(active)) return null;
+    const data = {};
+    ['action', 'tab', 'mode', 'category', 'section', 'userId', 'groupId', 'chatId', 'postId', 'username', 'requestId', 'notificationId', 'messageId', 'storyId', 'noteId', 'searchId'].forEach((key) => {
+      if (active.dataset?.[key] !== undefined) data[key] = active.dataset[key];
+    });
+    return {
+      id: active.id || '',
+      name: active.getAttribute?.('name') || '',
+      tagName: active.tagName,
+      data,
+      selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+      selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+    };
+  }
+
+  function restoreReplacementFocus(root, snapshot) {
+    if (!root || !snapshot) return;
+    const candidates = Array.from(root.querySelectorAll('button, a, input, textarea, select, [tabindex]'));
+    const target = candidates.find((element) => snapshot.id && element.id === snapshot.id)
+      || candidates.find((element) => {
+        if (!Object.keys(snapshot.data).length || element.tagName !== snapshot.tagName) return false;
+        return Object.entries(snapshot.data).every(([key, value]) => element.dataset?.[key] === value);
+      })
+      || candidates.find((element) => snapshot.name && element.tagName === snapshot.tagName && element.getAttribute('name') === snapshot.name);
+    if (!target || target.disabled) return;
+    target.focus({ preventScroll: true });
+    if (snapshot.selectionStart !== null) {
+      const start = Math.min(snapshot.selectionStart, target.value?.length || 0);
+      const end = Math.min(snapshot.selectionEnd ?? start, target.value?.length || 0);
+      target.setSelectionRange?.(start, end);
+    }
+  }
+
+  function updateSidebar(options = {}) {
+    if (!options.force && currentAppShell()?.querySelector('.tab-content.animate-tab')) {
+      sidebarRefreshQueued = true;
+      return true;
+    }
     capturePersistentScroll();
     const current = document.querySelector('.sidebar');
     if (!current || !state.me) return false;
+    const focusSnapshot = captureReplacementFocus(current);
     const template = document.createElement('template');
     template.innerHTML = renderSidebar().trim();
     const next = template.content.firstElementChild;
     if (!next) return false;
     current.replaceWith(next);
     restorePersistentScroll();
-    initializePostCarousels(next);
-    if (state.tab === 'clips' || state.clipViewer) requestAnimationFrame(attachClipPlayback);
-    if (state.tab === 'home') requestAnimationFrame(() => attachStoryScrollHint(next));
+    restoreReplacementFocus(next, focusSnapshot);
+    hydrateSidebar(next);
     return true;
   }
 
   function renderSidebarState() {
-    if (!isMobileLayout() && hasVisibleConversation() && !state.searchProfileOpen && updateSidebar()) return;
+    if (updateSidebar()) return;
     renderApp();
   }
 
@@ -14650,7 +15069,10 @@
         return;
       }
       if (form.dataset.form === 'auth') {
-        const body = state.authMode === 'login'
+        if (state.authSubmitting || form.classList.contains('is-submitting')) return;
+        state.authSubmitting = true;
+        const authMode = state.authMode;
+        const body = authMode === 'login'
           ? {
               identifier: formValue(form, 'identifier'),
               password: formValue(form, 'password'),
@@ -14662,8 +15084,16 @@
               phone: formValue(form, 'phone'),
               password: formValue(form, 'password')
             };
-        const data = await api(`/api/auth/${state.authMode}`, { method: 'POST', body });
+        form.classList.add('is-submitting');
+        form.setAttribute('aria-busy', 'true');
+        Array.from(form.elements).forEach((control) => { control.disabled = true; });
+        app.querySelectorAll('.auth-tabs button').forEach((button) => { button.disabled = true; });
+        const submitButton = form.querySelector('[type="submit"]');
+        if (submitButton) submitButton.innerHTML = `<span class="auth-submit-spinner" aria-hidden="true"></span>${authMode === 'login' ? 'Logging in' : 'Creating account'}`;
+        const data = await api(`/api/auth/${authMode}`, { method: 'POST', body });
+        state.authEpoch += 1;
         state.me = data.user;
+        resetAuthenticatedSurfaceState();
         state.needsTwoFactor = false;
         state.tab = 'home';
         state.lastTab = 'home';
@@ -14678,11 +15108,9 @@
         state.chatProfileOpen = false;
         state.profileSocialView = null;
         state.chatProfileSocialView = null;
-        await loadContactsAndChats();
-        await loadSocialSurfaces();
-        await loadGifPool();
-        renderApp();
-        connectWs();
+        renderBootScreen('Opening your space');
+        await hydrateAuthenticatedSurfaces({ renderEarly: true, enter: true });
+        state.authSubmitting = false;
       }
       if (form.dataset.form === 'profile') {
         const body = {
@@ -14734,11 +15162,14 @@
         updateSidebar();
       }
     } catch (error) {
+      if (form.dataset.form === 'auth') state.authSubmitting = false;
       if (error.data?.requiresTwoFactor) {
         state.needsTwoFactor = true;
-        renderAuth(error.message);
+        renderAuth(error.message, { enter: true });
       } else if (!state.me) {
-        renderAuth(error.message);
+        renderAuth(error.message, { enter: true });
+      } else if (app.querySelector('.app-boot')) {
+        renderBootScreen(error.message || 'We could not finish loading your space.', { error: true });
       } else {
         alert(error.message);
       }
@@ -14787,18 +15218,23 @@
         finishVoiceRecording(true);
       }
       if (action === 'auth-mode') {
-        state.authMode = target.dataset.mode;
-        state.needsTwoFactor = false;
-        renderAuth();
+        switchAuthMode(target.dataset.mode);
+      }
+      if (action === 'retry-app-load') {
+        renderBootScreen('Retrying');
+        await init();
+        return;
       }
       if (action === 'show-login') {
         history.pushState({}, '', '/');
         state.authMode = 'login';
-        renderAuth();
+        renderAuth('', { enter: true });
       }
       if (action === 'logout') {
         cancelPendingProfileOpen();
         await api('/api/auth/logout', { method: 'POST' });
+        state.authEpoch += 1;
+        resetAuthenticatedSurfaceState();
         stopNotePlayback({ clear: true });
         pauseVoicePlayback({ clear: true });
         if (state.postComposer) closePostComposer();
@@ -14810,6 +15246,7 @@
         toastTimers.clear();
         state.toasts = [];
         state.me = null;
+        state.authSubmitting = false;
         state.activePeer = null;
         state.activeGroup = null;
         state.chatLoading = false;
@@ -14827,7 +15264,7 @@
         state.settingsOpen = false;
         state.settingsOpening = false;
         state.settingsClosing = false;
-        renderAuth();
+        renderAuth('', { enter: true });
       }
       if (action === 'tab') {
         switchMainTab(target.dataset.tab);
@@ -14838,7 +15275,9 @@
       }
       if (action === 'set-feed-mode') {
         state.feedMenuOpen = false;
-        await loadFeed(target.dataset.mode, { render: true });
+        const feedLoad = loadFeed(target.dataset.mode, { render: true });
+        requestAnimationFrame(() => document.querySelector('.feed-picker')?.focus?.({ preventScroll: true }));
+        await feedLoad;
       }
       if (action === 'set-clip-mode') {
         state.clipMode = target.dataset.mode === 'friends' ? 'friends' : 'for_you';
@@ -16452,7 +16891,8 @@
         toggleCallMinimized();
       }
     } catch (error) {
-      alert(error.message || 'Something went wrong.');
+      if (app.querySelector('.app-boot')) renderBootScreen(error.message || 'We could not load your space.', { error: true });
+      else alert(error.message || 'Something went wrong.');
     }
   });
 
@@ -16769,7 +17209,9 @@
         input.setSelectionRange(state.conversationQuery.length, state.conversationQuery.length);
       }
       conversationTimer = setTimeout(() => {
+        const scheduledQuery = state.conversationQuery;
         searchConversations(state.conversationQuery).catch((error) => {
+          if (state.tab !== 'chats' || scheduledQuery !== state.conversationQuery) return;
           state.conversationSearching = false;
           renderSidebarState();
           alert(error.message);
@@ -16946,7 +17388,9 @@
       renderSidebarState();
       setTimeout(focusUserSearch, 0);
       searchTimer = setTimeout(() => {
+        const scheduledQuery = state.userQuery;
         searchUsers(state.userQuery).catch((error) => {
+          if (state.tab !== 'search' || scheduledQuery !== state.userQuery) return;
           state.userSearching = false;
           renderSidebarState();
           alert(error.message);
@@ -17037,6 +17481,28 @@
         if (state.searchCategory === 'audio' && !state.searchData.audio.length) await loadSearchAudio();
       }
       return;
+    }
+    if (state.settingsOpen && event.key === 'Tab') {
+      const dialog = document.querySelector('#settings-slot .settings-drawer');
+      const focusable = Array.from(dialog?.querySelectorAll('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+        .filter((element) => !element.hidden && element.getClientRects().length);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog?.focus?.({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === first)) {
+        event.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!event.shiftKey && (!dialog.contains(document.activeElement) || document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
     }
     if (state.musicPicker && event.key === 'Tab') {
       const dialog = document.querySelector('#music-picker-slot .music-picker-sheet');
@@ -18469,6 +18935,6 @@
 
   init().catch((error) => {
     console.error(error);
-    app.innerHTML = `<main class="auth-screen"><div class="auth-card"><h1>Messages</h1><p class="error">${esc(error.message)}</p></div></main>`;
+    renderBootScreen(error.message || 'We could not connect. Try again.', { error: true });
   });
 })();
